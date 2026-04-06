@@ -1,0 +1,277 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+
+/* ===== Noto Sans KR 폰트 적용 (v0.8.3 호환) ===== */
+/* --font-sans에 Noto Sans KR 추가, 웹폰트로 로딩하여 모든 PC에서 동일 렌더링 보장 */
+:root, :host {
+    --font-sans: "Noto Sans KR", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji" !important;
+}
+body {
+    font-family: "Noto Sans KR", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif !important;
+}
+
+/* Model selector: click icon + highlight to show it's clickable */
+[id^="model-selector"][id$="-button"] {
+    position: relative;
+    display: flex !important;
+    align-items: center;
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid rgba(59, 130, 246, 0.25);
+    border-radius: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    transition: all 0.15s ease;
+}
+[id^="model-selector"][id$="-button"]:hover {
+    background: rgba(59, 130, 246, 0.12);
+    border-color: rgba(59, 130, 246, 0.4);
+}
+/* Cursor click icon next to model name */
+[id^="model-selector"][id$="-button"]::before {
+    content: '';
+    display: inline-block;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    margin-right: 5px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%233b82f6' stroke='%231d4ed8' stroke-width='0.5'%3E%3Cpath d='M5 2L5 18L10 13L14 22L17 21L13 12L19 12Z'/%3E%3C/svg%3E");
+    background-size: contain;
+    background-repeat: no-repeat;
+    animation: click-pulse 2.5s ease-in-out infinite;
+}
+@keyframes click-pulse {
+    0%, 100% { opacity: 0.6; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.15); }
+}
+/* Rainbow cycling animation for selected model name */
+[id^="model-selector"][id$="-button"] > div {
+    background: linear-gradient(90deg,
+        #3b82f6, #818cf8, #a855f7, #d946ef, #ec4899, #f43f5e,
+        #ef4444, #f97316, #f59e0b, #06b6d4, #3b82f6) !important;
+    background-size: 300% 100% !important;
+    -webkit-background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    background-clip: text !important;
+    animation: rainbow-shift 3s linear infinite, color-cycle 5s ease-in-out infinite !important;
+}
+@keyframes rainbow-shift {
+    0% { background-position: 0% center; }
+    100% { background-position: 300% center; }
+}
+@keyframes color-cycle {
+    0%, 100% { filter: hue-rotate(0deg) saturate(1.2); }
+    25% { filter: hue-rotate(-30deg) saturate(1.5); }
+    50% { filter: hue-rotate(30deg) saturate(1.3); }
+    75% { filter: hue-rotate(-20deg) saturate(1.4); }
+}
+/* Chevron icon: fixed blue, not rainbow */
+[id^="model-selector"][id$="-button"] > div > :last-child {
+    -webkit-text-fill-color: initial !important;
+    color: #3b82f6 !important;
+    opacity: 0.7;
+}
+/* Enlarge the chevron icon */
+[id^="model-selector"][id$="-button"] svg {
+    width: 1rem !important;
+    height: 1rem !important;
+}
+
+/* Model selector dropdown: force height for 14+ items */
+.group.relative > .overflow-y-auto {
+    max-height: min(31rem, 80vh) !important;
+}
+
+/* Admin Settings: Usage tab icon (ChartBar) */
+#usage > .self-center:first-child {
+    width: 16px;
+    height: 16px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M18.375 2.25c-1.035 0-1.875.84-1.875 1.875v15.75c0 1.035.84 1.875 1.875 1.875h.75c1.035 0 1.875-.84 1.875-1.875V4.125c0-1.036-.84-1.875-1.875-1.875h-.75ZM9.75 8.625c0-1.036.84-1.875 1.875-1.875h.75c1.036 0 1.875.84 1.875 1.875v11.25c0 1.035-.84 1.875-1.875 1.875h-.75a1.875 1.875 0 0 1-1.875-1.875V8.625ZM3 13.125c0-1.036.84-1.875 1.875-1.875h.75c1.036 0 1.875.84 1.875 1.875v6.75c0 1.035-.84 1.875-1.875 1.875h-.75A1.875 1.875 0 0 1 3 19.875v-6.75Z'/%3E%3C/svg%3E");
+    background-size: contain;
+    background-repeat: no-repeat;
+}
+.dark #usage > .self-center:first-child {
+    filter: invert(1);
+}
+
+/* ===== Chat message line-height 160% + list marker alignment ===== */
+/* 채팅 응답 메시지 줄간격 160% */
+.markdown,
+.markdown-prose,
+.markdown-prose-sm,
+.markdown-prose-xs {
+    line-height: 2.1 !important;
+}
+.markdown p,
+.markdown-prose p,
+.markdown li,
+.markdown-prose li {
+    line-height: 2.1 !important;
+}
+/* list marker 수직 정렬 수정 (줄간격 160%에서 marker 겹침 방지) */
+.markdown ul,
+.markdown-prose ul,
+.markdown ol,
+.markdown-prose ol {
+    line-height: 2.1 !important;
+}
+.markdown li::marker,
+.markdown-prose li::marker {
+    line-height: 1 !important;
+    vertical-align: middle;
+}
+/* 마이너스/동그라미 문단 마커가 텍스트와 겹치는 현상 방지 */
+.markdown ul > li,
+.markdown-prose ul > li {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+}
+/* ===== end chat line-height ===== */
+
+/* ===== 채팅 헤딩 크기 + 간격 조정 ===== */
+.markdown-prose h1,
+.markdown-prose-sm h1 {
+    font-size: 23px !important;
+    margin-top: 1.2em !important;
+    margin-bottom: 0.6em !important;
+    padding-bottom: 0.2em !important;
+}
+.markdown-prose h2,
+.markdown-prose-sm h2 {
+    font-size: 21px !important;
+    margin-top: 1.0em !important;
+    margin-bottom: 0.5em !important;
+    padding-bottom: 0.15em !important;
+}
+.markdown-prose h3,
+.markdown-prose-sm h3 {
+    font-size: 20px !important;
+    margin-top: 0.8em !important;
+    margin-bottom: 0.4em !important;
+}
+.markdown-prose h4,
+.markdown-prose-sm h4 {
+    font-size: 18px !important;
+    margin-top: 0.6em !important;
+    margin-bottom: 0.3em !important;
+}
+/* 첫 번째 헤딩은 상단 마진 제거 */
+.markdown-prose > h1:first-child,
+.markdown-prose-sm > h1:first-child,
+.markdown-prose > h2:first-child,
+.markdown-prose-sm > h2:first-child {
+    margin-top: 0 !important;
+}
+
+/* ===== 표(table) 글씨 크기 = 본문 동일 ===== */
+.markdown-prose table,
+.markdown-prose-sm table,
+.markdown-prose th,
+.markdown-prose-sm th,
+.markdown-prose td,
+.markdown-prose-sm td {
+    font-size: 1.25em !important;
+}
+
+/* Model selector dropdown: blue scrollbar */
+/* Parent is div.group.relative, child is div.overflow-y-auto */
+.group.relative > .overflow-y-auto,
+[role="menu"] .overflow-y-auto,
+[role="menu"].overflow-y-auto {
+    scrollbar-width: auto;
+    scrollbar-color: #3b82f6 rgba(59, 130, 246, 0.1);
+}
+/* Webkit scrollbar */
+.group.relative > .overflow-y-auto::-webkit-scrollbar,
+[role="menu"] .overflow-y-auto::-webkit-scrollbar,
+[role="menu"].overflow-y-auto::-webkit-scrollbar {
+    width: 8px;
+}
+.group.relative > .overflow-y-auto::-webkit-scrollbar-track,
+[role="menu"] .overflow-y-auto::-webkit-scrollbar-track,
+[role="menu"].overflow-y-auto::-webkit-scrollbar-track {
+    background: rgba(59, 130, 246, 0.1);
+    border-radius: 4px;
+}
+.group.relative > .overflow-y-auto::-webkit-scrollbar-thumb,
+[role="menu"] .overflow-y-auto::-webkit-scrollbar-thumb,
+[role="menu"].overflow-y-auto::-webkit-scrollbar-thumb {
+    background: #3b82f6;
+    border-radius: 4px;
+}
+.group.relative > .overflow-y-auto::-webkit-scrollbar-thumb:hover,
+[role="menu"] .overflow-y-auto::-webkit-scrollbar-thumb:hover,
+[role="menu"].overflow-y-auto::-webkit-scrollbar-thumb:hover {
+    background: #2563eb;
+}
+
+/* ====== Sidebar & Chat: always-visible blue scrollbar ====== */
+
+/* Sidebar: chat list scrollable container */
+#sidebar[data-state="true"] .overflow-y-auto.scrollbar-hidden {
+    scrollbar-width: auto !important;
+    scrollbar-color: #3b82f6 rgba(59, 130, 246, 0.1) !important;
+}
+#sidebar[data-state="true"] .overflow-y-auto.scrollbar-hidden::-webkit-scrollbar {
+    width: 8px !important;
+    display: block !important;
+}
+#sidebar[data-state="true"] .overflow-y-auto.scrollbar-hidden::-webkit-scrollbar-track {
+    background: rgba(59, 130, 246, 0.1);
+    border-radius: 4px;
+}
+#sidebar[data-state="true"] .overflow-y-auto.scrollbar-hidden::-webkit-scrollbar-thumb {
+    background: #3b82f6 !important;
+    border-radius: 4px;
+    visibility: visible !important;
+}
+#sidebar[data-state="true"] .overflow-y-auto.scrollbar-hidden::-webkit-scrollbar-thumb:hover {
+    background: #2563eb !important;
+}
+#sidebar[data-state="true"] .overflow-y-auto.scrollbar-hidden::-webkit-scrollbar-corner {
+    display: none;
+}
+
+/* Chat messages container */
+#messages-container {
+    scrollbar-width: auto !important;
+    scrollbar-color: #3b82f6 rgba(59, 130, 246, 0.1) !important;
+}
+#messages-container::-webkit-scrollbar {
+    width: 8px !important;
+    display: block !important;
+}
+#messages-container::-webkit-scrollbar-track {
+    background: rgba(59, 130, 246, 0.1);
+    border-radius: 4px;
+}
+#messages-container::-webkit-scrollbar-thumb {
+    background: #3b82f6 !important;
+    border-radius: 4px;
+    visibility: visible !important;
+}
+#messages-container::-webkit-scrollbar-thumb:hover {
+    background: #2563eb !important;
+}
+
+/* 모바일: UI 스케일 1.0으로 고정 (PC는 사용자 설정 유지) */
+/* 모바일 기본 UI 스케일 1.0 (사용자가 변경하면 JS inline style로 덮어씀) */
+@media (max-width: 768px), (hover: none) and (pointer: coarse) {
+    :root, :host {
+        --app-text-scale: 1;
+    }
+}
+
+/* 모바일: 오픈터미널 + 사용량 표시 숨김 */
+@media (max-width: 768px), (hover: none) and (pointer: coarse) {
+    .terminal-menu-btn {
+        display: none !important;
+    }
+    /* 오늘 사용량 토큰 표시 숨김 */
+    form .px-3.pt-1.text-left.w-full:has(.tabular-nums) {
+        display: none !important;
+    }
+}
+
+/* Toast close button: 오른쪽 위로 이동 */
+[data-sonner-toast] [data-close-button] {
+    left: unset !important;
+    right: 4px !important;
+}
