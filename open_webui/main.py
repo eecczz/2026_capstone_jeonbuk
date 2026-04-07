@@ -656,7 +656,7 @@ async def lifespan(app: FastAPI):
 
     # Start homepage crawl scheduler
     from open_webui.tasks_crawler import start_crawl_scheduler, stop_crawl_scheduler
-    start_crawl_scheduler(app, interval_minutes=30)
+    start_crawl_scheduler(app, interval_minutes=60)
 
     if app.state.config.ENABLE_BASE_MODELS_CACHE:
         try:
