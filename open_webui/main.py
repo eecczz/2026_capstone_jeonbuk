@@ -99,6 +99,7 @@ from open_webui.routers import (
     scim,
     usage,
     terminals,
+    crawler,
 )
 
 from open_webui.routers.retrieval import (
@@ -653,6 +654,10 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(periodic_usage_pool_cleanup())
     asyncio.create_task(periodic_session_pool_cleanup())
 
+    # Start homepage crawl scheduler
+    from open_webui.tasks_crawler import start_crawl_scheduler, stop_crawl_scheduler
+    start_crawl_scheduler(app, interval_minutes=30)
+
     if app.state.config.ENABLE_BASE_MODELS_CACHE:
         try:
             await get_all_models(
@@ -707,6 +712,9 @@ async def lifespan(app: FastAPI):
             log.warning(f"Failed to initialize tool/terminal servers at startup: {e}")
 
     yield
+
+    # Stop homepage crawl scheduler
+    stop_crawl_scheduler()
 
     if hasattr(app.state, "redis_task_command_listener"):
         app.state.redis_task_command_listener.cancel()
@@ -1593,6 +1601,7 @@ if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(utils.router, prefix="/api/v1/utils", tags=["utils"])
 app.include_router(terminals.router, prefix="/api/v1/terminals", tags=["terminals"])
+app.include_router(crawler.router, prefix="/api/v1/crawler", tags=["crawler"])
 
 # SCIM 2.0 API for identity management
 if ENABLE_SCIM:
