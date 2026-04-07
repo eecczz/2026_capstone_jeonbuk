@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <title>전주시 오늘 기온(예보)</title>
+</head>
+<body>
+  <div class="mermaid">
+xychart-beta
+  title "전주시 오늘 기온(예보)"
+  x-axis ["21:00", "22:00", "23:00"]
+  y-axis "℃"
+  line [9.0, 7.0, 6.0]
+  </div>
+  <script>
+    try {
+      mermaid.initialize({ startOnLoad: true, securityLevel: 'loose' });
+    } catch(e) {
+      document.body.innerHTML = "<h3>Mermaid init failed</h3><pre>" + String(e) + "</pre>";
+    }
+  </script>
+</body>
+</html>
