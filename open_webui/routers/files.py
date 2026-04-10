@@ -951,6 +951,207 @@ async def get_file_content_in_format(
             headers=headers,
         )
 
+############################
+# Dynamic HWPX Generation (양식 기반 문서 자동생성)
+############################
+
+
+class HwpxGenerateForm(BaseModel):
+    template_file_id: str  # 양식 HWPX 파일 ID
+    content_text: Optional[str] = None  # 직접 입력한 내용 텍스트
+    content_file_id: Optional[str] = None  # 내용 소스 파일 ID (PDF 등)
+    model: Optional[str] = None  # 사용할 LLM 모델 (None이면 기본 task 모델)
+    doc_title: Optional[str] = None  # 출력 파일명
+
+
+@router.post("/generate-hwpx")
+async def generate_hwpx_dynamic_endpoint(
+    request: Request,
+    form_data: HwpxGenerateForm,
+    user=Depends(get_verified_user),
+    db: Session = Depends(get_session),
+):
+    """
+    양식 HWPX + 내용 텍스트/파일 → AI 분석 → HWPX 문서 자동생성
+
+    1. 양식 파일에서 경량 XML 추출
+    2. 내용 소스 텍스트 확보
+    3. AI에게 양식 + 내용 전달 → 명령 JSON 수신
+    4. 명령 실행하여 HWPX 생성
+    """
+    from io import BytesIO
+    from open_webui.utils.hwpx_analyzer import (
+        analyze_hwpx,
+        build_hwpx_prompt,
+        parse_actions_from_llm,
+    )
+    from open_webui.utils.hwp_generator import generate_hwpx_dynamic
+    from open_webui.utils.chat import generate_chat_completion
+    from open_webui.utils.task import get_task_model_id
+
+    # 1) 양식 파일 가져오기
+    template_file = Files.get_file_by_id(form_data.template_file_id, db=db)
+    if not template_file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="양식 파일을 찾을 수 없습니다",
+        )
+
+    template_path = Storage.get_file(template_file.path)
+    if not template_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="양식 파일 경로를 찾을 수 없습니다",
+        )
+
+    # 2) 내용 텍스트 확보
+    content_text = form_data.content_text or ""
+
+    if form_data.content_file_id and not content_text:
+        content_file = Files.get_file_by_id(form_data.content_file_id, db=db)
+        if content_file:
+            content_text = content_file.data.get("content", "") if content_file.data else ""
+
+    if not content_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="작성할 내용이 없습니다. content_text 또는 content_file_id를 제공하세요",
+        )
+
+    # 3) 양식 분석 (경량 XML 추출)
+    try:
+        analysis = analyze_hwpx(template_path)
+        light_xml = analysis["light_xml"]
+        log.info(
+            f"양식 분석 완료: 문단 {analysis['paragraph_count']}개, "
+            f"표 {analysis['table_count']}개, "
+            f"경량 XML {len(light_xml):,}B"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"양식 분석 실패: {e}",
+        )
+
+    # 4) AI 호출 — 명령 JSON 생성
+    models = request.app.state.MODELS
+    model_id = form_data.model
+    if not model_id:
+        model_id = get_task_model_id(
+            "",
+            request.app.state.config.TASK_MODEL,
+            request.app.state.config.TASK_MODEL_EXTERNAL,
+            models,
+        )
+
+    if not model_id or model_id not in models:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"사용 가능한 모델이 없습니다: {model_id}",
+        )
+
+    messages = build_hwpx_prompt(light_xml, content_text)
+    payload = {
+        "model": model_id,
+        "messages": messages,
+        "stream": False,
+        "metadata": {
+            "task": "hwpx_generation",
+        },
+    }
+
+    try:
+        response = await generate_chat_completion(
+            request, form_data=payload, user=user
+        )
+        llm_content = response["choices"][0]["message"]["content"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"AI 호출 실패: {e}",
+        )
+
+    # 5) AI 응답에서 명령 JSON 파싱
+    try:
+        actions = parse_actions_from_llm(llm_content)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"AI 응답 파싱 실패: {e}",
+        )
+
+    # 6) HWPX 생성
+    try:
+        hwpx_bytes = generate_hwpx_dynamic(template_path, actions)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"HWPX 생성 실패: {e}",
+        )
+
+    # 7) 응답
+    doc_title = form_data.doc_title or template_file.meta.get("name", "document")
+    if not doc_title.endswith(".hwpx"):
+        doc_title = f"{Path(doc_title).stem}.hwpx"
+
+    encoded = quote(doc_title)
+    return StreamingResponse(
+        BytesIO(hwpx_bytes),
+        media_type="application/hwpx",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}",
+        },
+    )
+
+
+############################
+# Analyze HWPX Template (양식 분석 미리보기)
+############################
+
+
+@router.post("/analyze-hwpx/{file_id}")
+async def analyze_hwpx_endpoint(
+    file_id: str,
+    user=Depends(get_verified_user),
+    db: Session = Depends(get_session),
+):
+    """양식 HWPX 파일을 분석하여 경량 XML과 메타정보를 반환합니다."""
+    from open_webui.utils.hwpx_analyzer import analyze_hwpx
+
+    file = Files.get_file_by_id(file_id, db=db)
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="파일을 찾을 수 없습니다",
+        )
+
+    file_path = Storage.get_file(file.path)
+    if not file_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="파일 경로를 찾을 수 없습니다",
+        )
+
+    try:
+        result = analyze_hwpx(file_path)
+        return {
+            "file_id": file_id,
+            "filename": file.meta.get("name", file.filename),
+            "paragraph_count": result["paragraph_count"],
+            "table_count": result["table_count"],
+            "light_xml_size": len(result["light_xml"]),
+            "original_xml_size": len(result["original_xml"]),
+            "reduction_pct": round(
+                (1 - len(result["light_xml"]) / len(result["original_xml"])) * 100
+            ),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"양식 분석 실패: {e}",
+        )
+
+
 @router.get("/{id}/content/{file_name}")
 async def get_file_content_by_id(
     id: str, user=Depends(get_verified_user), db: Session = Depends(get_session)
