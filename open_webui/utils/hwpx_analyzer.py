@@ -231,18 +231,53 @@ HWPX_SYSTEM_PROMPT = """당신은 HWPX 문서 생성 전문가입니다.
 """
 
 
-def build_hwpx_prompt(light_xml: str, content_text: str) -> list[dict]:
+def pdf_to_base64_images(pdf_path: str, dpi: int = 200) -> list[str]:
+    """
+    PDF 파일을 페이지별 base64 이미지로 변환합니다.
+
+    Args:
+        pdf_path: PDF 파일 경로
+        dpi: 해상도 (200이면 충분, 높을수록 토큰 증가)
+
+    Returns:
+        base64 인코딩된 이미지 문자열 리스트
+    """
+    import base64
+    from pdf2image import convert_from_path
+
+    images = convert_from_path(pdf_path, dpi=dpi)
+    result = []
+    for img in images:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        result.append(b64)
+
+    log.info(f"PDF → {len(result)}페이지 이미지 변환 (dpi={dpi})")
+    return result
+
+
+def build_hwpx_prompt(
+    light_xml: str,
+    content_text: str = "",
+    content_images: list[str] = None,
+) -> list[dict]:
     """
     AI에게 보낼 메시지 리스트를 생성합니다.
 
     Args:
         light_xml: 경량화된 양식 XML
-        content_text: 작성할 내용 텍스트
+        content_text: 작성할 내용 텍스트 (텍스트 모드)
+        content_images: PDF 페이지 base64 이미지 리스트 (직접 전달 모드)
 
     Returns:
         [{"role": "system", "content": ...}, {"role": "user", "content": ...}]
     """
-    user_content = f"""## 양식 XML
+    # 유저 메시지 구성
+    user_parts = []
+
+    # 1) 양식 XML (항상 텍스트로)
+    xml_text = f"""## 양식 XML
 아래는 HWPX 양식의 경량화된 XML입니다. 표 구조, 문단 스타일, 텍스트 내용을 분석하세요.
 
 ```xml
@@ -250,20 +285,43 @@ def build_hwpx_prompt(light_xml: str, content_text: str) -> list[dict]:
 ```
 
 ## 작성할 내용
-아래 내용을 위 양식에 맞게 작성하세요. 양식의 구조와 스타일을 유지하면서 내용만 교체합니다.
-
-{content_text}
-
-## 지시사항
-1. 양식 XML을 분석하여 표 위치, 본문 시작 위치, 사용된 스타일 ID를 파악하세요
-2. 표의 라벨 셀(보도일시, 담당부서 등)은 유지하고 값 셀만 교체하세요
-3. 본문은 적절한 문단 인덱스부터 clear_body 후 add_paragraph로 새로 작성하세요
-4. 반드시 JSON만 출력하세요
 """
+
+    if content_images:
+        # PDF 직접 전달 모드 — 이미지로 전달
+        xml_text += "아래 첨부된 PDF 이미지의 내용을 위 양식에 맞게 작성하세요. 양식의 구조와 스타일을 유지하면서 내용만 교체합니다.\n\n"
+        xml_text += "## 지시사항\n"
+        xml_text += "1. 양식 XML을 분석하여 표 위치, 본문 시작 위치, 사용된 스타일 ID를 파악하세요\n"
+        xml_text += "2. 표의 라벨 셀(보도일시, 담당부서 등)은 유지하고 값 셀만 교체하세요\n"
+        xml_text += "3. 본문은 적절한 문단 인덱스부터 clear_body 후 add_paragraph로 새로 작성하세요\n"
+        xml_text += "4. 첨부된 PDF 이미지의 모든 내용을 빠짐없이 반영하세요\n"
+        xml_text += "5. 반드시 JSON만 출력하세요\n"
+
+        user_parts.append({"type": "text", "text": xml_text})
+
+        # PDF 페이지 이미지 추가
+        for i, img_b64 in enumerate(content_images):
+            user_parts.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
+                },
+            })
+
+    else:
+        # 텍스트 모드 — 기존 방식
+        xml_text += f"{content_text}\n\n"
+        xml_text += "## 지시사항\n"
+        xml_text += "1. 양식 XML을 분석하여 표 위치, 본문 시작 위치, 사용된 스타일 ID를 파악하세요\n"
+        xml_text += "2. 표의 라벨 셀(보도일시, 담당부서 등)은 유지하고 값 셀만 교체하세요\n"
+        xml_text += "3. 본문은 적절한 문단 인덱스부터 clear_body 후 add_paragraph로 새로 작성하세요\n"
+        xml_text += "4. 반드시 JSON만 출력하세요\n"
+
+        user_parts = xml_text  # 텍스트만이면 문자열로
 
     return [
         {"role": "system", "content": HWPX_SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
+        {"role": "user", "content": user_parts},
     ]
 
 

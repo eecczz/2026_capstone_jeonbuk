@@ -1004,15 +1004,33 @@ async def generate_hwpx_dynamic_endpoint(
             detail="양식 파일 경로를 찾을 수 없습니다",
         )
 
-    # 2) 내용 텍스트 확보
-    content_text = form_data.content_text or ""
+    # 2) 내용 확보 (PDF 직접 전달 or 텍스트)
+    from open_webui.utils.hwpx_analyzer import pdf_to_base64_images
 
-    if form_data.content_file_id and not content_text:
+    content_text = form_data.content_text or ""
+    content_images = None
+
+    if form_data.content_file_id:
         content_file = Files.get_file_by_id(form_data.content_file_id, db=db)
         if content_file:
-            content_text = content_file.data.get("content", "") if content_file.data else ""
+            content_type = content_file.meta.get("content_type", "")
+            file_name = content_file.meta.get("name", content_file.filename)
 
-    if not content_text:
+            # PDF → 이미지로 직접 전달
+            if content_type == "application/pdf" or file_name.lower().endswith(".pdf"):
+                try:
+                    content_path = Storage.get_file(content_file.path)
+                    content_images = pdf_to_base64_images(content_path)
+                    log.info(f"PDF 직접 전달: {len(content_images)}페이지")
+                except Exception as e:
+                    log.warning(f"PDF 이미지 변환 실패, 텍스트 fallback: {e}")
+                    content_images = None
+
+            # PDF 이미지 변환 실패 or PDF가 아닌 경우 → 텍스트 추출본 사용
+            if content_images is None and not content_text:
+                content_text = content_file.data.get("content", "") if content_file.data else ""
+
+    if not content_text and not content_images:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="작성할 내용이 없습니다. content_text 또는 content_file_id를 제공하세요",
@@ -1050,7 +1068,7 @@ async def generate_hwpx_dynamic_endpoint(
             detail=f"사용 가능한 모델이 없습니다: {model_id}",
         )
 
-    messages = build_hwpx_prompt(light_xml, content_text)
+    messages = build_hwpx_prompt(light_xml, content_text, content_images)
     payload = {
         "model": model_id,
         "messages": messages,
