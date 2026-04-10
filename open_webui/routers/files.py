@@ -853,103 +853,146 @@ async def get_file_content_in_format(
         )
 
     elif format == "hwpx":
-        import httpx
-        import re as _re
+        # === 로컬 생성 / MCP 서버 전환 플래그 ===
+        use_local = True  # False로 바꾸면 기존 MCP 방식으로 돌아감
 
-        mcp_url = "http://220.124.155.35:5002/mcp"
-        try:
-            async with httpx.AsyncClient(timeout=120) as client:
-                common_h = {
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                }
-                # 1) MCP initialize
-                init_resp = await client.post(mcp_url, json={
-                    "jsonrpc": "2.0", "method": "initialize", "id": 1,
-                    "params": {
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": {},
-                        "clientInfo": {"name": "owui-file-route", "version": "1.0"},
-                    },
-                }, headers=common_h)
-                session_id = init_resp.headers.get("mcp-session-id", "")
-                sess_h = {**common_h, "Mcp-Session-Id": session_id}
+        if use_local:
+            # --- 로컬 HWPX 생성 ---
+            try:
+                from open_webui.utils.hwp_generator import generate_hwpx
 
-                # 2) initialized notification
-                await client.post(mcp_url, json={
-                    "jsonrpc": "2.0", "method": "notifications/initialized",
-                }, headers=sess_h)
+                hwpx_bytes = generate_hwpx(
+                    content=content,
+                    doc_title=base_name,
+                    template_type="default",
+                )
+                filename = f"{base_name}.hwpx"
+                encoded = quote(filename)
+                headers = {}
+                if attachment:
+                    headers["Content-Disposition"] = (
+                        f"attachment; filename*=UTF-8\'\'{encoded}"
+                    )
+                return StreamingResponse(
+                    BytesIO(hwpx_bytes),
+                    media_type="application/hwpx",
+                    headers=headers,
+                )
+            except Exception as e:
+                log.warning(f"Local hwpx generation failed: {e}")
+                # 로컬 생성 실패 시 텍스트로 fallback
+                filename = f"{base_name}.txt"
+                encoded = quote(filename)
+                headers = {}
+                if attachment:
+                    headers["Content-Disposition"] = (
+                        f"attachment; filename*=UTF-8\'\'{encoded}"
+                    )
+                return StreamingResponse(
+                    BytesIO(content.encode("utf-8")),
+                    media_type="text/plain; charset=utf-8",
+                    headers=headers,
+                )
 
-                # 3) generate_hwp
-                call_resp = await client.post(mcp_url, json={
-                    "jsonrpc": "2.0", "method": "tools/call", "id": 2,
-                    "params": {
-                        "name": "generate_hwp",
-                        "arguments": {
-                            "content": content,
-                            "file_name": base_name,
-                            "user_id": "system",
-                            "template_type": "default",
-                            "doc_title": base_name,
+        else:
+            # --- 기존 MCP 서버 방식 (원본 보존) ---
+            import httpx
+            import re as _re
+
+            mcp_url = "http://220.124.155.35:5002/mcp"
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    common_h = {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                    }
+                    # 1) MCP initialize
+                    init_resp = await client.post(mcp_url, json={
+                        "jsonrpc": "2.0", "method": "initialize", "id": 1,
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {"name": "owui-file-route", "version": "1.0"},
                         },
-                    },
-                }, headers=sess_h)
+                    }, headers=common_h)
+                    session_id = init_resp.headers.get("mcp-session-id", "")
+                    sess_h = {**common_h, "Mcp-Session-Id": session_id}
 
-                # 4) Parse SSE or JSON response for download URL
-                resp_text = call_resp.text
-                # Handle 202 Accepted (SSE stream)
-                if call_resp.status_code == 202:
-                    async with client.stream("GET", mcp_url, headers=sess_h, timeout=120) as stream:
-                        async for chunk in stream.aiter_text():
-                            resp_text += chunk
-                            if '"result"' in resp_text or '"error"' in resp_text:
-                                break
+                    # 2) initialized notification
+                    await client.post(mcp_url, json={
+                        "jsonrpc": "2.0", "method": "notifications/initialized",
+                    }, headers=sess_h)
 
-                # Extract URL from markdown link [name](url) or plain URL
-                url_match = _re.search(r'\(https?://[^)\s]+\.hwpx?[^)\s]*)\)', resp_text)
-                if not url_match:
-                    url_match = _re.search(r'(https?://[^\s"]+\.hwpx?[^\s"]*)', resp_text)
+                    # 3) generate_hwp
+                    call_resp = await client.post(mcp_url, json={
+                        "jsonrpc": "2.0", "method": "tools/call", "id": 2,
+                        "params": {
+                            "name": "generate_hwp",
+                            "arguments": {
+                                "content": content,
+                                "file_name": base_name,
+                                "user_id": "system",
+                                "template_type": "default",
+                                "doc_title": base_name,
+                            },
+                        },
+                    }, headers=sess_h)
 
-                if url_match:
-                    file_url = url_match.group(1)
-                    # Download the generated hwpx file
-                    dl_resp = await client.get(file_url, timeout=60)
-                    if dl_resp.status_code == 200:
-                        filename = f"{base_name}.hwpx"
-                        encoded = quote(filename)
-                        headers = {}
-                        if attachment:
-                            headers["Content-Disposition"] = (
-                                f"attachment; filename*=UTF-8\'\'{encoded}"
+                    # 4) Parse SSE or JSON response for download URL
+                    resp_text = call_resp.text
+                    # Handle 202 Accepted (SSE stream)
+                    if call_resp.status_code == 202:
+                        async with client.stream("GET", mcp_url, headers=sess_h, timeout=120) as stream:
+                            async for chunk in stream.aiter_text():
+                                resp_text += chunk
+                                if '"result"' in resp_text or '"error"' in resp_text:
+                                    break
+
+                    # Extract URL from markdown link [name](url) or plain URL
+                    url_match = _re.search(r'\(https?://[^)\s]+\.hwpx?[^)\s]*)\)', resp_text)
+                    if not url_match:
+                        url_match = _re.search(r'(https?://[^\s"]+\.hwpx?[^\s"]*)', resp_text)
+
+                    if url_match:
+                        file_url = url_match.group(1)
+                        # Download the generated hwpx file
+                        dl_resp = await client.get(file_url, timeout=60)
+                        if dl_resp.status_code == 200:
+                            filename = f"{base_name}.hwpx"
+                            encoded = quote(filename)
+                            headers = {}
+                            if attachment:
+                                headers["Content-Disposition"] = (
+                                    f"attachment; filename*=UTF-8\'\'{encoded}"
+                                )
+                            return StreamingResponse(
+                                BytesIO(dl_resp.content),
+                                media_type="application/hwpx",
+                                headers=headers,
                             )
-                        return StreamingResponse(
-                            BytesIO(dl_resp.content),
-                            media_type="application/hwpx",
-                            headers=headers,
-                        )
 
-                # Cleanup
-                try:
-                    await client.delete(mcp_url, headers={"Mcp-Session-Id": session_id})
-                except Exception:
-                    pass
+                    # Cleanup
+                    try:
+                        await client.delete(mcp_url, headers={"Mcp-Session-Id": session_id})
+                    except Exception:
+                        pass
 
-        except Exception as e:
-            log.warning(f"MCP hwpx generation failed: {e}")
+            except Exception as e:
+                log.warning(f"MCP hwpx generation failed: {e}")
 
-        # Fallback: serve as plain text if MCP fails
-        filename = f"{base_name}.txt"
-        encoded = quote(filename)
-        headers = {}
-        if attachment:
-            headers["Content-Disposition"] = (
-                f"attachment; filename*=UTF-8\'\'{encoded}"
+            # Fallback: serve as plain text if MCP fails
+            filename = f"{base_name}.txt"
+            encoded = quote(filename)
+            headers = {}
+            if attachment:
+                headers["Content-Disposition"] = (
+                    f"attachment; filename*=UTF-8\'\'{encoded}"
+                )
+            return StreamingResponse(
+                BytesIO(content.encode("utf-8")),
+                media_type="text/plain; charset=utf-8",
+                headers=headers,
             )
-        return StreamingResponse(
-            BytesIO(content.encode("utf-8")),
-            media_type="text/plain; charset=utf-8",
-            headers=headers,
-        )
 
 @router.get("/{id}/content/{file_name}")
 async def get_file_content_by_id(
