@@ -1,0 +1,1 @@
+import"../chunks/CWj6FrbW.js";import"../chunks/CN51-NxK.js";import{o as t,p as i,b as p}from"../chunks/Yu58oOUd.js";import{i as r}from"../chunks/BZRIgjcJ.js";import{g as m}from"../chunks/BpsDBfjJ.js";import{E as s}from"../chunks/D9dhWvF0.js";function g(o,a){p(a,!1),t(()=>{m("/admin/evaluations/leaderboard")}),r(),s(o,{}),i()}export{g as component};

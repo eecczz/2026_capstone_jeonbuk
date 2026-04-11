@@ -1,0 +1,14 @@
+import"./CWj6FrbW.js";import"./CN51-NxK.js";import{b as U,o as V,i as W,d as X,e as Y,a as u,p as Z,j as p,m as $,t as C,x as n,v,r as tt,f as M}from"./Yu58oOUd.js";import{i as et}from"./TjyxkKSw.js";import{e as at,i as nt}from"./CP1hNGaQ.js";import{e as it,s as rt}from"./CHA-WQVD.js";import{i as lt}from"./BZRIgjcJ.js";import{p as e}from"./CD805wuI.js";var ot=M('<div class="confetti svelte-rtt661"></div>'),st=M("<div></div>");function _t(z,t){U(t,!1);let b=e(t,"size",8,10),o=e(t,"x",24,()=>[-.5,.5]),s=e(t,"y",24,()=>[.25,1]),d=e(t,"duration",8,2e3),f=e(t,"infinite",8,!1),l=e(t,"delay",24,()=>[0,50]),y=e(t,"colorRange",24,()=>[0,360]),m=e(t,"colorArray",24,()=>[]),k=e(t,"amount",8,50),c=e(t,"iterationCount",8,1),w=e(t,"fallDistance",8,"100px"),A=e(t,"rounded",8,!1),D=e(t,"cone",8,!1),G=e(t,"noGravity",8,!1),O=e(t,"xSpread",8,.15),R=e(t,"destroyOnComplete",8,!0),g=$(!1);V(()=>{!R()||f()||c()=="infinite"||setTimeout(()=>W(g,!0),(d()+l()[1])*c())});function a(i,r){return Math.random()*(r-i)+i}function S(){return m().length?m()[Math.round(Math.random()*(m().length-1))]:`hsl(${Math.round(a(y()[0],y()[1]))}, 75%, 50%)`}lt();var h=X(),j=Y(h);{var B=i=>{var r=st();let _;at(r,5,()=>({length:k()}),nt,(T,dt)=>{var x=ot();C((q,E,F,H,I,J,K,L,N,P,Q)=>it(x,`
+        --fall-distance: ${w()??""};
+        --size: ${b()??""}px;
+        --color: ${q??""};
+        --skew: ${E??""}deg,${F??""}deg;
+        --rotation-xyz: ${H??""}, ${I??""}, ${J??""};
+        --rotation-deg: ${K??""}deg;
+        --translate-y-multiplier: ${L??""};
+        --translate-x-multiplier: ${N??""};
+        --scale: ${P??""};
+        --transition-duration: ${f()?`calc(${d()}ms * var(--scale))`:`${d()}ms`};
+        --transition-delay: ${Q??""}ms;
+        --transition-iteration-count: ${(f()?"infinite":c())??""};
+        --x-spread: ${1-O()}`),[()=>n(S),()=>n(()=>a(-45,45)),()=>n(()=>a(-45,45)),()=>n(()=>a(-10,10)),()=>n(()=>a(-10,10)),()=>n(()=>a(-10,10)),()=>n(()=>a(0,360)),()=>(v(s()),n(()=>a(s()[0],s()[1]))),()=>(v(o()),n(()=>a(o()[0],o()[1]))),()=>n(()=>.1*a(2,10)),()=>(v(l()),n(()=>a(l()[0],l()[1])))]),u(T,x)}),tt(r),C(()=>_=rt(r,1,"confetti-holder svelte-rtt661",null,_,{rounded:A(),cone:D(),"no-gravity":G()})),u(i,r)};et(j,i=>{p(g)||i(B)})}u(z,h),Z()}export{_t as C};

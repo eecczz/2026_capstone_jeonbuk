@@ -1,0 +1,1260 @@
+<!doctype html>
+<html lang="kr">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/png" href="/static/favicon.png" crossorigin="use-credentials" />
+    <link rel="icon" type="image/png" href="/static/favicon-96x96.png" sizes="96x96" crossorigin="use-credentials" />
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" crossorigin="use-credentials" />
+    <link rel="shortcut icon" href="/static/favicon.ico" crossorigin="use-credentials" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png" crossorigin="use-credentials" />
+    <link rel="manifest" href="/manifest.json" crossorigin="use-credentials" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#171717" />
+    <meta name="robots" content="noindex,nofollow" />
+
+    <script src="/static/loader.js" defer></script>
+    <link rel="stylesheet" href="/static/custom.css"/>
+
+    <script>
+      function resizeIframe(obj) {
+        obj.style.height = obj.contentWindow.document.documentElement.scrollHeight + 'px';
+      }
+    </script>
+
+    <script>
+      // On page load or when changing themes, best to add inline in `head` to avoid FOUC
+      (() => {
+        const metaThemeColorTag = document.querySelector('meta[name="theme-color"]');
+        const prefersDarkTheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+        if (!localStorage?.theme) {
+          localStorage.theme = 'system';
+        }
+
+        if (localStorage.theme === 'system') {
+          document.documentElement.classList.add(prefersDarkTheme ? 'dark' : 'light');
+          metaThemeColorTag.setAttribute('content', prefersDarkTheme ? '#171717' : '#ffffff');
+        } else if (localStorage.theme === 'oled-dark') {
+          document.documentElement.style.setProperty('--color-gray-800', '#101010');
+          document.documentElement.style.setProperty('--color-gray-850', '#050505');
+          document.documentElement.style.setProperty('--color-gray-900', '#000000');
+          document.documentElement.style.setProperty('--color-gray-950', '#000000');
+          document.documentElement.classList.add('dark');
+          metaThemeColorTag.setAttribute('content', '#000000');
+        } else if (localStorage.theme === 'light') {
+          document.documentElement.classList.add('light');
+          metaThemeColorTag.setAttribute('content', '#ffffff');
+        } else if (localStorage.theme === 'her') {
+          document.documentElement.classList.add('her');
+          metaThemeColorTag.setAttribute('content', '#983724');
+        } else {
+          document.documentElement.classList.add('dark');
+          metaThemeColorTag.setAttribute('content', '#171717');
+        }
+
+        window.matchMedia('(prefers-color-scheme: dark)').addListener((e) => {
+          if (localStorage.theme === 'system') {
+            if (e.matches) {
+              document.documentElement.classList.add('dark');
+              document.documentElement.classList.remove('light');
+              metaThemeColorTag.setAttribute('content', '#171717');
+            } else {
+              document.documentElement.classList.add('light');
+              document.documentElement.classList.remove('dark');
+              metaThemeColorTag.setAttribute('content', '#ffffff');
+            }
+          }
+        });
+        const isDarkMode = document.documentElement.classList.contains('dark');
+
+        const logo = document.createElement('img');
+        logo.id = 'logo';
+        logo.style =
+          'position: absolute; width: auto; height: 6rem; top: 44%; left: 50%; transform: translateX(-50%); display:block;';
+        logo.src = isDarkMode ? '/static/splash-dark.png' : '/static/splash.png';
+
+        document.addEventListener('DOMContentLoaded', function () {
+          const splash = document.getElementById('splash-screen');
+          if (document.documentElement.classList.contains('her')) {
+            return;
+          }
+
+          if (splash) splash.prepend(logo);
+        });
+      })();
+    </script>
+
+    <title>전북도 생성형 AI</title>
+
+    
+		<link rel="modulepreload" href="/_app/immutable/entry/start.BVyiKH6R.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/BpsDBfjJ.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/Yu58oOUd.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/D-dubyUK.js">
+		<link rel="modulepreload" href="/_app/immutable/entry/app.B7ng2_S_.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/BbxtmdIk.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CVVKR5AN.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CWj6FrbW.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/TjyxkKSw.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/XQ-KsX5L.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/DdgtKUyS.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/CD805wuI.js">
+		<link rel="modulepreload" href="/_app/immutable/chunks/B0oqZymD.js">
+
+  <!-- 모델 선택기 필터: 이름에 ( 없는 모델 숨기기 (GPTs 워크스페이스에서는 전체 표시) -->
+  <script>
+    (function(){
+      var _f = window.fetch;
+      window.fetch = function(){
+        var u = arguments[0];
+        var s = typeof u === 'string' ? u : (u && u.url) || '';
+        return _f.apply(this, arguments).then(function(r){
+          var p = window.location.pathname;
+          if (p.indexOf('/workspace') !== -1 || p.indexOf('/admin') !== -1 || p.indexOf('/gpts') !== -1) return r;
+          var isModelList = (s.indexOf('/api/models') !== -1 || s.indexOf('/api/v1/models') !== -1)
+            && s.indexOf('/search') === -1 && s.indexOf('/model/') === -1
+            && s.indexOf('/verify') === -1 && s.indexOf('/profile') === -1;
+          if (!isModelList) return r;
+          var c = r.clone();
+          return c.text().then(function(b){
+            try {
+              var d = JSON.parse(b);
+              var filterFn = function(m){ return (m.name||'').charAt(0) === '('; };
+              if (d && Array.isArray(d.data)) d.data = d.data.filter(filterFn);
+              else if (Array.isArray(d)) d = d.filter(filterFn);
+              return new Response(JSON.stringify(d), {status:r.status, statusText:r.statusText, headers:{'Content-Type':'application/json'}});
+            } catch(e){ return r; }
+          });
+        });
+      };
+    })();
+  </script>
+  <script src="/static/loader.js?v=7.3" defer></script>
+  <link rel="stylesheet" href="/static/custom.css"/>
+  <script src="/static/hwp-modal.js" defer></script>
+
+  <!-- 질문증강 수정: WEBUI_API_BASE_URL 글로벌 변수 -->
+  <script>window.WEBUI_API_BASE_URL="/api/v1";</script>
+
+  <!-- 오색영롱 질문증강 버튼 v6 -->
+  <style>
+  @keyframes rainbow-bg {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
+  .rainbow-augment {
+    background: linear-gradient(270deg, #ff6b6b, #ffa500, #ffd700, #4ecdc4, #45b7d1, #a855f7, #ff6b6b) !important;
+    background-size: 400% 400% !important;
+    animation: rainbow-bg 4s ease infinite !important;
+    color: #fff !important;
+    font-weight: 600 !important;
+    border: none !important;
+    border-radius: 9999px !important;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.2) !important;
+    transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important;
+  }
+  .rainbow-augment:hover {
+    transform: scale(1.08) !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25) !important;
+  }
+  .rainbow-augment svg { color: #fff !important; stroke: #fff !important; }
+  </style>
+  <script>
+  document.addEventListener("DOMContentLoaded",function(){
+    function tag(){
+      document.querySelectorAll("button").forEach(function(b){
+        var t = b.innerText.trim();
+        if((t === "\uC9C8\uBB38 \uC99D\uAC15" || t === "\uC9C8\uBB38\uC99D\uAC15") && !b.classList.contains("rainbow-augment")){
+          b.classList.add("rainbow-augment");
+        }
+      });
+    }
+    new MutationObserver(tag).observe(document.body,{childList:true,subtree:true});
+    setInterval(tag,2000);
+  });
+  </script>
+  </head>
+
+  <body data-sveltekit-preload-data="hover">
+
+    
+			<script>
+				{
+					__sveltekit_hwdkhr = {
+						base: ""
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/_app/immutable/entry/start.BVyiKH6R.js"),
+						import("/_app/immutable/entry/app.B7ng2_S_.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		
+
+    <div id="splash-screen" style="position: fixed; z-index: 100; top: 0; left: 0; width: 100%; height: 100%">
+      <style type="text/css" nonce="">
+        html {
+          overflow-y: scroll !important;
+        }
+      </style>
+
+      <div
+        style="
+          position: absolute;
+          top: 33%;
+          left: 50%;
+
+          width: 24rem;
+          transform: translateX(-50%);
+
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        "
+      >
+        <img
+          id="logo-her"
+          style="width: auto; height: 13rem"
+          src="/static/splash.png"
+          class="animate-pulse-fast"
+        />
+
+        <div style="position: relative; width: 24rem; margin-top: 0.5rem">
+          <div
+            id="progress-background"
+            style="
+              position: absolute;
+              width: 100%;
+              height: 0.75rem;
+
+              border-radius: 9999px;
+              background-color: #fafafa9a;
+            "
+          ></div>
+
+          <div
+            id="progress-bar"
+            style="
+              position: absolute;
+              width: 0%;
+              height: 0.75rem;
+              border-radius: 9999px;
+              background-color: #fff;
+            "
+            class="bg-white"
+          ></div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ===========================================================
+         GLSL Fractal Shader Background (2 shaders: warm fractal / colorful swirl)
+         - /auth + 비로그인에서만 실행
+         - 로그인 후 즉시 완전 종료(raf/이벤트/DOM 제거)
+         =========================================================== -->
+    <script>
+      (function () {
+        const AUTH_PATH_PREFIXES = ["/auth"];
+        const TOKEN_KEY = "token";
+
+        let layerEl = null;
+        let canvas = null;
+        let gl = null;
+        let program = null;
+        let rafId = 0;
+        let positionBuffer = null;
+        let resizeHandler = null;
+        let tL = null;
+        let rL = null;
+
+        function isAuthRoute() {
+          const p = location.pathname || "/";
+          return AUTH_PATH_PREFIXES.some(function(prefix) {
+            return p === prefix || p.startsWith(prefix + "/");
+          });
+        }
+
+        function hasToken() {
+          try { return !!localStorage.getItem(TOKEN_KEY); }
+          catch(_) { return false; }
+        }
+
+        function shouldRun() {
+          return isAuthRoute() && !hasToken();
+        }
+
+        var hsv = 'vec3 hsv(float h,float s,float v){vec3 c=clamp(abs(mod(h*6.+vec3(0,4,2),6.)-3.)-1.,0.,1.);return v*mix(vec3(1),c,s);}';
+        var shaders = [
+          // 0: warm fractal
+          "precision highp float;uniform float t;uniform vec2 r;" + hsv +
+          "void main(){vec2 FC=gl_FragCoord.xy;vec4 o=vec4(0);float e=0.,R=0.,s=0.;vec3 q=vec3(0,-1,-1),p=vec3(0),d=vec3((FC-.5*r)/r.y*.6+vec2(0,.9),.5);for(float i=0.;i<97.;i++){o.rgb+=hsv(.1,e,min(e*s,1.)/95.);q+=d*e*R*.4;p=q;R=max(length(p),.0001);p=vec3(log(R)-t*.5,exp(-p.z/R)+sin(t)*.07+.2,atan(p.y,p.x));p.y-=1.;e=p.y;s=5.;for(float j=0.;j<8.;j++){e+=dot(sin(p.zxx*s),vec3(.4)-cos(p.yyz*s))/s*.3;s+=s;}}gl_FragColor=vec4(o.rgb,1);}",
+          // 1: purple nebula
+          "precision highp float;uniform float t;uniform vec2 r;" + hsv +
+          "void main(){vec2 FC=gl_FragCoord.xy;vec4 o=vec4(0);float e=0.,g=0.,R=0.,s=0.;vec3 q=vec3(0,-1,-1),p=vec3(0),d=vec3((FC-.5*r)/r.y,.8);for(float i=0.;i<99.;i++){e+=i/20000.;o.rgb+=hsv(p.y,.5,e*i*.015);q+=d*e*R*.3;p=q;g+=p.z;R=max(length(p),.0001);p=vec3(log2(R)-t*.2,exp2(mod(-p.z,4.)/R)-.2,p.x);p.y-=1.;e=p.y;s=4.;for(float j=0.;j<12.;j++){e+=-abs(dot(sin(p.yzx*s),cos(p.xzy*s))/s*.5);s+=s;}}gl_FragColor=vec4(o.rgb,1);}",
+          // 2: colorful swirl
+          "precision highp float;uniform float t;uniform vec2 r;" + hsv +
+          "void main(){vec2 FC=gl_FragCoord.xy;vec4 o=vec4(0);float e=0.,g=0.,R=0.,s=0.;vec3 q=vec3(0,-1,-1),p=vec3(0),d=vec3((FC-.5*r)/r.y,1);for(float i=0.;i<99.;i++){e+=i/80000.;o.rgb+=hsv(s+.6,R+g*.3,e*i/30.);q+=d*e*R*.2;p=q;g+=p.y/5.;R=max(length(p),.0001);p=vec3(log(R)-t*.1,exp2(mod(-p.z,5.)/R)-.15,p.x);p.y-=1.;e=p.y;s=5.;for(float j=0.;j<8.;j++){e+=-abs(dot(sin(p.xzx*s),cos(p.yzz*s))/s*.8);s+=s;}}gl_FragColor=vec4(o.rgb,1);}",
+          // 3: dark fire
+          "precision highp float;uniform float t;uniform vec2 r;" + hsv +
+          "void main(){vec2 FC=gl_FragCoord.xy;vec4 o=vec4(0);float e=0.,R=0.,s=0.;vec3 q=vec3(0,-1,-1),p=vec3(0),d=vec3((FC-.5*r)/r.y+vec2(0,.9),1);for(float i=0.;i<99.;i++){o.rgb+=hsv(e*R,-.6,e/12.);q+=d*e*R*.3;p=q;R=max(length(p),.0001);p=vec3(log2(R)-t*.5,exp2(-p.z/R-.01),atan(p.y,p.x)+cos(t)*.03);p.y-=1.;e=p.y;s=1.;for(float j=0.;j<10.;j++){e+=dot(sin(p.zzy*s)-.53,vec3(.5)-sin(p.yzx*s))/s*.2;s+=s;}}gl_FragColor=vec4(o.rgb,1);}"
+        ];
+        var vsSource = "attribute vec2 p;void main(){gl_Position=vec4(p,0,1);}";
+        var shaderIdx = Math.floor(Math.random() * 3);
+
+        function ensureLayer() {
+          if (layerEl) return;
+          layerEl = document.createElement("div");
+          layerEl.id = "login-base-shader-layer";
+          canvas = document.createElement("canvas");
+          layerEl.appendChild(canvas);
+          document.body.prepend(layerEl);
+        }
+
+        function resize() {
+          if (!gl || !canvas) return;
+          canvas.width = Math.floor(window.innerWidth * 0.7);
+          canvas.height = Math.floor(window.innerHeight * 0.7);
+          gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+
+        function init() {
+          if (!canvas) return;
+          gl = canvas.getContext("webgl", {
+            alpha: false, antialias: false, depth: false,
+            stencil: false, preserveDrawingBuffer: false
+          });
+          if (!gl) { destroy(); return; }
+
+          function mk(tp, src) {
+            var s = gl.createShader(tp);
+            gl.shaderSource(s, src);
+            gl.compileShader(s);
+            return s;
+          }
+          program = gl.createProgram();
+          gl.attachShader(program, mk(gl.VERTEX_SHADER, vsSource));
+          gl.attachShader(program, mk(gl.FRAGMENT_SHADER, shaders[shaderIdx]));
+          gl.linkProgram(program);
+          gl.useProgram(program);
+
+          positionBuffer = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+          gl.bufferData(gl.ARRAY_BUFFER,
+            new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+          var a = gl.getAttribLocation(program, "p");
+          gl.enableVertexAttribArray(a);
+          gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+
+          tL = gl.getUniformLocation(program, "t");
+          rL = gl.getUniformLocation(program, "r");
+
+          resizeHandler = resize;
+          window.addEventListener("resize", resizeHandler);
+          resize();
+
+          var last = 0;
+          function frame(now) {
+            rafId = requestAnimationFrame(frame);
+            if (now - last < 20) return;
+            last = now;
+            gl.uniform1f(tL, (now * 0.001) % 3600);
+            gl.uniform2f(rL, canvas.width, canvas.height);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          }
+          rafId = requestAnimationFrame(frame);
+        }
+
+        function destroy() {
+          if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+          if (resizeHandler) {
+            window.removeEventListener("resize", resizeHandler);
+            resizeHandler = null;
+          }
+          try {
+            if (gl) {
+              if (positionBuffer) gl.deleteBuffer(positionBuffer);
+              if (program) gl.deleteProgram(program);
+            }
+          } catch(_) {}
+          positionBuffer = null; program = null; gl = null;
+          if (layerEl && layerEl.parentNode) {
+            layerEl.parentNode.removeChild(layerEl);
+          }
+          layerEl = null; canvas = null;
+        }
+
+        function sync() {
+          if (shouldRun()) {
+            if (!layerEl) { ensureLayer(); init(); }
+          } else {
+            destroy();
+          }
+        }
+
+        // SPA routing detection
+        function patchHistory(fnName) {
+          var orig = history[fnName];
+          if (typeof orig !== "function") return;
+          history[fnName] = function() {
+            var r = orig.apply(this, arguments);
+            sync();
+            return r;
+          };
+        }
+        patchHistory("pushState");
+        patchHistory("replaceState");
+        window.addEventListener("popstate", sync);
+
+        // Token change detection (other tabs)
+        window.addEventListener("storage", function(e) {
+          if (e.key === TOKEN_KEY) sync();
+        });
+
+        // Same-tab token detection: override localStorage.setItem
+        var _origSetItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function(k, v) {
+          _origSetItem.call(this, k, v);
+          if (k === TOKEN_KEY) sync();
+        };
+
+        // Polling fallback: check every 500ms (catches all edge cases)
+        var _pollId = setInterval(function() {
+          if (!shouldRun() && layerEl) { destroy(); clearInterval(_pollId); }
+          if (!isAuthRoute() && !layerEl) { clearInterval(_pollId); }
+        }, 500);
+
+        // Initial run
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", sync, { once: true });
+        } else {
+          sync();
+        }
+      })();
+    </script>
+    <!-- ===========================================================
+         (3) 로그인 폼 가독성/크기 강화 + 입력창 색상 구분
+         - /auth + 비로그인에서만 적용되고, 로그인 후 제거
+         =========================================================== -->
+    <script>
+      (function () {
+        const AUTH_PATH_PREFIXES = ["/auth"];
+        const TOKEN_KEY = "token";
+
+        let panelEl = null;
+        let targetEl = null;
+        let pollTimer = 0;
+        let resizeTimer = 0;
+        let resizeBound = false;
+
+        function isAuthRoute() {
+          const p = location.pathname || "/";
+          return AUTH_PATH_PREFIXES.some((prefix) => p === prefix || p.startsWith(prefix + "/"));
+        }
+
+        function hasToken() {
+          try {
+            return !!localStorage.getItem(TOKEN_KEY);
+          } catch (_) {
+            return false;
+          }
+        }
+
+        function shouldEnhanceLogin() {
+          return isAuthRoute() && !hasToken();
+        }
+
+        function findLoginTarget() {
+          const forms = Array.from(document.querySelectorAll("form"));
+          if (forms.length) {
+            for (const f of forms) {
+              if (f.querySelector('input[type="password"]')) return f;
+            }
+          }
+          const pw = document.querySelector('input[type="password"]');
+          if (pw) return pw.closest("form") || pw.closest("div") || pw.parentElement;
+          return null;
+        }
+
+        function ensurePanel() {
+          if (panelEl) return;
+          panelEl = document.createElement("div");
+          panelEl.id = "login-enhance-panel";
+          document.body.appendChild(panelEl);
+        }
+
+        function positionPanelToTarget() {
+          if (!panelEl || !targetEl) return;
+          const rect = targetEl.getBoundingClientRect();
+
+          if (window.innerWidth < 768) {
+            var mw = Math.floor(window.innerWidth * 0.88);
+            var mh = Math.floor(window.innerHeight * 0.80);
+            panelEl.style.cssText = 'position:fixed !important; left:50% !important; top:46vh !important; transform:translate(-50%,-50%) !important; width:' + mw + 'px !important; height:' + mh + 'px !important; padding:0 !important; border-radius:16px !important; background:rgba(255,255,255,0.3) !important; box-sizing:border-box !important; backdrop-filter:blur(10px) !important; -webkit-backdrop-filter:blur(10px) !important; z-index:40 !important; pointer-events:none !important; padding:0 !important; box-sizing:border-box !important;';
+            // 디버그: 값 표시
+            /* debug */ //var dbg = document.createElement('div');
+            //dbg.style.cssText = 'position:fixed;top:10px;left:10px;z-index:99999;background:red;color:white;padding:5px 10px;font-size:14px;pointer-events:none;';
+            //var cs = getComputedStyle(panelEl); dbg.textContent = 'cH:' + cs.height + ' cW:' + cs.width + ' cT:' + cs.top + ' css:' + panelEl.style.height;
+            //document.body.appendChild(dbg);
+            return;
+          } else {
+            const w = Math.max(420, Math.min(rect.width + 80, Math.min(860, window.innerWidth * 0.92)));
+            const h = Math.max(320, Math.min(rect.height + 60, window.innerHeight * 0.85));
+            panelEl.style.width = w + "px";
+            panelEl.style.height = h + "px";
+          }
+        }
+
+        function applyEnhancement() {
+          const t = findLoginTarget();
+          if (!t) return false;
+
+          targetEl = t;
+          ensurePanel();
+
+          if (!targetEl.classList.contains("login-enhance-target")) {
+            targetEl.classList.add("login-enhance-target");
+	    // 로그인 버튼(하단)을 gradient 스타일로 지정
+	    const loginBtn =
+	      targetEl.querySelector('button[type="submit"]') ||
+	      Array.from(targetEl.querySelectorAll("button")).find((b) => (b.textContent || "").includes("로그인"));
+
+    	    if (loginBtn) {
+	      loginBtn.classList.add("login-gradient-button");
+	      // 로그인 버튼 아래 비밀번호 문의 안내
+	      if (!document.getElementById('pw-inquiry-note')) {
+	        var noteEl = document.createElement('div');
+	        noteEl.id = 'pw-inquiry-note';
+	        noteEl.style.cssText = 'text-align:center;margin-top:10px;font-size:0.85em;color:#000000;font-weight:500;font-family:"Noto Sans KR",sans-serif;';
+	        noteEl.textContent = '* 비밀번호 문의 : 행정정보과(063-280-2162)';
+	        loginBtn.parentNode.insertBefore(noteEl, loginBtn.nextSibling);
+
+	        // 비밀번호 초기화 문자발송 버튼
+	        var resetBtn = document.createElement('button');
+	        resetBtn.id = 'pw-reset-btn';
+	        resetBtn.type = 'button';
+	        resetBtn.textContent = '비밀번호 초기화';
+	        resetBtn.style.cssText = 'display:block;margin:4px auto 0;padding:8px 20px;font-size:0.85em;font-weight:600;font-family:"Noto Sans KR",sans-serif;color:#fff;background:linear-gradient(135deg,#6366f1,#8b5cf6);border:none;border-radius:8px;cursor:pointer;transition:opacity 0.2s;';
+	        resetBtn.onmouseenter = function(){ this.style.opacity='0.85'; };
+	        resetBtn.onmouseleave = function(){ this.style.opacity='1'; };
+	        resetBtn.onclick = function(e){ e.preventDefault(); e.stopPropagation(); showPwResetModal(); };
+	        noteEl.parentNode.insertBefore(resetBtn, noteEl.nextSibling);
+
+	        // PC: 버전 텍스트
+	        if (window.innerWidth >= 768 && !document.getElementById('login-version')) {
+	          var verEl = document.createElement('div');
+	          verEl.id = 'login-version';
+	          verEl.style.cssText = 'text-align:center;margin-top:16px;font-size:0.75em;color:rgba(0,0,0,0.35);font-family:"Noto Sans KR",sans-serif;';
+	          verEl.textContent = '전북특별자치도 \u00B7 v0.8.10 (v99)';
+	          resetBtn.parentNode.insertBefore(verEl, resetBtn.nextSibling);
+	        }
+	      }
+
+	      // 비밀번호 초기화 모달
+	      function showPwResetModal() {
+	        if (document.getElementById('pw-reset-overlay')) return;
+	        var overlay = document.createElement('div');
+	        overlay.id = 'pw-reset-overlay';
+	        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+	        overlay.onclick = function(e){ if(e.target===overlay) overlay.remove(); };
+
+	        var modal = document.createElement('div');
+	        modal.style.cssText = 'background:#fff;border-radius:16px;padding:32px;width:380px;max-width:90vw;box-shadow:0 20px 60px rgba(0,0,0,0.3);font-family:"Noto Sans KR",sans-serif;';
+	        modal.innerHTML =
+	          '<h3 style="margin:0 0 8px;font-size:1.15em;color:#1e1b4b;">비밀번호 초기화</h3>' +
+	          '<p style="margin:0 0 20px;font-size:0.85em;color:#64748b;line-height:1.5;">이메일을 입력하시면 등록된 휴대폰으로<br>새 비밀번호가 문자 발송됩니다.</p>' +
+	          '<input id="pw-reset-email" type="email" placeholder="이메일 (@mail.go.kr)" ' +
+	            'style="width:100%;padding:12px 14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:0.95em;box-sizing:border-box;outline:none;transition:border-color 0.2s;font-family:inherit;" ' +
+	            'onfocus="this.style.borderColor=\'#8b5cf6\'" onblur="this.style.borderColor=\'#e2e8f0\'" />' +
+	          '<div id="pw-reset-msg" style="margin-top:12px;font-size:0.85em;min-height:20px;"></div>' +
+	          '<div style="display:flex;gap:10px;margin-top:16px;">' +
+	            '<button id="pw-reset-cancel" type="button" style="flex:1;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;color:#64748b;font-size:0.9em;font-weight:600;cursor:pointer;font-family:inherit;">취소</button>' +
+	            '<button id="pw-reset-submit" type="button" style="flex:1;padding:10px;border:none;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:0.9em;font-weight:600;cursor:pointer;font-family:inherit;">초기화 요청</button>' +
+	          '</div>';
+	        overlay.appendChild(modal);
+	        document.body.appendChild(overlay);
+
+	        var emailInput = document.getElementById('pw-reset-email');
+	        var msgDiv = document.getElementById('pw-reset-msg');
+	        var submitBtn = document.getElementById('pw-reset-submit');
+
+	        document.getElementById('pw-reset-cancel').onclick = function(){ overlay.remove(); };
+	        emailInput.addEventListener('keydown', function(e){ if(e.key==='Enter') submitBtn.click(); });
+
+	        submitBtn.onclick = function(){
+	          var email = emailInput.value.trim().toLowerCase();
+	          if (!email) { msgDiv.innerHTML='<span style="color:#ef4444;">이메일을 입력하세요.</span>'; return; }
+	          if (!email.endsWith('@mail.go.kr')) { msgDiv.innerHTML='<span style="color:#ef4444;">@mail.go.kr 메일만 가능합니다.</span>'; return; }
+
+	          submitBtn.disabled = true;
+	          submitBtn.textContent = '처리중...';
+	          submitBtn.style.opacity = '0.6';
+	          msgDiv.innerHTML = '<span style="color:#64748b;">비밀번호 초기화 중...</span>';
+
+	          fetch('/api/pw-reset/reset', {
+	            method: 'POST',
+	            headers: {'Content-Type':'application/json'},
+	            body: JSON.stringify({email: email})
+	          })
+	          .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, data:d}; }); })
+	          .then(function(res){
+	            if (res.ok && res.data.success) {
+	              var smsNote = res.data.sms_sent
+	                ? '새 비밀번호가 ' + res.data.masked_phone + '로 발송되었습니다.'
+	                : res.data.masked_phone + '로 문자가 발송될 예정입니다.<br>잠시 후 행정정보과에서 안내드립니다.';
+	              msgDiv.innerHTML = '<span style="color:#059669;">' + res.data.message + '</span><br><span style="font-size:0.9em;color:#64748b;margin-top:4px;display:inline-block;">' + smsNote + '</span>';
+	              submitBtn.textContent = '완료';
+	            } else {
+	              var errMsg = res.data.detail || res.data.message || '오류가 발생했습니다.';
+	              msgDiv.innerHTML = '<span style="color:#ef4444;">' + errMsg + '</span>';
+	              submitBtn.disabled = false;
+	              submitBtn.textContent = '초기화 요청';
+	              submitBtn.style.opacity = '1';
+	            }
+	          })
+	          .catch(function(){
+	            msgDiv.innerHTML = '<span style="color:#ef4444;">서버 연결 오류. 잠시 후 다시 시도하세요.</span>';
+	            submitBtn.disabled = false;
+	            submitBtn.textContent = '초기화 요청';
+	            submitBtn.style.opacity = '1';
+	          });
+	        };
+
+	        emailInput.focus();
+	      }
+	    }
+
+            // 이메일 라벨 + placeholder만 변경
+            var _fixCount = 0;
+            var _fixTimer = setInterval(function() {
+              var form = document.querySelector('form');
+              if (!form) { _fixCount++; if (_fixCount > 60) clearInterval(_fixTimer); return; }
+              var inputs = form.querySelectorAll('input');
+              if (inputs.length > 0 && !inputs[0].dataset.emailHinted) {
+                inputs[0].placeholder = '이메일 (@mail.go.kr 등)';
+                inputs[0].dataset.emailHinted = '1';
+              }
+              var labels = form.querySelectorAll('label');
+              for (var li = 0; li < labels.length; li++) {
+                if (labels[li].textContent.trim() === '이메일' && !labels[li].dataset.labelFixed) {
+                  labels[li].innerHTML = '이메일 <span style="font-size:0.8em;opacity:0.7">(@mail.go.kr 등)</span>';
+                  labels[li].dataset.labelFixed = '1';
+                }
+              }
+              if (inputs.length > 0) clearInterval(_fixTimer);
+              _fixCount++;
+              if (_fixCount > 60) clearInterval(_fixTimer);
+            }, 300);
+
+            // Svelte style 변경 감시
+            const wrapper = targetEl.parentElement;
+            if (wrapper) wrapper.style.overflow = "visible";
+          }
+
+
+
+		// ===== 로그인 제목 텍스트 교체 + 흰색/검정 glow =====
+		(function replaceLoginTitle() {
+		  const allEls = Array.from(targetEl.querySelectorAll("h1,h2,h3,.text-2xl,.text-xl"));
+		  let titleEl = null;
+
+		  for (const el of allEls) {
+		    const txt = (el.textContent || "").trim();
+		    if (el.classList.contains("text-2xl") || el.classList.contains("text-xl")) {
+		      titleEl = el; break;
+		    }
+		    if ((txt.includes("생성형") || txt.includes("로그인") || txt.includes("Sign")) && txt.length < 60) {
+		      titleEl = el; break;
+		    }
+		  }
+
+		  if (titleEl) {
+		    titleEl.textContent = window.innerWidth < 500 ? "전북AI" : "전북도 생성형 AI 로그인";
+		    titleEl.classList.add("login-title-enhanced");
+		    titleEl.style.color = "#ffffff";
+		    titleEl.style.textShadow = "0 0 8px rgba(0,0,0,0.8), 0 0 16px rgba(0,0,0,0.5), 0 0 32px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.6)";
+		    titleEl.style.fontWeight = "400";
+		    titleEl.style.letterSpacing = "-0.02em";
+		    titleEl.style.fontSize = "1.8em";
+		    if (window.innerWidth < 768) {
+		      titleEl.style.marginTop = '12px';
+		      // 모바일 버전 텍스트
+		      if (!document.getElementById('login-version-m')) {
+		        var verM = document.createElement('div');
+		        verM.id = 'login-version-m';
+		        verM.style.cssText = 'text-align:center;margin-top:4px;margin-bottom:0;padding-bottom:0;font-size:0.7em;color:#333;';
+		        verM.textContent = '전북특별자치도 \u00B7 v0.8.10';
+		        var pwBtn = document.getElementById('pw-reset-btn');
+		        if (pwBtn) pwBtn.parentNode.insertBefore(verM, pwBtn.nextSibling);
+		      }
+		    } else {
+		      titleEl.style.marginTop = '32px';
+		    }
+		  }
+		})();
+
+
+
+
+
+          positionPanelToTarget();
+          return true;
+        }
+
+        function removeEnhancement() {
+          if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = 0;
+          }
+          if (resizeTimer) {
+            clearTimeout(resizeTimer);
+            resizeTimer = 0;
+          }
+
+          if (targetEl) {
+            targetEl.classList.remove("login-enhance-target");
+            targetEl = null;
+          }
+
+          if (panelEl && panelEl.parentNode) {
+            panelEl.parentNode.removeChild(panelEl);
+          }
+          panelEl = null;
+        }
+
+        function bindResizeOnce() {
+          if (resizeBound) return;
+          resizeBound = true;
+          window.addEventListener(
+            "resize",
+            () => {
+              if (!panelEl || !targetEl) return;
+              clearTimeout(resizeTimer);
+              resizeTimer = setTimeout(positionPanelToTarget, 60);
+            },
+            { passive: true }
+          );
+        }
+
+        function sync() {
+          if (!shouldEnhanceLogin()) {
+            removeEnhancement();
+            return;
+          }
+
+          bindResizeOnce();
+
+          if (!pollTimer) {
+            pollTimer = setInterval(() => {
+              if (!shouldEnhanceLogin()) {
+                removeEnhancement();
+                return;
+              }
+              const ok = applyEnhancement();
+              if (ok) {
+                setTimeout(positionPanelToTarget, 150);
+                setTimeout(positionPanelToTarget, 500);
+              }
+            }, 200);
+          }
+
+          applyEnhancement();
+        }
+
+        function patchHistory(fnName) {
+          const orig = history[fnName];
+          if (typeof orig !== "function") return;
+          history[fnName] = function () {
+            const ret = orig.apply(this, arguments);
+            setTimeout(sync, 0);
+            return ret;
+          };
+        }
+        patchHistory("pushState");
+        patchHistory("replaceState");
+        window.addEventListener("popstate", () => setTimeout(sync, 0), { passive: true });
+
+        window.addEventListener("storage", () => sync(), { passive: true });
+        let lastToken = null;
+        setInterval(() => {
+          const tk = hasToken();
+          if (tk !== lastToken) {
+            lastToken = tk;
+            sync();
+          }
+        }, 500);
+
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", sync, { once: true });
+        } else {
+          sync();
+        }
+      })();
+    </script>
+  </body>
+
+  <style type="text/css" nonce="">
+    html {
+      overflow-y: hidden !important;
+      overscroll-behavior-y: none;
+    }
+
+    #splash-screen {
+      background: #fff;
+    }
+
+    html.dark #splash-screen {
+      background: #000;
+    }
+
+    html.her #splash-screen {
+      background: #983724;
+    }
+
+    #logo-her {
+      display: none;
+    }
+
+    #progress-background {
+      display: none;
+    }
+
+    #progress-bar {
+      display: none;
+    }
+
+    html.her #logo {
+      display: none;
+    }
+
+    html.her #logo-her {
+      display: block;
+      filter: invert(1);
+    }
+
+    html.her #progress-background {
+      display: block;
+    }
+
+    html.her #progress-bar {
+      display: block;
+    }
+
+    @media (max-width: 24rem) {
+      html.her #progress-background {
+        display: none;
+      }
+
+      html.her #progress-bar {
+        display: none;
+      }
+    }
+
+    @keyframes pulse {
+      50% {
+        opacity: 0.65;
+      }
+    }
+
+    .animate-pulse-fast {
+      animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    /* ===========================================================
+       (A) 기본 배경 셰이더 레이어: 가장 아래
+       =========================================================== */
+    #login-base-shader-layer {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    #login-base-shader-layer canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #000;
+    }
+
+    /* ===========================================================
+       (B) 기존 물결 셰이더 레이어: 그 위
+       =========================================================== */
+
+    /* ===========================================================
+       (C) 로그인 폼: 크기/가독성 강화 + 밝은 카드
+       =========================================================== */
+    #login-enhance-panel {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: min(720px, 92vw);
+      padding: 42px 28px 28px;
+      border-radius: 22px;
+
+      background: rgba(255, 255, 255, 0.4);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.45);
+
+      z-index: 40;
+      pointer-events: none;
+    }
+
+/* 📱 모바일 전용 */
+@media (max-width: 768px) {
+  .login-enhance-target > div:first-child,
+  .login-enhance-target > div:first-child > div:first-child {
+    padding-top: 4px !important;
+    margin-top: 0 !important;
+  }
+  .login-title-enhanced {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+  }
+  /* 모바일 배경은 JS에서 처리 */
+}
+
+@media (max-width: 320px) {
+  #login-enhance-panel::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -40px;
+    height: 40px;
+
+    background: linear-gradient(
+      to bottom,
+      rgba(200, 210, 220, 0.9),
+      rgba(200, 210, 220, 0.0)
+    );
+
+    pointer-events: none;
+  }
+}
+
+
+    .login-enhance-target {
+      position: relative;
+      z-index: 41;
+      font-size: 120%;
+      line-height: 1.20;
+    }
+
+    .login-enhance-target input,
+    .login-enhance-target button,
+    .login-enhance-target select,
+    .login-enhance-target textarea {
+      font-size: 1em !important;
+    }
+
+    .login-enhance-target input,
+    .login-enhance-target select,
+    .login-enhance-target textarea {
+      padding-top: 0.3em !important;
+      padding-bottom: 0.3em !important;
+      border-radius: 6px !important;
+    }
+
+    .login-enhance-target button {
+      padding-top: 0.5em !important;
+      padding-bottom: 0.5em !important;
+      border-radius: 7px !important;
+    }
+
+    /* 입력창 색상 구분(이메일/비밀번호) */
+    .login-enhance-target input[type="email"],
+    .login-enhance-target input[name*="email"] {
+      background-color: #f0f7ff !important;
+      border: 1px solid #4f8cff !important;
+      color: #0b1f44 !important;
+    }
+
+    .login-enhance-target input[type="password"] {
+      background-color: #fff4f4 !important;
+      border: 1px solid #ff6b6b !important;
+      color: #3b0b0b !important;
+    }
+
+    .login-enhance-target input[type="email"]:focus {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.25);
+    }
+
+    .login-enhance-target input[type="password"]:focus {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.25);
+    }
+
+	/* 입력창 텍스트/placeholder 왼쪽 여백(한 칸) */
+	.login-enhance-target input[type="email"],
+	.login-enhance-target input[type="password"] {
+	  padding-left: 0.9em !important;  /* 원하는 만큼: 0.8~1.1em */
+	}
+
+	/* placeholder도 자연스럽게 */
+	.login-enhance-target input[type="email"]::placeholder,
+	.login-enhance-target input[type="password"]::placeholder {
+	  padding-left: 0.0em; /* placeholder는 input padding을 따라가므로 보통 0으로 둬도 OK */
+	}
+
+/* ===== 로그인 버튼: gradient-button 스타일 이식 (index.html용) ===== */
+
+/* CSS Houdini @property는 지원 브라우저에서만 동작.
+   미지원 브라우저에서도 기본 그라데이션은 표시됨. */
+@property --pos-x {
+  syntax: "<percentage>";
+  initial-value: 11.14%;
+  inherits: false;
+}
+@property --pos-y {
+  syntax: "<percentage>";
+  initial-value: 140%;
+  inherits: false;
+}
+@property --spread-x {
+  syntax: "<percentage>";
+  initial-value: 150%;
+  inherits: false;
+}
+@property --spread-y {
+  syntax: "<percentage>";
+  initial-value: 180.06%;
+  inherits: false;
+}
+@property --color-1 {
+  syntax: "<color>";
+  initial-value: #000;
+  inherits: false;
+}
+@property --color-2 {
+  syntax: "<color>";
+  initial-value: #000022;
+  inherits: false;
+}
+@property --color-3 {
+  syntax: "<color>";
+  initial-value: #1f3f6d;
+  inherits: false;
+}
+@property --color-4 {
+  syntax: "<color>";
+  initial-value: #469396;
+  inherits: false;
+}
+@property --color-5 {
+  syntax: "<color>";
+  initial-value: #f1ffa5;
+  inherits: false;
+}
+@property --border-angle {
+  syntax: "<angle>";
+  initial-value: 200deg;
+  inherits: true;
+}
+@property --border-color-1 {
+  syntax: "<color>";
+  initial-value: hsla(320, 75%, 90%, 0.6);
+  inherits: true;
+}
+@property --border-color-2 {
+  syntax: "<color>";
+  initial-value: hsla(320, 50%, 90%, 0.15);
+  inherits: true;
+}
+@property --stop-1 {
+  syntax: "<percentage>";
+  initial-value: 37.35%;
+  inherits: false;
+}
+@property --stop-2 {
+  syntax: "<percentage>";
+  initial-value: 61.36%;
+  inherits: false;
+}
+@property --stop-3 {
+  syntax: "<percentage>";
+  initial-value: 78.42%;
+  inherits: false;
+}
+@property --stop-4 {
+  syntax: "<percentage>";
+  initial-value: 89.52%;
+  inherits: false;
+}
+@property --stop-5 {
+  syntax: "<percentage>";
+  initial-value: 100%;
+  inherits: false;
+}
+
+/* 로그인 폼 영역에서만 적용 */
+.login-enhance-target .login-gradient-button {
+  /* 원본 컴포넌트의 tailwind class를 CSS로 이식 */
+  position: relative;
+  appearance: none;
+  cursor: pointer;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border: none;
+  border-radius: 11px;
+
+  min-width: 132px;
+  padding: 1rem 2.25rem; /* px-9 py-4 근사 */
+
+  font-size: 1rem;
+  line-height: 19px;
+  font-weight: 700;
+  color: #fff;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+
+  /* 버튼을 카드 폭에 맞게(원래 OWI 로그인 버튼은 넓음) */
+  width: 100%;
+
+  background: radial-gradient(
+    var(--spread-x) var(--spread-y) at var(--pos-x) var(--pos-y),
+    var(--color-1) var(--stop-1),
+    var(--color-2) var(--stop-2),
+    var(--color-3) var(--stop-3),
+    var(--color-4) var(--stop-4),
+    var(--color-5) var(--stop-5)
+  );
+
+  transition:
+    --pos-x 0.5s,
+    --pos-y 0.5s,
+    --spread-x 0.5s,
+    --spread-y 0.5s,
+    --color-1 0.5s,
+    --color-2 0.5s,
+    --color-3 0.5s,
+    --color-4 0.5s,
+    --color-5 0.5s,
+    --border-angle 0.5s,
+    --border-color-1 0.5s,
+    --border-color-2 0.5s,
+    --stop-1 0.5s,
+    --stop-2 0.5s,
+    --stop-3 0.5s,
+    --stop-4 0.5s,
+    --stop-5 0.5s;
+
+  /* 기존 회색 버튼 느낌 제거 */
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+/* 외곽 그라데이션 보더 */
+.login-enhance-target .login-gradient-button::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+
+  background: linear-gradient(var(--border-angle), var(--border-color-1), var(--border-color-2));
+
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+
+  pointer-events: none;
+}
+
+/* hover */
+.login-enhance-target .login-gradient-button:hover {
+  --pos-x: 0%;
+  --pos-y: 95.51%;
+  --spread-x: 110.24%;
+  --spread-y: 110.2%;
+  --color-1: #000020;
+  --color-2: #f1ffa5;
+  --color-3: #469396;
+  --color-4: #1f3f6d;
+  --color-5: #000;
+  --stop-1: 0%;
+  --stop-2: 10%;
+  --stop-3: 35.44%;
+  --stop-4: 71.34%;
+  --stop-5: 90.76%;
+  --border-angle: 210deg;
+  --border-color-1: hsla(320, 75%, 90%, 0.2);
+  --border-color-2: hsla(320, 50%, 90%, 0.75);
+}
+
+/* focus-visible */
+.login-enhance-target .login-gradient-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(79, 140, 255, 0.25);
+}
+
+/* disabled */
+.login-enhance-target .login-gradient-button:disabled {
+  pointer-events: none;
+  opacity: 0.55 !important;
+}
+
+
+/* 로그인 제목 디자인(확실 적용) */
+.login-enhance-target .login-title-enhanced {
+  font-weight: 800 !important;
+  letter-spacing: -0.02em;
+  text-align: center;
+  font-size: 1.2em;   /* 기존보다 살짝 */
+
+  color: #ffffff; /* 글씨는 순수 흰색 */
+
+  /* 검은 그라데이션 느낌의 외곽 음영 */
+  text-shadow:
+    -1px -1px 2px rgba(0,0,0,0.35),
+     1px -1px 2px rgba(0,0,0,0.35),
+    -1px  1px 2px rgba(0,0,0,0.35),
+     1px  1px 2px rgba(0,0,0,0.35),
+     0  4px 10px rgba(0,0,0,0.3);
+  margin-bottom: 0.6em;
+}
+
+/* 제목 아래 포인트 라인(선택이지만 추천) */
+.login-enhance-target .login-title-enhanced::after {
+  content: "";
+  display: block;
+  width: min(340px, 85%);
+  height: 2px;
+  margin: 10px auto 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #1f6fff, #38bdf8);
+  opacity: 0.9;
+}
+
+
+/* 모바일 패널 크기는 JS에서 처리 */
+
+
+@media (max-width: 480px) {
+  html { overflow-y: auto !important; overscroll-behavior-y: auto; }
+  body { min-height: 100dvh; }
+  #login-base-shader-layer,
+}
+
+
+  </style>
+</html>
+
+

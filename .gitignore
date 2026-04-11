@@ -1,16 +1,58 @@
-__pycache__
-.env
-_old
-uploads
-.ipynb_checkpoints
-*.db
-_test
-Pipfile
-!/data
-/data/*
-/open_webui/data/*
-.webui_secret_key
-.venv/
+# System directories
+bin
+bin.usr-is-merged
+boot
+dev
+etc
+home
+lib
+lib64
+lib.usr-is-merged
+media
+mnt
+opt
+proc
+root
+run
+sbin
+sbin.usr-is-merged
+srv
+sys
+tmp
+usr
+var
+
+# Docker
+.dockerenv
+
+# Environment / secrets
+app/.env
+app/backend/.env
+
+# Python
+__pycache__/
 *.pyc
-*.jar
 *.egg-info/
+app/backend/.venv/
+
+# Data (runtime)
+data/pg/
+data/dev/
+data/owi/
+data/redis/
+
+# IDE / editor
+.vscode-server/
+.claude/
+
+# App specific
+app/backend/_old
+app/backend/uploads
+app/backend/_test
+app/backend/Pipfile
+app/backend/.webui_secret_key
+app/backend/open_webui/data/*
+*.db
+.ipynb_checkpoints
+*.jar
+data/sprinter_config_dump.sql
