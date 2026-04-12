@@ -580,6 +580,113 @@ async def speech(request: Request, user=Depends(get_verified_user)):
 
         return FileResponse(file_path)
 
+    elif request.app.state.config.TTS_ENGINE == "qwen":
+        # Qwen3-TTS 로컬 추론 (Qwen/Qwen3-TTS-12Hz-1.7B 등)
+        # 최초 호출 시 모델 로딩으로 시간이 걸릴 수 있음 (수십 초).
+        payload = None
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+        try:
+            import soundfile as sf
+
+            # 모델 lazy-load 후 app.state에 캐시
+            if getattr(request.app.state, "qwen_tts_pipeline", None) is None:
+                try:
+                    from transformers import pipeline
+                except ImportError:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="transformers 패키지가 설치되지 않아 Qwen3-TTS를 사용할 수 없습니다.",
+                    )
+                try:
+                    import torch
+                    device = 0 if torch.cuda.is_available() else -1
+                except Exception:
+                    device = -1
+
+                model_name = getattr(
+                    request.app.state.config,
+                    "AUDIO_TTS_QWEN_MODEL",
+                    "Qwen/Qwen3-TTS-12Hz-1.7B",
+                )
+                log.info(
+                    f"Loading Qwen3-TTS model: {model_name} on device={device}"
+                )
+                try:
+                    request.app.state.qwen_tts_pipeline = pipeline(
+                        task="text-to-speech",
+                        model=model_name,
+                        device=device,
+                    )
+                except Exception as load_err:
+                    log.exception(f"Qwen3-TTS load failed: {load_err}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Qwen3-TTS 모델 로딩 실패: {load_err}",
+                    )
+
+            pipe = request.app.state.qwen_tts_pipeline
+            text_input = payload.get("input", "")
+            if not text_input:
+                raise HTTPException(
+                    status_code=400, detail="TTS 입력 텍스트가 비어 있습니다."
+                )
+
+            voice = payload.get("voice") or getattr(
+                request.app.state.config, "AUDIO_TTS_QWEN_VOICE", ""
+            )
+
+            forward_params = {}
+            if voice:
+                forward_params["voice"] = voice
+
+            try:
+                if forward_params:
+                    result = pipe(text_input, forward_params=forward_params)
+                else:
+                    result = pipe(text_input)
+            except TypeError:
+                result = pipe(text_input)
+
+            audio_array = None
+            sampling_rate = 24000
+            if isinstance(result, dict):
+                audio_array = result.get("audio")
+                sampling_rate = result.get("sampling_rate", sampling_rate)
+            elif isinstance(result, list) and result:
+                first = result[0]
+                if isinstance(first, dict):
+                    audio_array = first.get("audio")
+                    sampling_rate = first.get("sampling_rate", sampling_rate)
+
+            if audio_array is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Qwen3-TTS가 오디오를 생성하지 못했습니다.",
+                )
+
+            # wav로 저장 후 mp3 변환 불필요 — 기존 speech() 캐시는 .mp3 확장자 전제이므로
+            # wav로 저장하고 확장자를 유지한다. (FileResponse는 media_type 자동 추론)
+            wav_path = str(file_path).replace(".mp3", ".wav")
+            sf.write(wav_path, audio_array, samplerate=sampling_rate)
+
+            async with aiofiles.open(file_body_path, "w") as f:
+                await f.write(json.dumps(payload))
+
+            return FileResponse(wav_path, media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as e:
+            log.exception(f"Qwen3-TTS failed: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Qwen3-TTS 오류: {str(e)}",
+            )
+
 
 def transcription_handler(request, file_path, metadata, user=None):
     filename = os.path.basename(file_path)
@@ -1063,6 +1170,76 @@ def transcription_handler(request, file_path, metadata, user=None):
             raise HTTPException(
                 status_code=getattr(r, "status_code", 500) if r else 500,
                 detail=detail if detail else "Open WebUI: Server Connection Error",
+            )
+
+    elif request.app.state.config.STT_ENGINE == "cohere":
+        # Cohere Transcribe (cohere-transcribe-03-2026)
+        # 로컬 HuggingFace transformers 파이프라인으로 추론.
+        # 모델이 크므로(2B) 최초 호출 시 로딩에 수십 초가 걸릴 수 있다.
+        try:
+            if getattr(request.app.state, "cohere_transcribe_pipeline", None) is None:
+                from transformers import pipeline
+
+                model_name = getattr(
+                    request.app.state.config,
+                    "AUDIO_STT_COHERE_MODEL",
+                    "CohereLabs/cohere-transcribe-03-2026",
+                )
+                device = getattr(request.app.state, "stt_device", None)
+                if device is None:
+                    try:
+                        import torch
+
+                        device = 0 if torch.cuda.is_available() else -1
+                    except Exception:
+                        device = -1
+
+                log.info(
+                    f"Loading Cohere Transcribe model: {model_name} on device={device}"
+                )
+                request.app.state.cohere_transcribe_pipeline = pipeline(
+                    task="automatic-speech-recognition",
+                    model=model_name,
+                    device=device,
+                )
+
+            pipe = request.app.state.cohere_transcribe_pipeline
+            lang = getattr(
+                request.app.state.config, "AUDIO_STT_COHERE_LANGUAGE", "korean"
+            )
+
+            generate_kwargs = {}
+            # Whisper 계열과 동일한 generate_kwargs 힌트 (모델이 지원할 때)
+            if lang:
+                generate_kwargs["language"] = lang
+            generate_kwargs["task"] = "transcribe"
+
+            try:
+                result = pipe(
+                    file_path,
+                    generate_kwargs=generate_kwargs if generate_kwargs else None,
+                    return_timestamps=False,
+                )
+            except TypeError:
+                # 일부 파이프라인은 generate_kwargs를 받지 않음
+                result = pipe(file_path)
+
+            transcript = (
+                result.get("text", "") if isinstance(result, dict) else str(result)
+            )
+            data = {"text": transcript.strip()}
+
+            transcript_file = f"{file_dir}/{id}.json"
+            with open(transcript_file, "w") as f:
+                json.dump(data, f)
+
+            log.debug(data)
+            return data
+        except Exception as e:
+            log.exception(f"Cohere Transcribe failed: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Cohere Transcribe 오류: {str(e)}",
             )
 
 

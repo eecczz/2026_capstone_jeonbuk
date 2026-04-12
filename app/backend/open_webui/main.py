@@ -99,6 +99,8 @@ from open_webui.routers import (
     scim,
     usage,
     terminals,
+    public_chatbot,
+    crawler,
 )
 
 from open_webui.routers.retrieval import (
@@ -706,10 +708,167 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning(f"Failed to initialize tool/terminal servers at startup: {e}")
 
+    # ─────────────── 홈페이지 크롤러 스케줄러 등록 ───────────────
+    # uvicorn --workers N 으로 여러 프로세스가 돌 때, lifespan이 워커마다 실행된다.
+    # 스케줄러가 워커 수만큼 중복 생성되는 것을 막기 위해 파일 락 기반
+    # leader election 을 사용한다. 락을 획득한 워커 1개만 스케줄러를 시작.
+    # 워커 프로세스가 죽으면 OS가 파일 락을 자동 해제 → 다음 재시작 때 리더 교체.
+    if getattr(app.state.config, "CRAWLER_ENABLED", False):
+        import os as _os
+
+        crawler_lock_path = _os.environ.get(
+            "CRAWLER_SCHEDULER_LOCK_PATH", "/tmp/jeonbuk_crawler_scheduler.lock"
+        )
+        crawler_lock_fd = None
+        try:
+            # POSIX 파일 락 (fcntl). Windows에서는 msvcrt.locking() 써야 하지만
+            # 운영 환경이 Linux이므로 fcntl 로 충분.
+            import fcntl as _fcntl
+
+            crawler_lock_fd = _os.open(
+                crawler_lock_path,
+                _os.O_CREAT | _os.O_RDWR,
+                0o644,
+            )
+            _fcntl.flock(crawler_lock_fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            # 락 획득 성공 → 이 워커가 leader
+            _os.write(crawler_lock_fd, f"{_os.getpid()}\n".encode())
+            app.state.crawler_scheduler_is_leader = True
+            log.info(
+                f"Crawler scheduler: this worker (pid={_os.getpid()}) is the leader"
+            )
+        except BlockingIOError:
+            # 다른 워커가 이미 락을 잡고 있음 → 이 워커는 스케줄러 등록 스킵
+            app.state.crawler_scheduler_is_leader = False
+            if crawler_lock_fd is not None:
+                try:
+                    _os.close(crawler_lock_fd)
+                except Exception:
+                    pass
+                crawler_lock_fd = None
+            log.info(
+                f"Crawler scheduler: another worker holds the lock, pid={_os.getpid()} is follower (scheduler will not start here)"
+            )
+        except Exception as e:
+            app.state.crawler_scheduler_is_leader = False
+            if crawler_lock_fd is not None:
+                try:
+                    _os.close(crawler_lock_fd)
+                except Exception:
+                    pass
+                crawler_lock_fd = None
+            log.warning(
+                f"Crawler scheduler lock acquisition failed (non-fatal, follower mode): {e}"
+            )
+
+        # 락 파일 descriptor를 app.state에 보관 (shutdown 때 close)
+        if crawler_lock_fd is not None:
+            app.state.crawler_scheduler_lock_fd = crawler_lock_fd
+
+    if getattr(app.state.config, "CRAWLER_ENABLED", False) and getattr(
+        app.state, "crawler_scheduler_is_leader", False
+    ):
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.cron import CronTrigger
+
+            from open_webui.tasks.crawler import (
+                run_incremental_crawl,
+                run_full_crawl,
+            )
+
+            # 배치 실행 시 사용할 mock request (위 pre-fetch 패턴과 동일)
+            def _build_crawler_request():
+                return Request(
+                    {
+                        "type": "http",
+                        "asgi.version": "3.0",
+                        "asgi.spec_version": "2.0",
+                        "method": "GET",
+                        "path": "/internal/crawler",
+                        "query_string": b"",
+                        "headers": Headers({}).raw,
+                        "client": ("127.0.0.1", 12345),
+                        "server": ("127.0.0.1", 80),
+                        "scheme": "http",
+                        "app": app,
+                    }
+                )
+
+            async def _scheduled_incremental():
+                try:
+                    await run_incremental_crawl(_build_crawler_request())
+                except Exception as e:
+                    log.exception(f"scheduled incremental crawl failed: {e}")
+
+            async def _scheduled_full():
+                try:
+                    await run_full_crawl(_build_crawler_request())
+                except Exception as e:
+                    log.exception(f"scheduled full crawl failed: {e}")
+
+            tz = getattr(app.state.config, "CRAWLER_TIMEZONE", "Asia/Seoul")
+            scheduler = AsyncIOScheduler(timezone=tz)
+
+            daily_hour = int(getattr(app.state.config, "CRAWLER_DAILY_HOUR", 2))
+            scheduler.add_job(
+                _scheduled_incremental,
+                trigger=CronTrigger(hour=daily_hour, minute=0),
+                id="daily_incremental_crawl",
+                replace_existing=True,
+                max_instances=1,
+                misfire_grace_time=3600,
+            )
+
+            if getattr(app.state.config, "CRAWLER_WEEKLY_FULL_ENABLED", False):
+                weekly_day = getattr(
+                    app.state.config, "CRAWLER_WEEKLY_FULL_DAY", "sun"
+                )
+                weekly_hour = int(
+                    getattr(app.state.config, "CRAWLER_WEEKLY_FULL_HOUR", 3)
+                )
+                scheduler.add_job(
+                    _scheduled_full,
+                    trigger=CronTrigger(
+                        day_of_week=weekly_day, hour=weekly_hour, minute=0
+                    ),
+                    id="weekly_full_crawl",
+                    replace_existing=True,
+                    max_instances=1,
+                    misfire_grace_time=3600,
+                )
+
+            scheduler.start()
+            app.state.crawler_scheduler = scheduler
+            log.info(
+                f"Crawler scheduler started: daily@{daily_hour}:00 {tz}, "
+                f"weekly_full={getattr(app.state.config, 'CRAWLER_WEEKLY_FULL_ENABLED', False)}"
+            )
+        except Exception as e:
+            log.exception(f"Failed to start crawler scheduler: {e}")
+
     yield
 
     if hasattr(app.state, "redis_task_command_listener"):
         app.state.redis_task_command_listener.cancel()
+
+    if hasattr(app.state, "crawler_scheduler"):
+        try:
+            app.state.crawler_scheduler.shutdown(wait=False)
+            log.info("Crawler scheduler shutdown")
+        except Exception as e:
+            log.warning(f"Crawler scheduler shutdown failed: {e}")
+
+    if hasattr(app.state, "crawler_scheduler_lock_fd"):
+        try:
+            import os as _os
+            import fcntl as _fcntl
+
+            _fcntl.flock(app.state.crawler_scheduler_lock_fd, _fcntl.LOCK_UN)
+            _os.close(app.state.crawler_scheduler_lock_fd)
+            log.info("Crawler scheduler lock released")
+        except Exception as e:
+            log.warning(f"Crawler scheduler lock release failed: {e}")
 
 
 app = FastAPI(
@@ -1351,6 +1510,61 @@ app.state.config.VOICE_MODE_PROMPT_TEMPLATE = VOICE_MODE_PROMPT_TEMPLATE
 app.state.config.HWP_JAR_PATH = HWP_JAR_PATH
 app.state.config.HWPX_JAR_PATH = HWPX_JAR_PATH
 
+# 전북도청 대도민 공개 챗봇 설정
+from open_webui.config import (
+    ENABLE_PUBLIC_CHATBOT,
+    PUBLIC_CHATBOT_MODEL_ID,
+    PUBLIC_CHATBOT_BASE_MODEL,
+    PUBLIC_CHATBOT_KNOWLEDGE_ID,
+    PUBLIC_CHATBOT_SYSTEM_PROMPT,
+    PUBLIC_CHATBOT_RATE_LIMIT_PER_MINUTE,
+    PUBLIC_CHATBOT_USER_ID,
+    CRAWLER_ENABLED,
+    CRAWLER_COLLECTION_NAME,
+    CRAWLER_DAILY_HOUR,
+    CRAWLER_WEEKLY_FULL_ENABLED,
+    CRAWLER_WEEKLY_FULL_DAY,
+    CRAWLER_WEEKLY_FULL_HOUR,
+    CRAWLER_TIMEZONE,
+    CRAWLER_REQUEST_DELAY_MS,
+    CRAWLER_RESPECT_ROBOTS_TXT,
+    CRAWLER_USER_AGENT,
+    CRAWLER_MAX_PAGES_PER_SITE,
+    CRAWLER_MAX_DEPTH,
+    AUDIO_STT_COHERE_MODEL,
+    AUDIO_STT_COHERE_LANGUAGE,
+    AUDIO_TTS_QWEN_MODEL,
+    AUDIO_TTS_QWEN_VOICE,
+)
+
+app.state.config.ENABLE_PUBLIC_CHATBOT = ENABLE_PUBLIC_CHATBOT
+app.state.config.PUBLIC_CHATBOT_MODEL_ID = PUBLIC_CHATBOT_MODEL_ID
+app.state.config.PUBLIC_CHATBOT_BASE_MODEL = PUBLIC_CHATBOT_BASE_MODEL
+app.state.config.PUBLIC_CHATBOT_KNOWLEDGE_ID = PUBLIC_CHATBOT_KNOWLEDGE_ID
+app.state.config.PUBLIC_CHATBOT_SYSTEM_PROMPT = PUBLIC_CHATBOT_SYSTEM_PROMPT
+app.state.config.PUBLIC_CHATBOT_RATE_LIMIT_PER_MINUTE = PUBLIC_CHATBOT_RATE_LIMIT_PER_MINUTE
+app.state.config.PUBLIC_CHATBOT_USER_ID = PUBLIC_CHATBOT_USER_ID
+
+# 크롤러 설정
+app.state.config.CRAWLER_ENABLED = CRAWLER_ENABLED
+app.state.config.CRAWLER_COLLECTION_NAME = CRAWLER_COLLECTION_NAME
+app.state.config.CRAWLER_DAILY_HOUR = CRAWLER_DAILY_HOUR
+app.state.config.CRAWLER_WEEKLY_FULL_ENABLED = CRAWLER_WEEKLY_FULL_ENABLED
+app.state.config.CRAWLER_WEEKLY_FULL_DAY = CRAWLER_WEEKLY_FULL_DAY
+app.state.config.CRAWLER_WEEKLY_FULL_HOUR = CRAWLER_WEEKLY_FULL_HOUR
+app.state.config.CRAWLER_TIMEZONE = CRAWLER_TIMEZONE
+app.state.config.CRAWLER_REQUEST_DELAY_MS = CRAWLER_REQUEST_DELAY_MS
+app.state.config.CRAWLER_RESPECT_ROBOTS_TXT = CRAWLER_RESPECT_ROBOTS_TXT
+app.state.config.CRAWLER_USER_AGENT = CRAWLER_USER_AGENT
+app.state.config.CRAWLER_MAX_PAGES_PER_SITE = CRAWLER_MAX_PAGES_PER_SITE
+app.state.config.CRAWLER_MAX_DEPTH = CRAWLER_MAX_DEPTH
+
+# Cohere STT & Qwen3-TTS 설정
+app.state.config.AUDIO_STT_COHERE_MODEL = AUDIO_STT_COHERE_MODEL
+app.state.config.AUDIO_STT_COHERE_LANGUAGE = AUDIO_STT_COHERE_LANGUAGE
+app.state.config.AUDIO_TTS_QWEN_MODEL = AUDIO_TTS_QWEN_MODEL
+app.state.config.AUDIO_TTS_QWEN_VOICE = AUDIO_TTS_QWEN_VOICE
+
 ########################################
 #
 # WEBUI
@@ -1593,6 +1807,13 @@ if ENABLE_ADMIN_ANALYTICS:
     app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(utils.router, prefix="/api/v1/utils", tags=["utils"])
 app.include_router(terminals.router, prefix="/api/v1/terminals", tags=["terminals"])
+
+# 전북도청 대도민 공개 AI 안내 챗봇 (인증 불필요)
+app.include_router(
+    public_chatbot.router, prefix="/api/v1/public", tags=["public-chatbot"]
+)
+# 홈페이지 크롤러 관리 API (관리자 전용)
+app.include_router(crawler.router, prefix="/api/v1/crawler", tags=["crawler"])
 
 # SCIM 2.0 API for identity management
 if ENABLE_SCIM:

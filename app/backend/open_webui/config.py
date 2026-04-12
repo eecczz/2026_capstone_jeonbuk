@@ -4333,3 +4333,182 @@ HWPX_JAR_PATH = PersistentConfig(
     "rag.hwpx.jar_path",
     os.environ.get("HWPX_JAR_PATH", "/app/backend/python-hwpxlib/hwpxlib-1.0.5.jar"),
 )
+
+
+####################################
+# Public Chatbot (대도민 공개 안내 챗봇)
+####################################
+
+ENABLE_PUBLIC_CHATBOT = PersistentConfig(
+    "ENABLE_PUBLIC_CHATBOT",
+    "public_chatbot.enabled",
+    # 안전을 위해 기본값 False. 배포 후 ENABLE_PUBLIC_CHATBOT=True 환경변수로 켠다.
+    os.environ.get("ENABLE_PUBLIC_CHATBOT", "False").lower() == "true",
+)
+
+PUBLIC_CHATBOT_MODEL_ID = PersistentConfig(
+    "PUBLIC_CHATBOT_MODEL_ID",
+    "public_chatbot.model_id",
+    os.environ.get("PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot"),
+)
+
+PUBLIC_CHATBOT_BASE_MODEL = PersistentConfig(
+    "PUBLIC_CHATBOT_BASE_MODEL",
+    "public_chatbot.base_model",
+    os.environ.get("PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini"),
+)
+
+PUBLIC_CHATBOT_KNOWLEDGE_ID = PersistentConfig(
+    "PUBLIC_CHATBOT_KNOWLEDGE_ID",
+    "public_chatbot.knowledge_id",
+    os.environ.get("PUBLIC_CHATBOT_KNOWLEDGE_ID", ""),
+)
+
+PUBLIC_CHATBOT_SYSTEM_PROMPT = PersistentConfig(
+    "PUBLIC_CHATBOT_SYSTEM_PROMPT",
+    "public_chatbot.system_prompt",
+    os.environ.get(
+        "PUBLIC_CHATBOT_SYSTEM_PROMPT",
+        """당신은 전북특별자치도청 대도민 AI 안내원입니다.
+전북도청 및 직속기관(농업기술원, 보건환경연구원, 인재개발원, 산림환경연구원, 도립국악원, 도립미술관, 어린이창의체험관, 농식품인력개발원, 경제통상진흥원, 일자리센터, 동물위생시험소, 수산기술연구소, 축산연구소, 도로관리사업소, 투어전북 등)의 홈페이지 내용을 바탕으로 도민의 질문에 답변합니다.
+
+# 답변 규칙
+1. **풍부하고 완결된 답변**: 도민이 후속 질문을 하지 않아도 되도록 한 번에 충분한 정보를 제공하세요.
+   - 일정/장소/담당기관/연락처/신청방법/URL/주의사항(대상·정원·자격 등)을 가능한 모두 포함
+2. **기관명 명시**: 각 정보마다 어느 기관 소속인지 명확히 표기 (예: "인재개발원에 따르면...")
+3. **연락처 제공**: 담당 부서 전화/이메일, 기관 대표번호를 함께 안내
+4. **링크 제공**: 관련 홈페이지 URL을 명시
+5. **추측 금지**: 검색된 문서에 없는 내용은 추측하지 말고 "정확한 정보를 찾지 못했습니다. 해당 기관에 직접 문의해 주세요"라고 답변
+6. **여러 기관 통합**: 비슷한 정보가 여러 기관에 있으면 모두 나열 (예: "정보화교육은 인재개발원과 농식품인력개발원에서 각각 제공합니다")
+7. **한국어로 정중하게**: 도민을 응대하는 공식 안내원 어투 사용
+8. **오늘 날짜 참고**: 시스템이 제공한 '오늘 날짜'를 기준으로 "다음주", "이번달" 같은 상대적 시간 표현을 해석하세요.""",
+    ),
+)
+
+PUBLIC_CHATBOT_RATE_LIMIT_PER_MINUTE = PersistentConfig(
+    "PUBLIC_CHATBOT_RATE_LIMIT_PER_MINUTE",
+    "public_chatbot.rate_limit_per_minute",
+    int(os.environ.get("PUBLIC_CHATBOT_RATE_LIMIT_PER_MINUTE", "10")),
+)
+
+PUBLIC_CHATBOT_USER_ID = PersistentConfig(
+    "PUBLIC_CHATBOT_USER_ID",
+    "public_chatbot.user_id",
+    os.environ.get("PUBLIC_CHATBOT_USER_ID", "public-chatbot-user"),
+)
+
+
+####################################
+# Crawler (일별 배치 홈페이지 크롤링)
+####################################
+
+CRAWLER_ENABLED = PersistentConfig(
+    "CRAWLER_ENABLED",
+    "crawler.enabled",
+    # 안전을 위해 기본값 False. 배포 후 CRAWLER_ENABLED=True 환경변수로 켠다.
+    os.environ.get("CRAWLER_ENABLED", "False").lower() == "true",
+)
+
+CRAWLER_COLLECTION_NAME = PersistentConfig(
+    "CRAWLER_COLLECTION_NAME",
+    "crawler.collection_name",
+    os.environ.get("CRAWLER_COLLECTION_NAME", "jeonbuk_gov"),
+)
+
+CRAWLER_DAILY_HOUR = PersistentConfig(
+    "CRAWLER_DAILY_HOUR",
+    "crawler.daily_hour",
+    int(os.environ.get("CRAWLER_DAILY_HOUR", "2")),
+)
+
+CRAWLER_WEEKLY_FULL_ENABLED = PersistentConfig(
+    "CRAWLER_WEEKLY_FULL_ENABLED",
+    "crawler.weekly_full_enabled",
+    os.environ.get("CRAWLER_WEEKLY_FULL_ENABLED", "False").lower() == "true",
+)
+
+CRAWLER_WEEKLY_FULL_DAY = PersistentConfig(
+    "CRAWLER_WEEKLY_FULL_DAY",
+    "crawler.weekly_full_day",
+    os.environ.get("CRAWLER_WEEKLY_FULL_DAY", "sun"),
+)
+
+CRAWLER_WEEKLY_FULL_HOUR = PersistentConfig(
+    "CRAWLER_WEEKLY_FULL_HOUR",
+    "crawler.weekly_full_hour",
+    int(os.environ.get("CRAWLER_WEEKLY_FULL_HOUR", "3")),
+)
+
+CRAWLER_TIMEZONE = PersistentConfig(
+    "CRAWLER_TIMEZONE",
+    "crawler.timezone",
+    os.environ.get("CRAWLER_TIMEZONE", "Asia/Seoul"),
+)
+
+CRAWLER_REQUEST_DELAY_MS = PersistentConfig(
+    "CRAWLER_REQUEST_DELAY_MS",
+    "crawler.request_delay_ms",
+    int(os.environ.get("CRAWLER_REQUEST_DELAY_MS", "500")),
+)
+
+CRAWLER_RESPECT_ROBOTS_TXT = PersistentConfig(
+    "CRAWLER_RESPECT_ROBOTS_TXT",
+    "crawler.respect_robots_txt",
+    os.environ.get("CRAWLER_RESPECT_ROBOTS_TXT", "True").lower() == "true",
+)
+
+CRAWLER_USER_AGENT = PersistentConfig(
+    "CRAWLER_USER_AGENT",
+    "crawler.user_agent",
+    os.environ.get(
+        "CRAWLER_USER_AGENT",
+        "JeonbukBot/1.0 (+https://www.jeonbuk.go.kr)",
+    ),
+)
+
+CRAWLER_MAX_PAGES_PER_SITE = PersistentConfig(
+    "CRAWLER_MAX_PAGES_PER_SITE",
+    "crawler.max_pages_per_site",
+    int(os.environ.get("CRAWLER_MAX_PAGES_PER_SITE", "500")),
+)
+
+CRAWLER_MAX_DEPTH = PersistentConfig(
+    "CRAWLER_MAX_DEPTH",
+    "crawler.max_depth",
+    int(os.environ.get("CRAWLER_MAX_DEPTH", "3")),
+)
+
+
+####################################
+# Audio: Cohere Transcribe STT & Qwen3-TTS
+####################################
+
+AUDIO_STT_COHERE_MODEL = PersistentConfig(
+    "AUDIO_STT_COHERE_MODEL",
+    "audio.stt.cohere.model",
+    os.environ.get(
+        "AUDIO_STT_COHERE_MODEL",
+        "CohereLabs/cohere-transcribe-03-2026",
+    ),
+)
+
+AUDIO_STT_COHERE_LANGUAGE = PersistentConfig(
+    "AUDIO_STT_COHERE_LANGUAGE",
+    "audio.stt.cohere.language",
+    os.environ.get("AUDIO_STT_COHERE_LANGUAGE", "korean"),
+)
+
+AUDIO_TTS_QWEN_MODEL = PersistentConfig(
+    "AUDIO_TTS_QWEN_MODEL",
+    "audio.tts.qwen.model",
+    os.environ.get(
+        "AUDIO_TTS_QWEN_MODEL",
+        "Qwen/Qwen3-TTS-12Hz-1.7B",
+    ),
+)
+
+AUDIO_TTS_QWEN_VOICE = PersistentConfig(
+    "AUDIO_TTS_QWEN_VOICE",
+    "audio.tts.qwen.voice",
+    os.environ.get("AUDIO_TTS_QWEN_VOICE", "female_kr_01"),
+)
