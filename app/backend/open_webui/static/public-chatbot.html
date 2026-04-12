@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>전북도청 AI 안내원</title>
+<style>
+  :root {
+    --primary: #0b5ed7;
+    --primary-dark: #084aa7;
+    --bg: #f5f7fb;
+    --surface: #ffffff;
+    --text: #1d2b3a;
+    --muted: #6b7280;
+    --border: #e3e8ef;
+    --user-bubble: #0b5ed7;
+    --bot-bubble: #eef2f9;
+    --source-bg: #fffaf0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-width: 720px;
+    margin: 0 auto;
+    background: var(--surface);
+    box-shadow: 0 0 30px rgba(0,0,0,0.05);
+  }
+  header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header img { height: 34px; }
+  header .titles h1 { font-size: 17px; margin: 0; color: var(--primary-dark); }
+  header .titles p { font-size: 12px; margin: 2px 0 0; color: var(--muted); }
+
+  .chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .msg {
+    display: flex;
+    max-width: 88%;
+    animation: in 0.2s ease-out;
+  }
+  @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .msg.user { align-self: flex-end; justify-content: flex-end; }
+  .msg.bot { align-self: flex-start; }
+  .bubble {
+    padding: 10px 14px;
+    border-radius: 16px;
+    line-height: 1.55;
+    font-size: 15px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.user .bubble {
+    background: var(--user-bubble);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.bot .bubble {
+    background: var(--bot-bubble);
+    color: var(--text);
+    border-bottom-left-radius: 4px;
+  }
+  .sources {
+    margin-top: 6px;
+    background: var(--source-bg);
+    border: 1px solid #f0e3c0;
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: #5a4a18;
+  }
+  .sources .src-title { font-weight: 600; margin-bottom: 4px; }
+  .sources a { color: var(--primary); text-decoration: none; }
+
+  .input-bar {
+    border-top: 1px solid var(--border);
+    padding: 12px;
+    background: var(--surface);
+  }
+  .input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .input-row textarea {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    padding: 10px 16px;
+    font-size: 15px;
+    resize: none;
+    max-height: 120px;
+    min-height: 42px;
+    font-family: inherit;
+    color: var(--text);
+    background: #fff;
+  }
+  .input-row textarea:focus { outline: 2px solid var(--primary); }
+  .btn {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: none;
+    background: var(--primary);
+    color: #fff;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  .btn:hover:not(:disabled) { background: var(--primary-dark); }
+  .btn:disabled { background: #94a3b8; cursor: not-allowed; }
+  .btn.mic.recording { background: #dc3545; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(220,53,69,0.5); } 50% { box-shadow: 0 0 0 8px rgba(220,53,69,0); } }
+
+  .hint {
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    padding: 24px 16px;
+  }
+  .hint button {
+    display: block;
+    margin: 6px auto;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 7px 14px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .status-line { text-align: center; font-size: 12px; color: var(--muted); padding: 4px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <img src="/static/jblogo.png" alt="전북도청" onerror="this.style.display='none'" />
+    <div class="titles">
+      <h1>전북도청 AI 안내원</h1>
+      <p>도청 + 직속기관 정보를 통합 안내해 드립니다</p>
+    </div>
+  </header>
+
+  <div class="chat" id="chat">
+    <div class="hint" id="hint">
+      <p>궁금한 것을 말씀해 주세요.</p>
+      <button data-q="다음 주에 있는 정보화교육 어떤 것이 있나요?">다음 주 정보화교육 안내</button>
+      <button data-q="농업 기술 지원사업 종류와 신청방법 알려주세요">농업 지원사업 조회</button>
+      <button data-q="도립미술관 이번 달 전시 일정 알려주세요">도립미술관 전시 일정</button>
+      <button data-q="어린이창의체험관 예약하는 방법 알려주세요">어린이창의체험관 예약</button>
+    </div>
+  </div>
+
+  <div class="status-line" id="status"></div>
+
+  <div class="input-bar">
+    <div class="input-row">
+      <textarea id="input" rows="1" placeholder="질문을 입력하세요. Shift+Enter 줄바꿈, Enter 전송"></textarea>
+      <button class="btn mic" id="micBtn" title="음성 녹음">🎤</button>
+      <button class="btn send" id="sendBtn" title="전송">▶</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API_BASE = "/api/v1/public";
+  const STORAGE_KEY = "jb_public_chat_history";
+
+  // ─────────── 상태 ───────────
+  let history = [];  // [{role, content}]
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) history = JSON.parse(saved);
+  } catch (e) { history = []; }
+
+  const chatEl = document.getElementById("chat");
+  const inputEl = document.getElementById("input");
+  const sendBtn = document.getElementById("sendBtn");
+  const micBtn = document.getElementById("micBtn");
+  const statusEl = document.getElementById("status");
+  const hintEl = document.getElementById("hint");
+
+  // 초기 렌더
+  function renderHistory() {
+    if (history.length > 0 && hintEl) hintEl.remove();
+    history.forEach(m => appendBubble(m.role, m.content, m.sources));
+    scrollBottom();
+  }
+
+  function appendBubble(role, content, sources) {
+    if (hintEl && hintEl.parentNode) hintEl.remove();
+    const msg = document.createElement("div");
+    msg.className = "msg " + role;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = content;
+    msg.appendChild(bubble);
+
+    if (role === "bot" && Array.isArray(sources) && sources.length > 0) {
+      const box = document.createElement("div");
+      box.className = "sources";
+      const title = document.createElement("div");
+      title.className = "src-title";
+      title.textContent = "📍 출처";
+      box.appendChild(title);
+      sources.slice(0, 5).forEach(s => {
+        const row = document.createElement("div");
+        const name = s.metadata?.institution || s.source || s.name || "출처";
+        const url = s.metadata?.url || s.metadata?.homepage_url || "";
+        const phone = s.metadata?.contact_phone || "";
+        row.innerHTML =
+          `<strong>${escapeHtml(name)}</strong>` +
+          (phone ? ` · ☎ ${escapeHtml(phone)}` : "") +
+          (url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noopener">바로가기</a>` : "");
+        box.appendChild(row);
+      });
+      msg.appendChild(box);
+    }
+
+    chatEl.appendChild(msg);
+    scrollBottom();
+  }
+
+  function scrollBottom() { chatEl.scrollTop = chatEl.scrollHeight; }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+    ));
+  }
+
+  function saveHistory() {
+    // 최근 20턴만 유지
+    const trimmed = history.slice(-20);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed)); } catch (e) {}
+  }
+
+  // ─────────── 전송 ───────────
+  async function sendMessage(text) {
+    if (!text || !text.trim()) return;
+    text = text.trim();
+
+    appendBubble("user", text);
+    history.push({ role: "user", content: text });
+    inputEl.value = "";
+    inputEl.style.height = "auto";
+    sendBtn.disabled = true;
+    statusEl.textContent = "응답 생성 중...";
+
+    try {
+      const resp = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          history: history.slice(0, -1),  // 방금 추가한 user 턴 제외
+        })
+      });
+
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(err || `HTTP ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      const reply = data.reply || "(응답이 비어 있습니다)";
+      const sources = data.sources || [];
+      appendBubble("bot", reply, sources);
+      history.push({ role: "assistant", content: reply, sources });
+      saveHistory();
+      speak(reply);
+    } catch (e) {
+      appendBubble("bot", `오류가 발생했습니다: ${e.message}`);
+    } finally {
+      sendBtn.disabled = false;
+      statusEl.textContent = "";
+    }
+  }
+
+  // ─────────── 음성 출력 (브라우저 SpeechSynthesis) ───────────
+  function speak(text) {
+    if (!("speechSynthesis" in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "ko-KR";
+      utter.rate = 1.05;
+      window.speechSynthesis.speak(utter);
+    } catch (e) {}
+  }
+
+  // ─────────── 음성 입력 (MediaRecorder) ───────────
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let isRecording = false;
+
+  async function toggleRecording() {
+    if (isRecording) {
+      stopRecording();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      // 브라우저 지원 MIME 타입 선택
+      let mime = "audio/webm;codecs=opus";
+      if (!MediaRecorder.isTypeSupported(mime)) {
+        mime = "audio/webm";
+        if (!MediaRecorder.isTypeSupported(mime)) mime = "";
+      }
+      mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(audioChunks, { type: mime || "audio/webm" });
+        await submitVoice(blob);
+      };
+      mediaRecorder.start();
+      isRecording = true;
+      micBtn.classList.add("recording");
+      micBtn.textContent = "⏹";
+      statusEl.textContent = "녹음 중... 다시 버튼을 눌러 전송";
+    } catch (e) {
+      statusEl.textContent = "마이크 권한이 필요합니다: " + e.message;
+      setTimeout(() => statusEl.textContent = "", 4000);
+    }
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      mediaRecorder.stop();
+    }
+    isRecording = false;
+    micBtn.classList.remove("recording");
+    micBtn.textContent = "🎤";
+  }
+
+  async function submitVoice(blob) {
+    statusEl.textContent = "음성 인식 중...";
+    sendBtn.disabled = true;
+    try {
+      const form = new FormData();
+      form.append("file", blob, "voice.webm");
+      form.append("history_json", JSON.stringify(history));
+
+      const resp = await fetch(`${API_BASE}/voice-chat`, {
+        method: "POST",
+        body: form,
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        throw new Error(err || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      const question = data.question || "(음성 인식 실패)";
+      const reply = data.reply || "(응답이 비어 있습니다)";
+      const sources = data.sources || [];
+
+      appendBubble("user", question);
+      history.push({ role: "user", content: question });
+      appendBubble("bot", reply, sources);
+      history.push({ role: "assistant", content: reply, sources });
+      saveHistory();
+
+      if (data.audio_url) {
+        new Audio(data.audio_url).play().catch(() => speak(reply));
+      } else {
+        speak(reply);
+      }
+    } catch (e) {
+      appendBubble("bot", `음성 처리 오류: ${e.message}`);
+    } finally {
+      sendBtn.disabled = false;
+      statusEl.textContent = "";
+    }
+  }
+
+  // ─────────── 이벤트 ───────────
+  sendBtn.addEventListener("click", () => sendMessage(inputEl.value));
+  micBtn.addEventListener("click", toggleRecording);
+  inputEl.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(inputEl.value);
+    }
+  });
+  inputEl.addEventListener("input", () => {
+    inputEl.style.height = "auto";
+    inputEl.style.height = Math.min(120, inputEl.scrollHeight) + "px";
+  });
+
+  // 힌트 버튼 클릭
+  document.querySelectorAll("#hint button[data-q]").forEach(btn => {
+    btn.addEventListener("click", () => sendMessage(btn.dataset.q));
+  });
+
+  // 대화 초기화 (2초 누르면)
+  let longPressTimer = null;
+  document.querySelector("header").addEventListener("mousedown", () => {
+    longPressTimer = setTimeout(() => {
+      if (confirm("대화 기록을 초기화할까요?")) {
+        history = [];
+        localStorage.removeItem(STORAGE_KEY);
+        chatEl.innerHTML = "";
+        location.reload();
+      }
+    }, 2000);
+  });
+  document.querySelector("header").addEventListener("mouseup", () => {
+    clearTimeout(longPressTimer);
+  });
+
+  renderHistory();
+</script>
+</body>
+</html>
