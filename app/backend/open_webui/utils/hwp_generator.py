@@ -111,8 +111,48 @@ def _execute_remove_paragraph(doc, action: dict):
         raise IndexError(f"문단 인덱스 {idx} 범위 초과 (전체 {len(doc.paragraphs)}개)")
 
 
+def _adjust_table_columns(tbl_elem, target_cols: int):
+    """
+    테이블의 컬럼 수를 target_cols에 맞게 동적 조절합니다.
+    - target_cols > 현재 → 마지막 셀을 복제하여 열 추가 (모든 기존 행)
+    - target_cols < 현재 → 초과 셀을 제거 (모든 기존 행)
+    """
+    from copy import deepcopy
+
+    NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    current_cols = int(tbl_elem.get("colCnt", "1"))
+
+    if current_cols == target_cols:
+        return
+
+    for tr in tbl_elem.findall(f"{NS}tr"):
+        tcs = tr.findall(f"{NS}tc")
+        if not tcs:
+            continue
+
+        if target_cols > current_cols:
+            last_tc = tcs[-1]
+            for i in range(target_cols - current_cols):
+                new_tc = deepcopy(last_tc)
+                new_col = current_cols + i
+                for addr in new_tc.iter(f"{NS}cellAddr"):
+                    addr.set("colAddr", str(new_col))
+                for span in new_tc.iter(f"{NS}cellSpan"):
+                    span.set("colSpan", "1")
+                    span.set("rowSpan", "1")
+                for t_elem in new_tc.iter(f"{NS}t"):
+                    t_elem.text = ""
+                tr.append(new_tc)
+        else:
+            for tc in reversed(tcs[target_cols:]):
+                tr.remove(tc)
+
+    tbl_elem.set("colCnt", str(target_cols))
+    log.info(f"테이블 컬럼 조절: {current_cols} → {target_cols}")
+
+
 def _execute_add_row(doc, action: dict):
-    """기존 표에 행 추가 (마지막 행을 복제하여 추가)"""
+    """기존 표에 행 추가 (마지막 행을 복제하여 추가, 컬럼 수 자동 조절)"""
     from copy import deepcopy
 
     table_idx = action["table"]
@@ -127,12 +167,26 @@ def _execute_add_row(doc, action: dict):
         raise IndexError(f"표 인덱스 {table_idx} 없음 (전체 {len(tables_found)}개)")
 
     tbl = tables_found[table_idx]
-    last_row = tbl.rows[-1]
-
     NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
 
+    if cells:
+        # 데이터 컬럼 수와 테이블 컬럼 수가 다르면 자동 조절
+        data_cols = max(len(row) for row in cells)
+        current_cols = int(tbl.element.get("colCnt", "1"))
+        if data_cols != current_cols:
+            _adjust_table_columns(tbl.element, data_cols)
+        # cells 행 수가 count보다 많으면 cells 기준으로
+        if len(cells) > count:
+            count = len(cells)
+
+    # 컬럼 조절 이후의 마지막 행을 복제 대상으로 사용
+    tr_elements = tbl.element.findall(f"{NS}tr")
+    if not tr_elements:
+        raise ValueError(f"표 {table_idx}에 행이 없음")
+    last_row_elem = tr_elements[-1]
+
     for r in range(count):
-        new_row_elem = deepcopy(last_row.element)
+        new_row_elem = deepcopy(last_row_elem)
 
         # 새 행의 rowAddr 업데이트 + 셀 병합 초기화
         cur_row_cnt = int(tbl.element.get("rowCnt", "0"))
