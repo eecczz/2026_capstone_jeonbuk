@@ -823,12 +823,14 @@ def assemble_hwpx_hybrid(
             if 0 <= spacer_idx < len(doc.paragraphs):
                 spacer_exemplar = deepcopy(doc.paragraphs[spacer_idx].element)
                 _strip_linesegarray(spacer_exemplar, NS)
+                _strip_secpr(spacer_exemplar, NS)
                 break
     # spacer exemplar 못 찾으면 빈 문단 생성
     if spacer_exemplar is None and len(doc.paragraphs) > 0:
         spacer_exemplar = deepcopy(doc.paragraphs[0].element)
         _strip_linesegarray(spacer_exemplar, NS)
         _strip_document_ctrls(spacer_exemplar, NS)
+        _strip_secpr(spacer_exemplar, NS)
         # 모든 run의 텍스트 비우기
         for run in spacer_exemplar.findall(f"{NS}run"):
             t = run.find(f"{NS}t")
@@ -968,6 +970,18 @@ def _extract_text_prefix(elem, NS: str) -> str:
                 leading = t.text[:len(t.text) - len(stripped)]
                 return leading
     return ""
+
+
+def _strip_secpr(elem, NS: str):
+    """
+    복제된 요소에서 secPr(섹션 속성) 요소를 제거합니다.
+    secPr이 있는 문단을 clone하면 매번 새 섹션이 시작되어
+    불필요한 페이지 나누기가 발생합니다.
+    """
+    for secpr in elem.findall(f".//{NS}secPr"):
+        parent = secpr.getparent()
+        if parent is not None:
+            parent.remove(secpr)
 
 
 def _strip_linesegarray(elem, NS: str):
