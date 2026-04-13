@@ -781,7 +781,7 @@ def assemble_hwpx_hybrid(
     role_exemplar_idx = {}  # role → 원본 template idx
     role_is_table_box = {}  # role → bool
     header_roles = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
-    skip_roles = {"spacer", "toc", "fixed"}
+    skip_roles = {"spacer", "toc", "fixed", "spacer_text", "toc_box"}
 
     for p in paragraphs_info:
         role = p.get("role", "")
