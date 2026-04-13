@@ -953,27 +953,55 @@ def _set_element_text(para, text: str, NS: str):
 
 def _set_cloned_element_text(elem, text: str, NS: str, is_table_box: bool):
     """deepcopy된 XML 요소의 텍스트를 교체합니다."""
+
+    # 1) 표(tbl) 내부 텍스트 교체
     if is_table_box:
-        # 1행 표 내부의 텍스트 교체
-        # 마지막 셀의 텍스트를 교체 (첫 셀이 번호/마커인 경우)
         trs = elem.findall(f".//{NS}tr")
         if trs:
             tcs = trs[0].findall(f"{NS}tc")
             if tcs:
-                # 텍스트가 있는 마지막 셀을 교체 대상으로
                 target_tc = tcs[-1] if len(tcs) > 1 else tcs[0]
                 sublist = target_tc.find(f"{NS}subList")
                 if sublist is not None:
                     paras = sublist.findall(f"{NS}p")
                     if paras:
-                        # 첫 번째 문단의 텍스트 교체
                         _replace_text_in_paragraph_elem(paras[0], text, NS)
-                        # 나머지 문단 제거
                         for p in paras[1:]:
                             sublist.remove(p)
                     return
 
-    # 일반 문단의 텍스트 교체
+    # 2) container(그리기 객체) 내부 텍스트 교체
+    #    container > rect/... > drawText > subList > p 구조
+    draw_texts = elem.findall(f".//{NS}drawText")
+    if draw_texts:
+        # 텍스트가 있는 drawText 찾기
+        target_dt = None
+        for dt in draw_texts:
+            sub = dt.find(f"{NS}subList")
+            if sub is not None:
+                for p in sub.findall(f"{NS}p"):
+                    for t in p.findall(f".//{NS}t"):
+                        if t.text and t.text.strip():
+                            target_dt = dt
+                            break
+                    if target_dt:
+                        break
+            if target_dt:
+                break
+        # 텍스트 있는 drawText가 없으면 마지막 drawText 사용
+        if target_dt is None and draw_texts:
+            target_dt = draw_texts[-1]
+        if target_dt is not None:
+            sub = target_dt.find(f"{NS}subList")
+            if sub is not None:
+                paras = sub.findall(f"{NS}p")
+                if paras:
+                    _replace_text_in_paragraph_elem(paras[0], text, NS)
+                    for p in paras[1:]:
+                        sub.remove(p)
+                return
+
+    # 3) 일반 문단의 텍스트 교체
     _replace_text_in_paragraph_elem(elem, text, NS)
 
 
