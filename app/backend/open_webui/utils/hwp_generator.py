@@ -801,15 +801,53 @@ def assemble_hwpx_hybrid(
         f"table_box: {sum(role_is_table_box.values())}개"
     )
 
-    # ── 2단계: exemplar 요소 저장 (deepcopy + ctrl/linesegarray 제거) ──
+    # ── 2단계: exemplar 요소 저장 (deepcopy + prefix 추출 + ctrl/linesegarray 제거) ──
     exemplars = {}  # role → deepcopy된 XML element
+    role_text_prefix = {}  # role → 원본 텍스트의 앞 공백 (들여쓰기 보존용)
     for role, idx in role_exemplar_idx.items():
         if 0 <= idx < len(doc.paragraphs):
             elem = deepcopy(doc.paragraphs[idx].element)
+            # 원본 텍스트에서 앞 공백(prefix) 추출
+            role_text_prefix[role] = _extract_text_prefix(elem, NS)
             _strip_document_ctrls(elem, NS)
             _strip_linesegarray(elem, NS)
             exemplars[role] = elem
-            log.debug(f"exemplar 저장: {role} (idx={idx})")
+            log.debug(f"exemplar 저장: {role} (idx={idx}, prefix={repr(role_text_prefix[role])})")
+
+    # spacer exemplar 별도 저장 (빈 줄 자동 삽입용)
+    spacer_exemplar = None
+    for p in paragraphs_info:
+        role = p.get("role", "")
+        if role in ("spacer", "spacer_text"):
+            spacer_idx = _to_real_idx(p.get("idx", -1))
+            if 0 <= spacer_idx < len(doc.paragraphs):
+                spacer_exemplar = deepcopy(doc.paragraphs[spacer_idx].element)
+                _strip_linesegarray(spacer_exemplar, NS)
+                break
+    # spacer exemplar 못 찾으면 빈 문단 생성
+    if spacer_exemplar is None and len(doc.paragraphs) > 0:
+        spacer_exemplar = deepcopy(doc.paragraphs[0].element)
+        _strip_linesegarray(spacer_exemplar, NS)
+        _strip_document_ctrls(spacer_exemplar, NS)
+        # 모든 run의 텍스트 비우기
+        for run in spacer_exemplar.findall(f"{NS}run"):
+            t = run.find(f"{NS}t")
+            if t is not None:
+                t.text = ""
+                for child in list(t):
+                    t.remove(child)
+            # 표/container 제거
+            for tbl in run.findall(f"{NS}tbl"):
+                run.remove(tbl)
+            for cont in run.findall(f"{NS}container"):
+                run.remove(cont)
+
+    # role → level 매핑 (spacer 삽입 판단용)
+    role_level = {}
+    for p in paragraphs_info:
+        role = p.get("role", "")
+        if role and role not in role_level:
+            role_level[role] = p.get("level", 0)
 
     # ── 3단계: header 영역 처리 ──
     # header는 {role_name: text} 형태 — role 이름을 AI가 자유롭게 지정
@@ -863,8 +901,9 @@ def assemble_hwpx_hybrid(
         f"header {len(header_indices)}개 보존"
     )
 
-    # ── 5단계: body 항목으로 문서 재조립 ──
+    # ── 5단계: body 항목으로 문서 재조립 (prefix 보존 + spacer 자동 삽입) ──
     body_items = content.get("body", [])
+    prev_level = -1
 
     for item in body_items:
         role = item.get("role", "")
@@ -873,6 +912,19 @@ def assemble_hwpx_hybrid(
         if role not in exemplars:
             errors.append(f"unknown role '{role}', skipping: {text[:50]}")
             continue
+
+        cur_level = role_level.get(role, 0)
+
+        # spacer 자동 삽입: level이 올라가거나 같은 level의 heading이면 빈 줄 추가
+        if spacer_exemplar is not None and prev_level >= 0:
+            if cur_level <= prev_level and cur_level <= 2:
+                section_elem.append(deepcopy(spacer_exemplar))
+
+        # 텍스트에 exemplar의 앞 공백(들여쓰기) 적용
+        prefix = role_text_prefix.get(role, "")
+        if prefix and not text.startswith(prefix):
+            # AI 텍스트가 마커로 시작하면 마커 앞에 prefix 삽입
+            text = prefix + text
 
         # exemplar 복제
         new_elem = deepcopy(exemplars[role])
@@ -886,6 +938,8 @@ def assemble_hwpx_hybrid(
         except Exception as e:
             errors.append(f"assemble({role}): {e}")
 
+        prev_level = cur_level
+
     log.info(
         f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
         f"body 항목 {len(body_items)}개"
@@ -897,6 +951,23 @@ def assemble_hwpx_hybrid(
         fail_count=len(errors),
         errors=errors,
     )
+
+
+def _extract_text_prefix(elem, NS: str) -> str:
+    """
+    XML 요소에서 첫 번째 텍스트의 앞 공백(들여쓰기)을 추출합니다.
+    예: " ㅇ 레미콘..." → " " (앞 공백 1칸)
+    예: "      * 차량..." → "      " (앞 공백 6칸)
+    표/container 내부도 탐색합니다.
+    """
+    for t in elem.iter(f"{NS}t"):
+        if t.text:
+            # 앞 공백만 추출
+            stripped = t.text.lstrip()
+            if stripped:
+                leading = t.text[:len(t.text) - len(stripped)]
+                return leading
+    return ""
 
 
 def _strip_linesegarray(elem, NS: str):
