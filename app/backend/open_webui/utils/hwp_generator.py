@@ -801,12 +801,13 @@ def assemble_hwpx_hybrid(
         f"table_box: {sum(role_is_table_box.values())}개"
     )
 
-    # ── 2단계: exemplar 요소 저장 (deepcopy + ctrl 제거) ──
+    # ── 2단계: exemplar 요소 저장 (deepcopy + ctrl/linesegarray 제거) ──
     exemplars = {}  # role → deepcopy된 XML element
     for role, idx in role_exemplar_idx.items():
         if 0 <= idx < len(doc.paragraphs):
             elem = deepcopy(doc.paragraphs[idx].element)
             _strip_document_ctrls(elem, NS)
+            _strip_linesegarray(elem, NS)
             exemplars[role] = elem
             log.debug(f"exemplar 저장: {role} (idx={idx})")
 
@@ -898,6 +899,18 @@ def assemble_hwpx_hybrid(
     )
 
 
+def _strip_linesegarray(elem, NS: str):
+    """
+    복제된 exemplar에서 linesegarray 요소를 모두 제거합니다.
+    linesegarray는 줄 위치 좌표(고정값)로, 다른 길이의 텍스트가 들어가면
+    글자가 겹치는 원인이 됩니다. 제거하면 한글 뷰어가 자동 재계산합니다.
+    """
+    for lsa in elem.findall(f".//{NS}linesegarray"):
+        parent = lsa.getparent()
+        if parent is not None:
+            parent.remove(lsa)
+
+
 def _strip_document_ctrls(elem, NS: str):
     """
     복제된 exemplar에서 document-level ctrl 요소를 제거합니다.
@@ -920,32 +933,54 @@ def _strip_document_ctrls(elem, NS: str):
 
 def _set_element_text(para, text: str, NS: str):
     """기존 문단(HwpxOxmlParagraph)의 텍스트를 교체합니다."""
+    from lxml import etree
+
     # 표가 있는 문단이면 텍스트가 있는 셀을 찾아 교체
     if para.tables:
-        tbl = para.tables[0]
-        # 텍스트가 있는 첫 번째 셀 찾기 (빈 장식 행 건너뜀)
-        target_cell = None
-        for r in range(tbl.row_count):
-            for c in range(tbl.col_count):
-                cell = tbl.cell(r, c)
-                cell_text = "".join(
-                    p.text for p in cell.paragraphs if p.text
-                ).strip()
-                if cell_text:
-                    target_cell = cell
+        try:
+            tbl = para.tables[0]
+            target_cell = None
+            for r in range(tbl.row_count):
+                for c in range(tbl.col_count):
+                    cell = tbl.cell(r, c)
+                    cell_text = "".join(
+                        p.text for p in cell.paragraphs if p.text
+                    ).strip()
+                    if cell_text:
+                        target_cell = cell
+                        break
+                if target_cell:
                     break
-            if target_cell:
-                break
-        # 텍스트 있는 셀이 없으면 (전부 빈 셀) cell(0,0) 사용
-        if target_cell is None:
-            target_cell = tbl.cell(0, 0)
-        cell_paras = target_cell.paragraphs
-        if cell_paras:
-            cell_paras[0].text = text
-            # 나머지 문단은 삭제하지 않고 텍스트만 비움 (구조 보존)
-            for cp in cell_paras[1:]:
-                cp.text = ""
-        return
+            if target_cell is None:
+                target_cell = tbl.cell(0, 0)
+            cell_paras = target_cell.paragraphs
+            if cell_paras:
+                cell_paras[0].text = text
+                for cp in cell_paras[1:]:
+                    cp.text = ""
+            return
+        except Exception as e:
+            log.warning(f"_set_element_text 라이브러리 API 실패, XML 직접 접근: {e}")
+
+    # XML 직접 접근 fallback — 표/container 내부에서 텍스트가 있는 셀을 찾아 교체
+    elem = para.element
+    # 표 내부 셀에서 텍스트 찾기
+    for tc in elem.findall(f".//{NS}tc"):
+        sublist = tc.find(f"{NS}subList")
+        if sublist is None:
+            continue
+        for p in sublist.findall(f"{NS}p"):
+            for t in p.findall(f".//{NS}t"):
+                if t.text and t.text.strip():
+                    # 텍스트가 있는 셀 발견 — 첫 문단 교체
+                    _replace_text_in_paragraph_elem(sublist.findall(f"{NS}p")[0], text, NS)
+                    # 나머지 문단 텍스트 비우기
+                    for extra_p in sublist.findall(f"{NS}p")[1:]:
+                        for et in extra_p.findall(f".//{NS}t"):
+                            et.text = ""
+                            for child in list(et):
+                                et.remove(child)
+                    return
 
     # 일반 문단
     para.text = text
@@ -974,20 +1009,20 @@ def _set_cloned_element_text(elem, text: str, NS: str, is_table_box: bool):
     #    container > rect/... > drawText > subList > p 구조
     draw_texts = elem.findall(f".//{NS}drawText")
     if draw_texts:
-        # 텍스트가 있는 drawText 찾기
+        # 가장 텍스트가 많은 drawText를 선택 (제목 박스가 아닌 본문 영역)
         target_dt = None
+        max_text_len = 0
         for dt in draw_texts:
             sub = dt.find(f"{NS}subList")
             if sub is not None:
+                dt_text = ""
                 for p in sub.findall(f"{NS}p"):
                     for t in p.findall(f".//{NS}t"):
-                        if t.text and t.text.strip():
-                            target_dt = dt
-                            break
-                    if target_dt:
-                        break
-            if target_dt:
-                break
+                        if t.text:
+                            dt_text += t.text
+                if len(dt_text.strip()) > max_text_len:
+                    max_text_len = len(dt_text.strip())
+                    target_dt = dt
         # 텍스트 있는 drawText가 없으면 마지막 drawText 사용
         if target_dt is None and draw_texts:
             target_dt = draw_texts[-1]
