@@ -1319,24 +1319,11 @@ _idx가 있는 모든 문단에 대해:
 role은 **서식 조합**이 기준입니다. 의미가 아닌 모양이 같으면 같은 role입니다.
 
 1. 같은 paraPrIDRef + charPrIDRef + 표구조(1x1, 1x3 등) → **반드시 같은 role**
-2. **반드시 아래 고정 목록에서만 role을 선택하세요. 새 role을 만들지 마세요:**
-   - `cover_title` — 표지 문서 제목
-   - `cover_date` — 표지 작성일자
-   - `cover_org` — 표지 발신 기관명
-   - `toc` — 목차 (container/텍스트 상자)
-   - `chapter_title` — 대분류 제목 (Ⅰ, Ⅱ, Ⅲ)
-   - `summary_box` — 요약/슬로건 박스 (◈, ◇ 등)
-   - `section_header` — 중분류 항목 제목 (□)
-   - `detail_item` — 세부 항목 본문 (ㅇ)
-   - `note` — 참고/보충 설명 (※, *)
-   - `sub_detail` — 하위 세부 항목 (➊, ➋, ➌, ▪)
-   - `table_header` — 번호+제목 표 (1x3 등)
-   - `strategy_title` — 전략 제목 ([전략1] 등)
-   - `task_title` — 과제 제목 (과제 1 등)
-   - `task_item` — 과제 세부 항목 (󰊱, 󰊲, 󰊳)
-   - `spacer` — 빈 문단 (구분용 빈 줄)
-   - `fixed` — 수정 불필요한 레이아웃 요소
-3. 이 목록에 없는 role은 사용하지 마세요
+2. role 이름은 자유롭게 지정하되, 용도를 알 수 있게 하세요
+   예: "chapter_title", "section_header", "detail_item", "note", "summary_box", "toc", "cover_title"
+3. 특수 역할:
+   - "spacer": 빈 문단 (구분용 빈 줄)
+   - "fixed": 페이지 번호, 머리글/바닥글 등 수정 불필요한 레이아웃 요소
 
 ### description 작성 규칙
 1. 해당 위치에 들어갈 내용의 **용도와 형식**을 구체적으로 적으세요
