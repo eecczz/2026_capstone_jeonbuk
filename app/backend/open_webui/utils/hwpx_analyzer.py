@@ -201,6 +201,279 @@ def analyze_hwpx(hwpx_source) -> dict:
 
 
 # ============================================================
+# 역할 기반 서식 그룹 추출 (Role-based style catalog)
+# ============================================================
+
+
+def _resolve_bg_color(doc, border_fill_id: str) -> str:
+    """borderFillIDRef에서 배경색을 추출합니다."""
+    bf = doc.border_fill(border_fill_id)
+    if not bf:
+        return ""
+    for child in bf.children:
+        if child.name == "fillBrush":
+            for brush in child.children:
+                if brush.name == "winBrush":
+                    fc = brush.attributes.get("faceColor", "none")
+                    if fc and fc != "none":
+                        return fc
+                elif brush.name == "gradFill" or brush.name == "patternFill":
+                    return "(그라데이션/패턴)"
+    return ""
+
+
+def _resolve_border_style(doc, border_fill_id: str) -> str:
+    """borderFillIDRef에서 테두리 스타일 요약을 추출합니다."""
+    bf = doc.border_fill(border_fill_id)
+    if not bf:
+        return ""
+    sides = []
+    for child in bf.children:
+        if child.name in ("leftBorder", "rightBorder", "topBorder", "bottomBorder"):
+            btype = child.attributes.get("type", "NONE")
+            if btype != "NONE":
+                sides.append(child.name.replace("Border", ""))
+    if not sides:
+        return ""
+    if len(sides) == 4:
+        return "테두리:전체"
+    return "테두리:" + "+".join(sides)
+
+
+def _describe_style(doc, char_pr_id: str, para_pr_id: str,
+                     border_fill_id: str = "") -> str:
+    """스타일 ID들을 사람이 읽을 수 있는 설명으로 변환합니다."""
+    parts = []
+
+    # 글자 속성
+    cp = doc.char_property(char_pr_id)
+    if cp:
+        height = cp.attributes.get("height", "")
+        if height:
+            parts.append(f"{int(height) / 100:.0f}pt")
+        color = cp.attributes.get("textColor", "")
+        if color and color != "#000000":
+            parts.append(f"색상:{color}")
+
+    # 문단 속성
+    pp = doc.paragraph_property(para_pr_id)
+    if pp:
+        if pp.align and pp.align.horizontal and pp.align.horizontal != "JUSTIFY":
+            parts.append(f"정렬:{pp.align.horizontal}")
+        if pp.margin:
+            if pp.margin.left and int(pp.margin.left) > 0:
+                parts.append(f"왼쪽여백:{pp.margin.left}")
+
+    # 배경색 (borderFill)
+    if border_fill_id:
+        bg = _resolve_bg_color(doc, border_fill_id)
+        if bg:
+            parts.append(f"배경:{bg}")
+        border = _resolve_border_style(doc, border_fill_id)
+        if border:
+            parts.append(border)
+
+    return ", ".join(parts) if parts else "기본"
+
+
+def extract_style_groups(hwpx_source) -> dict:
+    """
+    HWPX 양식에서 서식 그룹(style groups)을 자동 추출합니다.
+
+    각 문단의 서식 속성(paraPrIDRef, charPrIDRef, borderFillIDRef 등) 조합으로
+    고유한 "서식 그룹"을 식별하고, 같은 서식의 문단을 묶습니다.
+
+    AI가 아닌 코드로 확정적으로 추출하며, 이후 AI가 각 그룹의 의미적 역할을
+    해석하는 데 사용됩니다.
+
+    Args:
+        hwpx_source: 파일 경로(str), bytes, 또는 file-like object
+
+    Returns:
+        {
+            "groups": {
+                "g1": {
+                    "fingerprint": "p24_c13",
+                    "style_desc": "15pt, 색상:#CC0000",
+                    "sample_text": "Ⅰ. 추진성과 및 평가",
+                    "count": 3,
+                    "is_table_box": False,
+                    "table_dims": None,
+                    "exemplar_idx": 0,
+                    "indices": [0, 5, 12],
+                },
+                ...
+            },
+            "sequence": [
+                {"group_id": "g1", "idx": 0, "text_preview": "2024년 주요..."},
+                {"group_id": "g2", "idx": 1, "text_preview": "2024. 2. 1"},
+                ...
+            ],
+            "data_tables": [
+                {
+                    "idx": 13,
+                    "table_idx": 5,
+                    "rows": 13, "cols": 5,
+                    "sample_headers": ["내용", "일정", "비고"],
+                },
+            ],
+        }
+    """
+    from hwpx import HwpxDocument
+
+    if isinstance(hwpx_source, str):
+        doc = HwpxDocument.open(hwpx_source)
+    elif isinstance(hwpx_source, bytes):
+        doc = HwpxDocument.open(io.BytesIO(hwpx_source))
+    else:
+        doc = HwpxDocument.open(hwpx_source)
+
+    NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    # fingerprint → group info 매핑
+    fp_to_group = {}  # fingerprint → group_id
+    groups = {}
+    sequence = []
+    data_tables = []
+    group_counter = 0
+
+    for idx, para in enumerate(doc.paragraphs):
+        para_pr = str(para.para_pr_id_ref or "0")
+        runs = para.runs
+        first_char_pr = str(runs[0].char_pr_id_ref) if runs else "0"
+
+        text = (para.text or "").strip()
+        text_preview = text[:40] + ("…" if len(text) > 40 else "") if text else "(빈 문단)"
+
+        tables = para.tables
+        is_table_box = False
+        table_dims = None
+        fingerprint = None
+
+        if tables:
+            tbl = tables[0]
+            row_cnt = int(tbl.element.get("rowCnt", "1"))
+            col_cnt = int(tbl.element.get("colCnt", "1"))
+            tbl_border = tbl.element.get("borderFillIDRef", "0")
+
+            if row_cnt == 1:
+                # 1행 표 (텍스트 박스 / 섹션 헤더) — 서식 그룹으로 취급
+                is_table_box = True
+                table_dims = f"1x{col_cnt}"
+
+                # 첫 번째 셀 기준으로 fingerprint 계산
+                cell = tbl.cell(0, 0)
+                cell_paras = cell.paragraphs
+                cell_para_pr = str(cell_paras[0].para_pr_id_ref) if cell_paras else "0"
+                cell_char_pr = "0"
+                if cell_paras and cell_paras[0].runs:
+                    cell_char_pr = str(cell_paras[0].runs[0].char_pr_id_ref)
+
+                # 셀 borderFill (배경색 결정)
+                cell_border = cell.element.get("borderFillIDRef", "0")
+
+                fingerprint = f"tbl_{col_cnt}_{tbl_border}_{cell_border}_{cell_para_pr}_{cell_char_pr}_{para_pr}_{first_char_pr}"
+
+                # 텍스트는 모든 셀에서 추출하여 합침
+                cell_texts = []
+                for c in range(col_cnt):
+                    try:
+                        ct = (tbl.cell(0, c).text or "").strip()
+                        if ct:
+                            cell_texts.append(ct)
+                    except Exception:
+                        pass
+                if cell_texts:
+                    combined = " | ".join(cell_texts)
+                    text_preview = combined[:40] + ("…" if len(combined) > 40 else "")
+            elif row_cnt > 1:
+                # 다중 행/열 데이터 표
+                # 헤더 텍스트 샘플 추출
+                sample_headers = []
+                try:
+                    first_row_cells = [tbl.cell(0, c) for c in range(min(col_cnt, 5))]
+                    for c in first_row_cells:
+                        ht = (c.text or "").strip()[:20]
+                        if ht:
+                            sample_headers.append(ht)
+                except Exception:
+                    pass
+
+                data_tables.append({
+                    "idx": idx,
+                    "rows": row_cnt,
+                    "cols": col_cnt,
+                    "sample_headers": sample_headers,
+                })
+
+                # 데이터 표는 그룹에 포함하지 않고 시퀀스에만 기록
+                sequence.append({
+                    "group_id": "__data_table__",
+                    "idx": idx,
+                    "text_preview": f"[표 {row_cnt}x{col_cnt}]",
+                })
+                continue
+
+        if fingerprint is None:
+            # 일반 문단
+            fingerprint = f"p_{para_pr}_{first_char_pr}"
+
+        # 그룹 매핑
+        if fingerprint not in fp_to_group:
+            group_counter += 1
+            gid = f"g{group_counter}"
+            fp_to_group[fingerprint] = gid
+
+            # 스타일 설명 생성
+            if is_table_box:
+                # 셀 내부 스타일로 설명
+                parts = fingerprint.split("_")  # tbl_border_cellBorder_cellPP_cellCP_pp_cp
+                cell_border_id = parts[2] if len(parts) > 2 else "0"
+                cell_cp_id = parts[4] if len(parts) > 4 else "0"
+                cell_pp_id = parts[3] if len(parts) > 3 else "0"
+                style_desc = _describe_style(doc, cell_cp_id, cell_pp_id, cell_border_id)
+                style_desc = f"[텍스트박스] {style_desc}"
+            else:
+                # 문단 border 확인
+                pp_obj = doc.paragraph_property(para_pr)
+                border_id = ""
+                if pp_obj and pp_obj.border:
+                    border_id = str(pp_obj.border.border_fill_id_ref or "")
+                style_desc = _describe_style(doc, first_char_pr, para_pr, border_id)
+
+            groups[gid] = {
+                "fingerprint": fingerprint,
+                "style_desc": style_desc,
+                "sample_text": text_preview,
+                "count": 1,
+                "is_table_box": is_table_box,
+                "exemplar_idx": idx,
+                "indices": [idx],
+            }
+        else:
+            gid = fp_to_group[fingerprint]
+            groups[gid]["count"] += 1
+            groups[gid]["indices"].append(idx)
+
+        sequence.append({
+            "group_id": fp_to_group[fingerprint],
+            "idx": idx,
+            "text_preview": text_preview,
+        })
+
+    log.info(
+        f"서식 그룹 추출 완료: {len(groups)}개 그룹, "
+        f"{len(sequence)}개 문단, {len(data_tables)}개 데이터 표"
+    )
+
+    return {
+        "groups": groups,
+        "sequence": sequence,
+        "data_tables": data_tables,
+    }
+
+
+# ============================================================
 # AI 프롬프트 생성 및 응답 파싱
 # ============================================================
 
