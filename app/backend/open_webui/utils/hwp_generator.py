@@ -790,18 +790,7 @@ def assemble_hwpx_hybrid(
         if role and role not in role_exemplar_idx and role not in skip_roles:
             role_exemplar_idx[role] = real_idx
 
-    # 표 구조 확인 (1x1 = 텍스트 상자)
-    tables_info = structure.get("tables", [])
-    table_box_indices = set()
-    for t in tables_info:
-        if t.get("rows", 0) == 1 and t.get("cols", 0) == 1:
-            # 이 표가 속한 문단의 idx를 찾기
-            tbl_idx = t.get("table", -1)
-            for p in paragraphs_info:
-                if p.get("idx", -1) >= 0:
-                    table_box_indices.add(p.get("idx"))
-
-    # 실제로 1x1 표인지는 문단에 표가 있는지로 판별
+    # 표 포함 여부 판별 (표가 있는 문단 = table box로 처리)
     for role, idx in role_exemplar_idx.items():
         if 0 <= idx < len(doc.paragraphs):
             para = doc.paragraphs[idx]
@@ -812,11 +801,13 @@ def assemble_hwpx_hybrid(
         f"table_box: {sum(role_is_table_box.values())}개"
     )
 
-    # ── 2단계: exemplar 요소 저장 (deepcopy) ──
+    # ── 2단계: exemplar 요소 저장 (deepcopy + ctrl 제거) ──
     exemplars = {}  # role → deepcopy된 XML element
     for role, idx in role_exemplar_idx.items():
         if 0 <= idx < len(doc.paragraphs):
-            exemplars[role] = deepcopy(doc.paragraphs[idx].element)
+            elem = deepcopy(doc.paragraphs[idx].element)
+            _strip_document_ctrls(elem, NS)
+            exemplars[role] = elem
             log.debug(f"exemplar 저장: {role} (idx={idx})")
 
     # ── 3단계: header 영역 처리 ──
@@ -845,18 +836,18 @@ def assemble_hwpx_hybrid(
         except Exception as e:
             errors.append(f"header({role_name}, idx={real_idx}): {e}")
 
-    # toc, fixed, spacer도 header로 취급 (보존 또는 제거 판단)
-    toc_indices = set()
+    # toc, fixed, spacer → 보존 (header_indices에 추가)
     for p in paragraphs_info:
         role = p.get("role", "")
         real_idx = _to_real_idx(p.get("idx", -1))
-        if role in skip_roles:
-            if role == "toc":
-                toc_indices.add(real_idx)
-            elif role == "fixed":
-                header_indices.add(real_idx)  # fixed는 보존
+        if role in skip_roles and 0 <= real_idx < len(doc.paragraphs):
+            header_indices.add(real_idx)  # toc, fixed, spacer 모두 보존
 
-    # ── 4단계: 본문 영역 비우기 (header + fixed 제외) ──
+    # 첫 번째 문단(secPr 포함) 반드시 보존
+    if len(doc.paragraphs) > 0:
+        header_indices.add(0)
+
+    # ── 4단계: 본문 영역 비우기 (header/toc/fixed/secPr 제외) ──
     section_elem = doc.paragraphs[0].element.getparent()
     body_elements = []
     for i, p in enumerate(doc.paragraphs):
@@ -907,6 +898,26 @@ def assemble_hwpx_hybrid(
     )
 
 
+def _strip_document_ctrls(elem, NS: str):
+    """
+    복제된 exemplar에서 document-level ctrl 요소를 제거합니다.
+    footer, header, newNum, pageHiding 등은 문서에 한 번만 존재해야 하므로
+    exemplar를 clone할 때 중복 생성되지 않도록 제거합니다.
+    """
+    remove_types = {"footer", "header", "newNum", "pageHiding"}
+    for ctrl in elem.findall(f".//{NS}ctrl"):
+        for child in list(ctrl):
+            local_name = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if local_name in remove_types:
+                # ctrl을 포함하는 run 전체를 제거
+                run = ctrl.getparent()
+                if run is not None:
+                    parent = run.getparent()
+                    if parent is not None:
+                        parent.remove(run)
+                break
+
+
 def _set_element_text(para, text: str, NS: str):
     """기존 문단(HwpxOxmlParagraph)의 텍스트를 교체합니다."""
     # 표가 있는 문단이면 텍스트가 있는 셀을 찾아 교체
@@ -931,8 +942,9 @@ def _set_element_text(para, text: str, NS: str):
         cell_paras = target_cell.paragraphs
         if cell_paras:
             cell_paras[0].text = text
+            # 나머지 문단은 삭제하지 않고 텍스트만 비움 (구조 보존)
             for cp in cell_paras[1:]:
-                cp.remove()
+                cp.text = ""
         return
 
     # 일반 문단
