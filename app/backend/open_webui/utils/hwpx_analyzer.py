@@ -1072,11 +1072,11 @@ def parse_structure_from_llm(llm_response: str) -> dict:
             raise ValueError("구조 분석 응답에서 JSON을 찾을 수 없습니다")
 
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, strict=False)
     except json.JSONDecodeError:
         repaired = _repair_json(raw)
         try:
-            data = json.loads(repaired)
+            data = json.loads(repaired, strict=False)
         except json.JSONDecodeError as e:
             raise ValueError(f"구조 분석 JSON 파싱 실패: {e}")
 
@@ -1215,12 +1215,12 @@ def parse_actions_from_llm(llm_response: str) -> list[dict]:
             raise ValueError("LLM 응답에서 JSON을 찾을 수 없습니다")
 
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, strict=False)
     except json.JSONDecodeError as e1:
         log.warning(f"JSON 1차 파싱 실패 ({e1}), 복구 시도...")
         repaired = _repair_json(raw)
         try:
-            data = json.loads(repaired)
+            data = json.loads(repaired, strict=False)
             log.info("JSON 복구 성공")
         except json.JSONDecodeError as e2:
             log.warning(f"JSON _repair_json 후에도 실패 ({e2}), 개별 객체 추출 시도...")
