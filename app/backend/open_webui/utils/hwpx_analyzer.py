@@ -840,7 +840,8 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
             all_original_indices.add(int(idx_val))
 
     if len(light_xml) <= max_chars:
-        return {"xml": light_xml, "removed_indices": []}
+        identity_map = {int(idx): int(idx) for idx in all_original_indices}
+        return {"xml": light_xml, "removed_indices": [], "idx_map": identity_map}
 
     root = etree.fromstring(light_xml.encode("utf-8"))
     total_paras = len(root.findall(f".//{NS_HP}p"))
@@ -1063,8 +1064,11 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
     removed_indices = sorted(all_original_indices - kept_indices)
 
     # 재번호: 0, 1, 2, ...
+    # idx_map: {new_idx → old_idx} — AI가 보는 번호 → 원본 문서의 실제 위치
+    idx_map = {}
     for new_idx, (old_idx, p) in enumerate(surviving):
         p.set("_idx", str(new_idx))
+        idx_map[new_idx] = old_idx
 
     # ── 메타 주석 ──
     remaining_tables = len(root_final.findall(f".//{NS_HP}tbl"))
@@ -1083,7 +1087,7 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
         f"표 {remaining_tables}/{total_tables}개 보존, "
         f"문단 {len(surviving)}/{len(all_original_indices)}개 보존"
     )
-    return {"xml": result, "removed_indices": removed_indices}
+    return {"xml": result, "removed_indices": removed_indices, "idx_map": idx_map}
 
 
 def pdf_to_text(pdf_path: str, max_chars: int = 50000) -> str:

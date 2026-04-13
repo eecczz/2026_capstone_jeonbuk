@@ -729,6 +729,7 @@ def assemble_hwpx_hybrid(
     structure: dict,
     content: dict,
     removed_indices: list[int] = None,
+    idx_map: dict = None,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -769,17 +770,25 @@ def assemble_hwpx_hybrid(
     errors = []
     success_count = 0
 
+    # idx_map: AI의 idx(축소본) → 원본 template의 실제 idx
+    # 없으면 identity (축소 안 된 경우)
+    def _to_real_idx(ai_idx: int) -> int:
+        if idx_map:
+            return idx_map.get(ai_idx, ai_idx)
+        return ai_idx
+
     # ── 1단계: role → exemplar idx 매핑 (각 role의 첫 번째 idx를 exemplar로) ──
-    role_exemplar_idx = {}  # role → idx
+    role_exemplar_idx = {}  # role → 원본 template idx
     role_is_table_box = {}  # role → bool
     header_roles = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
     skip_roles = {"spacer", "toc", "fixed"}
 
     for p in paragraphs_info:
         role = p.get("role", "")
-        idx = p.get("idx", -1)
+        ai_idx = p.get("idx", -1)
+        real_idx = _to_real_idx(ai_idx)
         if role and role not in role_exemplar_idx and role not in skip_roles:
-            role_exemplar_idx[role] = idx
+            role_exemplar_idx[role] = real_idx
 
     # 표 구조 확인 (1x1 = 텍스트 상자)
     tables_info = structure.get("tables", [])
@@ -827,27 +836,27 @@ def assemble_hwpx_hybrid(
 
     for p in paragraphs_info:
         role = p.get("role", "")
-        idx = p.get("idx", -1)
+        real_idx = _to_real_idx(p.get("idx", -1))
         if role in header_field_map:
-            header_indices.add(idx)
+            header_indices.add(real_idx)
             text = header_field_map[role]
-            if text and 0 <= idx < len(doc.paragraphs):
+            if text and 0 <= real_idx < len(doc.paragraphs):
                 try:
-                    _set_element_text(doc.paragraphs[idx], text, NS)
+                    _set_element_text(doc.paragraphs[real_idx], text, NS)
                     success_count += 1
                 except Exception as e:
-                    errors.append(f"header({role}, idx={idx}): {e}")
+                    errors.append(f"header({role}, idx={real_idx}): {e}")
 
     # toc, fixed, spacer도 header로 취급 (보존 또는 제거 판단)
     toc_indices = set()
     for p in paragraphs_info:
         role = p.get("role", "")
-        idx = p.get("idx", -1)
+        real_idx = _to_real_idx(p.get("idx", -1))
         if role in skip_roles:
             if role == "toc":
-                toc_indices.add(idx)
+                toc_indices.add(real_idx)
             elif role == "fixed":
-                header_indices.add(idx)  # fixed는 보존
+                header_indices.add(real_idx)  # fixed는 보존
 
     # ── 4단계: 본문 영역 비우기 (header + fixed 제외) ──
     section_elem = doc.paragraphs[0].element.getparent()
