@@ -503,7 +503,9 @@ def generate_hwpx_dynamic(
         )
 
     # 미수정 editable 필드 자동 클리어
-    if structure:
+    # clear_body가 사용된 경우 문서 구조가 완전히 바뀌었으므로 클리어 건너뜀
+    has_clear_body = any(a.get("type") == "clear_body" for a in actions)
+    if structure and not has_clear_body:
         _clear_unmodified_fields(doc, structure, modified_paragraphs, modified_cells)
 
     return HwpxResult(
