@@ -312,6 +312,49 @@ def _execute_insert_paragraph(doc, action: dict):
     section_elem.insert(target_pos, new_elem)
 
 
+def _execute_clone_paragraph(doc, action: dict):
+    """기존 문단을 복제하여 바로 뒤에 삽입 (표/텍스트 상자 포함 전체 구조 보존).
+    복제 후 텍스트를 교체합니다."""
+    from copy import deepcopy
+
+    source_idx = action.get("source")
+    text = action.get("text", "")
+
+    if source_idx is None:
+        raise ValueError("clone_paragraph에 source 필수")
+    if source_idx < 0 or source_idx >= len(doc.paragraphs):
+        raise IndexError(
+            f"복제 원본 인덱스 {source_idx} 범위 초과 (전체 {len(doc.paragraphs)}개)"
+        )
+
+    source = doc.paragraphs[source_idx]
+    section_elem = source.element.getparent()
+    source_pos = list(section_elem).index(source.element)
+
+    # 문단 전체 복제 (표, 텍스트 상자, 서식 모두 포함)
+    new_elem = deepcopy(source.element)
+
+    # 텍스트 교체
+    NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    if text:
+        # 표가 있는 문단이면 표 안의 첫 번째 셀 텍스트 교체
+        tbl = new_elem.find(f".//{NS}tbl")
+        if tbl is not None:
+            for t_elem in tbl.iter(f"{NS}t"):
+                if t_elem.text is not None or t_elem.getparent().tag.endswith("}run"):
+                    t_elem.text = text
+                    break
+        else:
+            # 일반 문단이면 첫 번째 run의 텍스트 교체
+            for t_elem in new_elem.iter(f"{NS}t"):
+                t_elem.text = text
+                break
+
+    # 원본 바로 뒤에 삽입
+    section_elem.insert(source_pos + 1, new_elem)
+    log.info(f"문단 {source_idx} 복제 완료 (텍스트: {text[:50]}...)")
+
+
 # 명령 타입 → 실행 함수 매핑
 ACTION_HANDLERS = {
     "set_cell": _execute_set_cell,
@@ -322,6 +365,7 @@ ACTION_HANDLERS = {
     "remove_paragraph": _execute_remove_paragraph,
     "add_row": _execute_add_row,
     "remove_table": _execute_remove_table,
+    "clone_paragraph": _execute_clone_paragraph,
     "insert_paragraph": _execute_insert_paragraph,
 }
 
@@ -330,7 +374,7 @@ _NONSTRUCTURAL = {"set_cell", "set_paragraph_text", "add_row"}
 # 구조 삭제 (높은 인덱스부터 → 시프트 방지)
 _STRUCTURAL_REMOVE = {"remove_paragraph", "remove_table"}
 # 구조 삽입 (높은 인덱스부터 → 시프트 방지)
-_STRUCTURAL_INSERT = {"insert_paragraph"}
+_STRUCTURAL_INSERT = {"insert_paragraph", "clone_paragraph"}
 # 범위 삭제
 _STRUCTURAL_CLEAR = {"clear_body"}
 # 문서 끝 추가 (마지막에 실행)
