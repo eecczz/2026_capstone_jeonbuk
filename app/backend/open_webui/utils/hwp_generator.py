@@ -573,3 +573,220 @@ def generate_hwpx_dynamic(
         fail_count=fail_count,
         errors=errors,
     )
+
+
+# ============================================================
+# 역할 기반 문서 조립 (v2)
+# ============================================================
+
+
+def assemble_hwpx(
+    template_source,
+    style_catalog: dict,
+    role_map: dict,
+    content: dict,
+) -> HwpxResult:
+    """
+    역할 기반으로 HWPX 문서를 조립합니다.
+
+    1. 양식을 열고 각 서식 그룹의 exemplar 문단 요소를 저장
+    2. 본문 영역을 비움
+    3. header(제목/날짜/기관) 설정
+    4. body 항목마다 해당 역할의 exemplar를 복제 + 텍스트 교체
+    5. 완성된 문서를 bytes로 반환
+
+    Args:
+        template_source: 양식 HWPX 파일 경로(str), bytes, 또는 file-like
+        style_catalog: extract_style_groups() 반환값
+        role_map: parse_role_interpret_from_llm() 반환값 {gid: {role, label}}
+        content: parse_role_content_from_llm() 반환값 {header, body}
+
+    Returns:
+        HwpxResult(data=bytes, success_count, fail_count, errors)
+    """
+    from copy import deepcopy
+    from lxml import etree
+
+    NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    if isinstance(template_source, str):
+        doc = HwpxDocument.open(template_source)
+    elif isinstance(template_source, bytes):
+        doc = HwpxDocument.open(io.BytesIO(template_source))
+    else:
+        doc = HwpxDocument.open(template_source)
+
+    groups = style_catalog["groups"]
+    errors = []
+    success_count = 0
+
+    # ── 1단계: exemplar 요소 저장 (deepcopy) ──
+    exemplars = {}  # gid → deepcopy된 XML element
+    for gid, g in groups.items():
+        eidx = g["exemplar_idx"]
+        if 0 <= eidx < len(doc.paragraphs):
+            exemplars[gid] = deepcopy(doc.paragraphs[eidx].element)
+            log.debug(f"exemplar 저장: {gid} (idx={eidx})")
+
+    # spacer exemplar도 저장 (spacer 역할이 있으면)
+    spacer_gid = None
+    for gid, info in role_map.items():
+        if info.get("role") == "spacer" and gid in exemplars:
+            spacer_gid = gid
+            break
+
+    # ── 2단계: header 영역 처리 (title, meta) ──
+    header_data = content.get("header", {})
+    title_text = header_data.get("title", "")
+    meta_items = header_data.get("meta", [])
+    if isinstance(meta_items, str):
+        meta_items = [meta_items]
+
+    # title/meta 역할의 그룹 찾기
+    title_gids = [gid for gid, info in role_map.items() if info.get("role") == "title"]
+    meta_gids = [gid for gid, info in role_map.items() if info.get("role") == "meta"]
+
+    # header 영역: 원본에서 title/meta 문단의 idx 수집
+    header_indices = set()
+    for gid in title_gids + meta_gids:
+        if gid in groups:
+            header_indices.update(groups[gid]["indices"])
+
+    # title 문단 텍스트 교체
+    for gid in title_gids:
+        if gid in groups and title_text:
+            for idx in groups[gid]["indices"]:
+                if 0 <= idx < len(doc.paragraphs):
+                    try:
+                        _set_element_text(doc.paragraphs[idx], title_text, NS)
+                        success_count += 1
+                    except Exception as e:
+                        errors.append(f"title({idx}): {e}")
+
+    # meta 문단 텍스트 교체
+    meta_idx = 0
+    for gid in meta_gids:
+        if gid in groups:
+            for idx in groups[gid]["indices"]:
+                if meta_idx < len(meta_items) and 0 <= idx < len(doc.paragraphs):
+                    try:
+                        _set_element_text(doc.paragraphs[idx], meta_items[meta_idx], NS)
+                        success_count += 1
+                        meta_idx += 1
+                    except Exception as e:
+                        errors.append(f"meta({idx}): {e}")
+
+    # ── 3단계: 본문 영역 비우기 (header 제외) ──
+    section_elem = doc.paragraphs[0].element.getparent()
+    body_elements = []
+    for i, p in enumerate(doc.paragraphs):
+        if i not in header_indices:
+            body_elements.append(p.element)
+
+    for elem in body_elements:
+        section_elem.remove(elem)
+
+    log.info(f"본문 {len(body_elements)}개 문단 제거, header {len(header_indices)}개 보존")
+
+    # ── 4단계: body 항목으로 문서 재조립 ──
+    body_items = content.get("body", [])
+
+    for item in body_items:
+        gid = item.get("group", "")
+        text = item.get("text", "")
+
+        if gid not in exemplars:
+            # 지정된 그룹이 없으면 가장 가까운 역할의 그룹 찾기
+            errors.append(f"unknown group '{gid}', skipping: {text[:30]}")
+            continue
+
+        # exemplar 복제
+        new_elem = deepcopy(exemplars[gid])
+
+        # 텍스트 교체
+        try:
+            _set_cloned_element_text(new_elem, text, NS, groups[gid].get("is_table_box", False))
+            section_elem.append(new_elem)
+            success_count += 1
+        except Exception as e:
+            errors.append(f"assemble({gid}): {e}")
+
+    log.info(
+        f"문서 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
+        f"body 항목 {len(body_items)}개"
+    )
+
+    return HwpxResult(
+        data=doc.to_bytes(),
+        success_count=success_count,
+        fail_count=len(errors),
+        errors=errors,
+    )
+
+
+def _set_element_text(para, text: str, NS: str):
+    """기존 문단(HwpxOxmlParagraph)의 텍스트를 교체합니다."""
+    # 표가 있는 문단이면 첫 번째 셀의 텍스트 교체
+    if para.tables:
+        tbl = para.tables[0]
+        cell = tbl.cell(0, 0)
+        cell_paras = cell.paragraphs
+        if cell_paras:
+            cell_paras[0].text = text
+            for cp in cell_paras[1:]:
+                cp.remove()
+        return
+
+    # 일반 문단
+    para.text = text
+
+
+def _set_cloned_element_text(elem, text: str, NS: str, is_table_box: bool):
+    """deepcopy된 XML 요소의 텍스트를 교체합니다."""
+    if is_table_box:
+        # 1행 표 내부의 텍스트 교체
+        # 마지막 셀의 텍스트를 교체 (첫 셀이 번호/마커인 경우)
+        trs = elem.findall(f".//{NS}tr")
+        if trs:
+            tcs = trs[0].findall(f"{NS}tc")
+            if tcs:
+                # 텍스트가 있는 마지막 셀을 교체 대상으로
+                target_tc = tcs[-1] if len(tcs) > 1 else tcs[0]
+                sublist = target_tc.find(f"{NS}subList")
+                if sublist is not None:
+                    paras = sublist.findall(f"{NS}p")
+                    if paras:
+                        # 첫 번째 문단의 텍스트 교체
+                        _replace_text_in_paragraph_elem(paras[0], text, NS)
+                        # 나머지 문단 제거
+                        for p in paras[1:]:
+                            sublist.remove(p)
+                    return
+
+    # 일반 문단의 텍스트 교체
+    _replace_text_in_paragraph_elem(elem, text, NS)
+
+
+def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
+    """XML paragraph 요소 내부의 텍스트를 교체합니다. 첫 run만 남기고 나머지 run 제거."""
+    runs = p_elem.findall(f"{NS}run")
+    if not runs:
+        return
+
+    # 첫 번째 run의 텍스트 교체
+    first_run = runs[0]
+    t_elem = first_run.find(f"{NS}t")
+    if t_elem is not None:
+        t_elem.text = text
+        # t 하위의 탭/특수문자 요소 제거
+        for child in list(t_elem):
+            t_elem.remove(child)
+    else:
+        t_elem = etree.SubElement(first_run, f"{NS}t")
+        t_elem.text = text
+
+    # ctrl 요소가 있는 run은 보존 (header, footer, pageNum 등)
+    for run in runs[1:]:
+        has_ctrl = run.find(f"{NS}ctrl") is not None
+        if not has_ctrl:
+            p_elem.remove(run)
