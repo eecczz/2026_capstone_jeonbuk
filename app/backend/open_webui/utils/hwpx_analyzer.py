@@ -474,7 +474,260 @@ def extract_style_groups(hwpx_source) -> dict:
 
 
 # ============================================================
-# AI 프롬프트 생성 및 응답 파싱
+# 역할 기반 AI 프롬프트 (v2)
+# ============================================================
+
+ROLE_INTERPRET_PROMPT = """당신은 한국 행정문서 양식 전문가입니다.
+아래는 HWPX 양식 파일에서 자동 추출한 "서식 그룹" 목록입니다.
+각 그룹은 같은 서식(폰트 크기, 배경색, 테두리 등)을 공유하는 문단/표 묶음입니다.
+
+## 작업
+각 서식 그룹이 문서에서 어떤 **역할**을 하는지 판별하세요.
+
+## 역할 유형
+다음 중 하나를 지정하세요:
+- **title**: 문서 전체 제목
+- **meta**: 날짜, 기관명 등 메타 정보
+- **section_header**: 대분류 제목 (Ⅰ, Ⅱ, Ⅲ 등)
+- **subsection_header**: 중분류 제목 (1., 2. 또는 □ 등)
+- **item**: 세부 항목 (ㅇ, -, ❍ 등)
+- **sub_item**: 하위 항목 (*, 주석, 부연)
+- **summary_box**: 요약/핵심 문구 박스
+- **spacer**: 빈 줄 (문단 간격용)
+- **toc**: 목차
+- **other**: 위에 해당 없음
+
+## 출력 형식
+반드시 아래 JSON만 출력하세요:
+
+```json
+{
+  "roles": {
+    "g1": {"role": "title", "label": "문서 제목"},
+    "g2": {"role": "section_header", "label": "대분류 번호+제목"},
+    "g3": {"role": "spacer", "label": "빈 줄"},
+    "g4": {"role": "item", "label": "세부 항목 (❍)"}
+  }
+}
+```
+
+## 판별 힌트
+- 큰 폰트 + 배경색/테두리 → 보통 제목 또는 섹션 헤더
+- 텍스트박스(1x1 표) + 배경색 → 보통 요약 박스 또는 섹션 헤더
+- ❍, ㅇ, □, - 같은 마커로 시작 → 항목 또는 소항목
+- 빈 문단 → spacer
+- 같은 역할인데 서식이 약간 다른 그룹이 있을 수 있음 (같은 label 부여 가능)
+"""
+
+
+def build_role_interpret_prompt(style_catalog: dict) -> list[dict]:
+    """
+    1차 AI 호출: 서식 그룹 → 역할 해석 프롬프트
+
+    Args:
+        style_catalog: extract_style_groups()의 반환값
+
+    Returns:
+        [{"role": "system", ...}, {"role": "user", ...}]
+    """
+    groups = style_catalog["groups"]
+    sequence = style_catalog["sequence"]
+
+    # 그룹 목록 정리
+    group_lines = []
+    for gid, g in groups.items():
+        dims = f" ({g.get('table_dims', '')})" if g.get('table_dims') else ""
+        group_lines.append(
+            f"- **{gid}**: {g['style_desc']}{dims}, "
+            f"출현 {g['count']}회, "
+            f"샘플: \"{g['sample_text']}\""
+        )
+
+    # 시퀀스 미리보기 (문서 순서 파악용, 앞 40개)
+    seq_lines = []
+    for s in sequence[:40]:
+        seq_lines.append(f"  [{s['group_id']}] \"{s['text_preview']}\"")
+    if len(sequence) > 40:
+        seq_lines.append(f"  ... (총 {len(sequence)}개)")
+
+    user_msg = (
+        "## 서식 그룹 목록\n"
+        + "\n".join(group_lines)
+        + "\n\n## 문서 순서 (앞부분)\n"
+        + "\n".join(seq_lines)
+        + "\n\n반드시 JSON만 출력하세요."
+    )
+
+    return [
+        {"role": "system", "content": ROLE_INTERPRET_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_role_interpret_from_llm(llm_response: str) -> dict:
+    """1차 AI 응답에서 역할 해석 JSON을 파싱합니다."""
+    json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
+    if json_match:
+        raw = json_match.group(1)
+    else:
+        brace_match = re.search(r'\{[\s\S]*\}', llm_response)
+        if brace_match:
+            raw = brace_match.group(0)
+        else:
+            raise ValueError("역할 해석 응답에서 JSON을 찾을 수 없습니다")
+
+    try:
+        data = json.loads(raw, strict=False)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"역할 해석 JSON 파싱 실패: {e}")
+
+    if "roles" not in data:
+        raise ValueError("역할 해석 결과에 'roles' 키가 없습니다")
+
+    return data["roles"]  # {"g1": {"role": "title", "label": "..."}, ...}
+
+
+ROLE_CONTENT_PROMPT = """당신은 한국 행정문서 작성 전문가입니다.
+양식의 서식 그룹(역할)을 사용하여 소스 자료의 내용을 문서로 구성합니다.
+
+## 역할 카탈로그
+아래는 양식에서 사용 가능한 서식 역할입니다. 각 역할은 고유한 서식(폰트, 배경, 테두리)을 가집니다.
+
+{catalog}
+
+## 작업
+소스 자료의 내용을 위 역할들을 사용하여 문서로 구성하세요.
+- 각 내용 항목에 적절한 역할(group_id)을 지정하세요
+- 대제목 → section_header 역할, 중제목 → subsection_header 역할, 세부 내용 → item 역할 등
+- 소스 자료의 모든 내용을 빠짐없이 포함하세요
+- 소스에 없는 내용을 만들어내지 마세요
+- 마커(□, ㅇ, - 등)는 역할에 맞게 포함하세요
+
+## 출력 형식
+반드시 아래 JSON만 출력하세요:
+
+```json
+{{
+  "header": {{
+    "title": "문서 제목",
+    "meta": ["2024. 1. 15.", "기관명"]
+  }},
+  "body": [
+    {{"group": "g2", "text": "Ⅰ. 첫 번째 대분류"}},
+    {{"group": "g4", "text": "□ 첫 번째 중분류 항목"}},
+    {{"group": "g5", "text": "ㅇ 세부 내용 1"}},
+    {{"group": "g5", "text": "ㅇ 세부 내용 2"}},
+    {{"group": "g2", "text": "Ⅱ. 두 번째 대분류"}},
+    {{"group": "g4", "text": "□ 두 번째 중분류 항목"}}
+  ]
+}}
+```
+
+## 중요
+1. group 값은 반드시 역할 카탈로그에 있는 group_id를 사용하세요
+2. spacer 역할은 직접 지정하지 마세요 (시스템이 자동 삽입)
+3. header.title은 문서 전체 제목, header.meta는 날짜/기관 등 부가정보
+4. body는 본문 내용을 문서 순서대로 나열
+"""
+
+
+def build_role_content_prompt(
+    style_catalog: dict,
+    role_map: dict,
+    content_text: str = "",
+    content_images: list[str] = None,
+    pdf_text: str = "",
+) -> list[dict]:
+    """
+    2차 AI 호출: 역할 카탈로그 + 소스 내용 → 역할 태깅 콘텐츠 프롬프트
+
+    Args:
+        style_catalog: extract_style_groups()의 반환값
+        role_map: parse_role_interpret_from_llm()의 반환값
+        content_text: 직접 입력한 내용
+        content_images: PDF 페이지 base64 JPEG 이미지
+        pdf_text: PDF에서 추출한 텍스트
+
+    Returns:
+        [{"role": "system", ...}, {"role": "user", ...}]
+    """
+    groups = style_catalog["groups"]
+
+    # 역할 카탈로그 텍스트 생성
+    catalog_lines = []
+    for gid, g in groups.items():
+        role_info = role_map.get(gid, {})
+        role_name = role_info.get("role", "other")
+        label = role_info.get("label", "")
+        if role_name == "spacer":
+            continue  # spacer는 AI가 사용하지 않음
+        dims = f" ({g.get('table_dims', '')})" if g.get('table_dims') else ""
+        catalog_lines.append(
+            f"- **{gid}** [{role_name}]: {label} — {g['style_desc']}{dims}, "
+            f"샘플: \"{g['sample_text']}\""
+        )
+
+    catalog_text = "\n".join(catalog_lines)
+    system_prompt = ROLE_CONTENT_PROMPT.replace("{catalog}", catalog_text)
+
+    # 소스 내용 구성
+    user_parts = []
+    text_block = "## 소스 자료\n"
+
+    has_pdf_text = bool(pdf_text and pdf_text.strip())
+    has_images = bool(content_images)
+    has_content = bool(content_text and content_text.strip())
+
+    if has_pdf_text:
+        text_block += f"```\n{pdf_text}\n```\n\n"
+        if has_content:
+            text_block += f"추가 지시사항: {content_text}\n\n"
+    elif has_content:
+        text_block += f"{content_text}\n\n"
+
+    text_block += "반드시 JSON만 출력하세요.\n"
+
+    if has_images:
+        user_parts.append({"type": "text", "text": text_block})
+        for img_b64 in content_images:
+            user_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+            })
+    else:
+        user_parts = text_block
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_parts},
+    ]
+
+
+def parse_role_content_from_llm(llm_response: str) -> dict:
+    """2차 AI 응답에서 역할 태깅 콘텐츠 JSON을 파싱합니다."""
+    json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
+    if json_match:
+        raw = json_match.group(1)
+    else:
+        brace_match = re.search(r'\{[\s\S]*\}', llm_response)
+        if brace_match:
+            raw = brace_match.group(0)
+        else:
+            raise ValueError("콘텐츠 응답에서 JSON을 찾을 수 없습니다")
+
+    try:
+        data = json.loads(raw, strict=False)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"콘텐츠 JSON 파싱 실패: {e}")
+
+    if "header" not in data or "body" not in data:
+        raise ValueError("콘텐츠 결과에 'header' 또는 'body' 키가 없습니다")
+
+    return data  # {"header": {...}, "body": [...]}
+
+
+# ============================================================
+# AI 프롬프트 생성 및 응답 파싱 (v1 — 기존 호환용)
 # ============================================================
 
 HWPX_SYSTEM_PROMPT = """당신은 HWPX 문서 생성 전문가입니다.
