@@ -1193,6 +1193,45 @@ async def generate_hwpx_dynamic_endpoint(
             detail=f"HWPX 생성 실패: {e}",
         )
 
+    # 7-1) 결과 문서 내용 디버그 덤프
+    try:
+        from hwpx import HwpxDocument
+        debug_doc = HwpxDocument.open(BytesIO(result.data))
+        debug_lines = []
+        debug_lines.append(f"=== 결과 문서: 문단 {len(debug_doc.paragraphs)}개 ===")
+        for i, p in enumerate(debug_doc.paragraphs):
+            text = p.text or ""
+            preview = text[:100].replace("\n", "\\n")
+            if len(text) > 100:
+                preview += "..."
+            debug_lines.append(f"  P[{i}] {preview}")
+        tables_found = []
+        for p in debug_doc.paragraphs:
+            tables_found.extend(p.tables)
+        debug_lines.append(f"=== 결과 문서: 표 {len(tables_found)}개 ===")
+        for t_idx, tbl in enumerate(tables_found):
+            rows = int(tbl.element.get("rowCnt", "0"))
+            cols = int(tbl.element.get("colCnt", "0"))
+            debug_lines.append(f"  T[{t_idx}] {rows}x{cols}")
+            NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+            for tr in tbl.element.findall(f"{NS}tr"):
+                for tc in tr.findall(f"{NS}tc"):
+                    addr = tc.find(f"{NS}cellAddr")
+                    r = addr.get("rowAddr", "?") if addr is not None else "?"
+                    c = addr.get("colAddr", "?") if addr is not None else "?"
+                    cell_text = ""
+                    for t_elem in tc.iter(f"{NS}t"):
+                        if t_elem.text:
+                            cell_text += t_elem.text
+                    preview = cell_text[:80].replace("\n", "\\n")
+                    if len(cell_text) > 80:
+                        preview += "..."
+                    if cell_text.strip():
+                        debug_lines.append(f"    ({r},{c}) {preview}")
+        log.info(f"[HWP-DEBUG] 결과 문서 내용:\n" + "\n".join(debug_lines))
+    except Exception as e:
+        log.warning(f"[HWP-DEBUG] 결과 문서 덤프 실패: {e}")
+
     # 7) 응답
     doc_title = form_data.doc_title or template_file.meta.get("name", "document")
     if not doc_title.endswith(".hwpx"):
