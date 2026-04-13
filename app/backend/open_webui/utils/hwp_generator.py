@@ -84,6 +84,15 @@ def _execute_set_cell(doc, action: dict):
         else:
             raise IndexError(f"행 {row} 범위 초과 (표 {table_idx})")
 
+    # 셀 안에 여러 문단이 있으면 첫 번째만 남기고 나머지 제거
+    try:
+        cell = tbl.cell(row, col)
+        cell_paras = cell.paragraphs
+        for cp in cell_paras[1:]:
+            cp.remove()
+    except Exception:
+        pass
+
 
 def _execute_clear_body(doc, action: dict):
     """지정 문단부터 끝까지 삭제"""
