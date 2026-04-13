@@ -820,32 +820,30 @@ def assemble_hwpx_hybrid(
             log.debug(f"exemplar 저장: {role} (idx={idx})")
 
     # ── 3단계: header 영역 처리 ──
+    # header는 {role_name: text} 형태 — role 이름을 AI가 자유롭게 지정
     header_data = content.get("header", {})
-    title_text = header_data.get("title", "")
-    date_text = header_data.get("date", "")
-    org_text = header_data.get("org", "")
 
-    # header에 해당하는 idx 수집 + 텍스트 교체
-    header_indices = set()
-    header_field_map = {
-        "cover_title": title_text,
-        "cover_date": date_text,
-        "cover_org": org_text,
-        "cover_subtitle": header_data.get("subtitle", ""),
-    }
-
+    # structure에서 role → real_idx 매핑 (첫 번째 출현만)
+    role_to_first_idx = {}
     for p in paragraphs_info:
         role = p.get("role", "")
-        real_idx = _to_real_idx(p.get("idx", -1))
-        if role in header_field_map:
-            header_indices.add(real_idx)
-            text = header_field_map[role]
-            if text and 0 <= real_idx < len(doc.paragraphs):
-                try:
-                    _set_element_text(doc.paragraphs[real_idx], text, NS)
-                    success_count += 1
-                except Exception as e:
-                    errors.append(f"header({role}, idx={real_idx}): {e}")
+        if role and role not in role_to_first_idx:
+            role_to_first_idx[role] = _to_real_idx(p.get("idx", -1))
+
+    header_indices = set()
+    for role_name, text in header_data.items():
+        if not text:
+            continue
+        real_idx = role_to_first_idx.get(role_name, -1)
+        if real_idx < 0 or real_idx >= len(doc.paragraphs):
+            errors.append(f"header role '{role_name}' not found in structure")
+            continue
+        header_indices.add(real_idx)
+        try:
+            _set_element_text(doc.paragraphs[real_idx], text, NS)
+            success_count += 1
+        except Exception as e:
+            errors.append(f"header({role_name}, idx={real_idx}): {e}")
 
     # toc, fixed, spacer도 header로 취급 (보존 또는 제거 판단)
     toc_indices = set()

@@ -1416,9 +1416,9 @@ CONTENT_MAPPING_PROMPT = """당신은 HWPX 문서 작성 전문가입니다.
 ```json
 {
   "header": {
-    "title": "문서 제목",
-    "date": "2024. 2. 1.",
-    "org": "기관명"
+    "cover_title_box": "문서 제목",
+    "cover_date": "2024. 2. 1.",
+    "cover_org": "기관명"
   },
   "body": [
     {"role": "chapter_title_box", "text": "Ⅰ. 첫 번째 대분류"},
@@ -1436,10 +1436,10 @@ CONTENT_MAPPING_PROMPT = """당신은 HWPX 문서 작성 전문가입니다.
 ## 매핑 규칙
 
 ### header
-- **title**: 소스 자료의 문서 제목
-- **date**: 소스 자료의 작성일자 (yyyy. m. d. 형식)
-- **org**: 소스 자료의 발신 기관명/작성자
-- 소스에 해당 정보가 없으면 빈 문자열
+- header의 key는 **양식 구조 분석에서 부여된 role 이름 그대로** 사용
+- 문서 앞부분에 한 번만 나오는 요소: 표지 제목, 날짜, 기관명, 부제목 등
+- 각 role에 해당하는 텍스트를 값으로 넣으세요
+- 소스에 해당 정보가 없으면 해당 key를 생략하세요
 
 ### body
 - body 배열은 **문서에 나타날 순서대로** 나열하세요
@@ -1457,7 +1457,8 @@ CONTENT_MAPPING_PROMPT = """당신은 HWPX 문서 작성 전문가입니다.
 1. 소스 자료에 없는 텍스트를 만들어내지 마세요
 2. 소스 자료의 모든 내용을 빠짐없이 반영하세요
 3. role은 반드시 양식 구조 분석 결과에 있는 role만 사용하세요
-4. 반드시 JSON만 출력하세요. 다른 설명은 절대 포함하지 마세요
+4. header의 key와 body의 role은 **1차 구조 분석에서 부여된 role 이름과 정확히 일치**해야 합니다
+5. 반드시 JSON만 출력하세요. 다른 설명은 절대 포함하지 마세요
 """
 
 
@@ -1790,7 +1791,7 @@ def parse_role_content_from_structure_llm(llm_response: str) -> dict:
         llm_response: LLM이 출력한 텍스트
 
     Returns:
-        {"header": {"title": ..., "date": ..., "org": ...}, "body": [{"role": ..., "text": ...}, ...]}
+        {"header": {"role_name": "text", ...}, "body": [{"role": ..., "text": ...}, ...]}
     """
     json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
     if json_match:
