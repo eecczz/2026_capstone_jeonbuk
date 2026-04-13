@@ -724,6 +724,182 @@ def assemble_hwpx(
     )
 
 
+def assemble_hwpx_hybrid(
+    template_source,
+    structure: dict,
+    content: dict,
+    removed_indices: list[int] = None,
+) -> HwpxResult:
+    """
+    하이브리드 방식으로 HWPX 문서를 조립합니다.
+
+    v1 구조 분석(idx + role) + v2 조립(exemplar 복제).
+
+    1. structure에서 role → exemplar idx 매핑 생성
+    2. 양식을 열고 exemplar 문단 요소를 deepcopy로 저장
+    3. header 문단 텍스트 교체
+    4. 본문 영역 비우기
+    5. body 항목마다 role의 exemplar를 복제 + 텍스트 교체
+    6. 완성된 문서를 bytes로 반환
+
+    Args:
+        template_source: 양식 HWPX 파일 경로(str), bytes, 또는 file-like
+        structure: parse_structure_from_llm() 반환값 (role 포함)
+                   {"paragraphs": [{"idx": N, "role": "...", ...}], "tables": [...]}
+        content: parse_role_content_from_structure_llm() 반환값
+                 {"header": {"title": ..., "date": ..., "org": ...}, "body": [{"role": ..., "text": ...}]}
+        removed_indices: truncate_xml()에서 제거된 인덱스 목록
+
+    Returns:
+        HwpxResult(data=bytes, success_count, fail_count, errors)
+    """
+    from copy import deepcopy
+    from lxml import etree
+
+    NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    if isinstance(template_source, str):
+        doc = HwpxDocument.open(template_source)
+    elif isinstance(template_source, bytes):
+        doc = HwpxDocument.open(io.BytesIO(template_source))
+    else:
+        doc = HwpxDocument.open(template_source)
+
+    paragraphs_info = structure.get("paragraphs", [])
+    errors = []
+    success_count = 0
+
+    # ── 1단계: role → exemplar idx 매핑 (각 role의 첫 번째 idx를 exemplar로) ──
+    role_exemplar_idx = {}  # role → idx
+    role_is_table_box = {}  # role → bool
+    header_roles = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
+    skip_roles = {"spacer", "toc", "fixed"}
+
+    for p in paragraphs_info:
+        role = p.get("role", "")
+        idx = p.get("idx", -1)
+        if role and role not in role_exemplar_idx and role not in skip_roles:
+            role_exemplar_idx[role] = idx
+
+    # 표 구조 확인 (1x1 = 텍스트 상자)
+    tables_info = structure.get("tables", [])
+    table_box_indices = set()
+    for t in tables_info:
+        if t.get("rows", 0) == 1 and t.get("cols", 0) == 1:
+            # 이 표가 속한 문단의 idx를 찾기
+            tbl_idx = t.get("table", -1)
+            for p in paragraphs_info:
+                if p.get("idx", -1) >= 0:
+                    table_box_indices.add(p.get("idx"))
+
+    # 실제로 1x1 표인지는 문단에 표가 있는지로 판별
+    for role, idx in role_exemplar_idx.items():
+        if 0 <= idx < len(doc.paragraphs):
+            para = doc.paragraphs[idx]
+            role_is_table_box[role] = bool(para.tables)
+
+    log.info(
+        f"role→exemplar 매핑: {len(role_exemplar_idx)}개 role, "
+        f"table_box: {sum(role_is_table_box.values())}개"
+    )
+
+    # ── 2단계: exemplar 요소 저장 (deepcopy) ──
+    exemplars = {}  # role → deepcopy된 XML element
+    for role, idx in role_exemplar_idx.items():
+        if 0 <= idx < len(doc.paragraphs):
+            exemplars[role] = deepcopy(doc.paragraphs[idx].element)
+            log.debug(f"exemplar 저장: {role} (idx={idx})")
+
+    # ── 3단계: header 영역 처리 ──
+    header_data = content.get("header", {})
+    title_text = header_data.get("title", "")
+    date_text = header_data.get("date", "")
+    org_text = header_data.get("org", "")
+
+    # header에 해당하는 idx 수집 + 텍스트 교체
+    header_indices = set()
+    header_field_map = {
+        "cover_title": title_text,
+        "cover_date": date_text,
+        "cover_org": org_text,
+        "cover_subtitle": header_data.get("subtitle", ""),
+    }
+
+    for p in paragraphs_info:
+        role = p.get("role", "")
+        idx = p.get("idx", -1)
+        if role in header_field_map:
+            header_indices.add(idx)
+            text = header_field_map[role]
+            if text and 0 <= idx < len(doc.paragraphs):
+                try:
+                    _set_element_text(doc.paragraphs[idx], text, NS)
+                    success_count += 1
+                except Exception as e:
+                    errors.append(f"header({role}, idx={idx}): {e}")
+
+    # toc, fixed, spacer도 header로 취급 (보존 또는 제거 판단)
+    toc_indices = set()
+    for p in paragraphs_info:
+        role = p.get("role", "")
+        idx = p.get("idx", -1)
+        if role in skip_roles:
+            if role == "toc":
+                toc_indices.add(idx)
+            elif role == "fixed":
+                header_indices.add(idx)  # fixed는 보존
+
+    # ── 4단계: 본문 영역 비우기 (header + fixed 제외) ──
+    section_elem = doc.paragraphs[0].element.getparent()
+    body_elements = []
+    for i, p in enumerate(doc.paragraphs):
+        if i not in header_indices:
+            body_elements.append(p.element)
+
+    for elem in body_elements:
+        section_elem.remove(elem)
+
+    log.info(
+        f"본문 {len(body_elements)}개 문단 제거, "
+        f"header {len(header_indices)}개 보존"
+    )
+
+    # ── 5단계: body 항목으로 문서 재조립 ──
+    body_items = content.get("body", [])
+
+    for item in body_items:
+        role = item.get("role", "")
+        text = item.get("text", "")
+
+        if role not in exemplars:
+            errors.append(f"unknown role '{role}', skipping: {text[:50]}")
+            continue
+
+        # exemplar 복제
+        new_elem = deepcopy(exemplars[role])
+
+        # 텍스트 교체
+        try:
+            is_tbl_box = role_is_table_box.get(role, False)
+            _set_cloned_element_text(new_elem, text, NS, is_tbl_box)
+            section_elem.append(new_elem)
+            success_count += 1
+        except Exception as e:
+            errors.append(f"assemble({role}): {e}")
+
+    log.info(
+        f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
+        f"body 항목 {len(body_items)}개"
+    )
+
+    return HwpxResult(
+        data=doc.to_bytes(),
+        success_count=success_count,
+        fail_count=len(errors),
+        errors=errors,
+    )
+
+
 def _set_element_text(para, text: str, NS: str):
     """기존 문단(HwpxOxmlParagraph)의 텍스트를 교체합니다."""
     # 표가 있는 문단이면 첫 번째 셀의 텍스트 교체
