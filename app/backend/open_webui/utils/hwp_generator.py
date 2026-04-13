@@ -447,7 +447,7 @@ def _clear_unmodified_fields(doc, structure, modified_paragraphs, modified_cells
                 except Exception:
                     pass
 
-    # 표 셀 클리어
+    # 표 셀 클리어 — 셀 안의 모든 문단을 제거하고 빈 문단 하나만 남김
     tables_found = []
     for p in doc.paragraphs:
         tables_found.extend(p.tables)
@@ -459,7 +459,13 @@ def _clear_unmodified_fields(doc, structure, modified_paragraphs, modified_cells
             if (table_idx, r, c) not in modified_cells:
                 if table_idx is not None and table_idx < len(tables_found):
                     try:
-                        tables_found[table_idx].set_cell_text(r, c, "")
+                        cell = tables_found[table_idx].cell(r, c)
+                        # 셀 내 모든 문단의 텍스트를 비우고 첫 번째만 남김
+                        cell_paras = cell.paragraphs
+                        for cp in cell_paras:
+                            cp.text = ""
+                        for cp in cell_paras[1:]:
+                            cp.remove()
                         cleared += 1
                     except Exception:
                         pass
