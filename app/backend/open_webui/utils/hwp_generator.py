@@ -24,13 +24,14 @@ class HwpxResult:
     errors: list[str] = field(default_factory=list)
 
 def _execute_set_cell(doc, action: dict):
-    """표 셀 텍스트 교체"""
+    """표 셀 텍스트 교체 (행/열 부족 시 자동 확장)"""
+    from copy import deepcopy
+
     table_idx = action["table"]
     row = action["row"]
     col = action["col"]
     text = action["text"]
 
-    # 표가 포함된 문단을 찾아서 table_idx번째 표를 가져옴
     tables_found = []
     for p in doc.paragraphs:
         tables_found.extend(p.tables)
@@ -38,7 +39,50 @@ def _execute_set_cell(doc, action: dict):
     if table_idx >= len(tables_found):
         raise IndexError(f"표 인덱스 {table_idx} 없음 (전체 {len(tables_found)}개)")
 
-    tables_found[table_idx].set_cell_text(row, col, text)
+    tbl = tables_found[table_idx]
+    NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    # 행 부족 시 자동 확장
+    current_rows = int(tbl.element.get("rowCnt", "1"))
+    if row >= current_rows:
+        tr_elements = tbl.element.findall(f"{NS}tr")
+        if not tr_elements:
+            raise ValueError(f"표 {table_idx}에 행이 없음")
+        last_row_elem = tr_elements[-1]
+        for i in range(current_rows, row + 1):
+            new_row_elem = deepcopy(last_row_elem)
+            for tc in new_row_elem.iter(f"{NS}tc"):
+                for addr in tc.iter(f"{NS}cellAddr"):
+                    addr.set("rowAddr", str(i))
+                for span in tc.iter(f"{NS}cellSpan"):
+                    span.set("rowSpan", "1")
+                    span.set("colSpan", "1")
+                for t_elem in tc.iter(f"{NS}t"):
+                    t_elem.text = ""
+            tbl.element.append(new_row_elem)
+        tbl.element.set("rowCnt", str(row + 1))
+        log.info(f"표 {table_idx} 행 확장: {current_rows} → {row + 1}")
+
+    # 열 부족 시 자동 확장
+    current_cols = int(tbl.element.get("colCnt", "1"))
+    if col >= current_cols:
+        _adjust_table_columns(tbl.element, col + 1)
+
+    try:
+        tbl.set_cell_text(row, col, text)
+    except TypeError:
+        # lxml/stdlib SubElement 호환 문제 우회: 직접 XML 레벨로 텍스트 교체
+        tr_elements = tbl.element.findall(f"{NS}tr")
+        if row < len(tr_elements):
+            tcs = tr_elements[row].findall(f"{NS}tc")
+            if col < len(tcs):
+                for t_elem in tcs[col].iter(f"{NS}t"):
+                    t_elem.text = str(text)
+                    break
+            else:
+                raise IndexError(f"열 {col} 범위 초과 (표 {table_idx})")
+        else:
+            raise IndexError(f"행 {row} 범위 초과 (표 {table_idx})")
 
 
 def _execute_clear_body(doc, action: dict):
