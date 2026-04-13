@@ -1319,7 +1319,8 @@ _idx가 있는 모든 문단에 대해:
 role은 **서식 조합**이 기준입니다. 의미가 아닌 모양이 같으면 같은 role입니다.
 
 1. 같은 paraPrIDRef + charPrIDRef + 표구조(1x1, 1x3 등) → **반드시 같은 role**
-2. role 이름은 자유롭게 지정하되, 용도를 알 수 있게 하세요
+2. **다른 paraPrIDRef이면 반드시 다른 role을 부여하세요** — 의미가 비슷해도 서식이 다르면 다른 role
+3. role 이름은 자유롭게 지정하되, 용도를 알 수 있게 하세요
    예: "chapter_title", "section_header", "detail_item", "note", "summary_box", "toc", "cover_title"
 3. 특수 역할:
    - "spacer": 빈 문단 (구분용 빈 줄)
