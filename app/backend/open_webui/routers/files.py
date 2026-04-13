@@ -1302,6 +1302,167 @@ async def analyze_hwpx_endpoint(
         )
 
 
+############################
+# Dynamic HWPX Generation v2 (역할 기반 문서 생성)
+############################
+
+
+class HwpxGenerateV2Form(BaseModel):
+    template_file_id: str
+    content_text: Optional[str] = None
+    content_file_id: Optional[str] = None
+    model: Optional[str] = None
+    doc_title: Optional[str] = None
+
+
+@router.post("/generate-hwpx-v2")
+async def generate_hwpx_v2_endpoint(
+    request: Request,
+    form_data: HwpxGenerateV2Form,
+    user=Depends(get_verified_user),
+    db: Session = Depends(get_session),
+):
+    """
+    역할 기반 HWPX 문서 생성 v2
+
+    1. 양식에서 서식 그룹 추출 (코드)
+    2. 1차 AI: 서식 그룹 → 역할 해석
+    3. 2차 AI: 역할 + 소스 → 콘텐츠 생성
+    4. 역할 기반 문서 조립
+    """
+    from io import BytesIO
+    from open_webui.utils.hwpx_analyzer import (
+        extract_style_groups,
+        build_role_interpret_prompt,
+        parse_role_interpret_from_llm,
+        build_role_content_prompt,
+        parse_role_content_from_llm,
+        pdf_to_base64_images,
+        pdf_to_text,
+    )
+    from open_webui.utils.hwp_generator import assemble_hwpx
+    from open_webui.utils.chat import generate_chat_completion
+    from open_webui.utils.task import get_task_model_id
+
+    # 1) 양식 파일
+    template_file = Files.get_file_by_id(form_data.template_file_id, db=db)
+    if not template_file:
+        raise HTTPException(status_code=404, detail="양식 파일을 찾을 수 없습니다")
+    template_path = Storage.get_file(template_file.path)
+    if not template_path:
+        raise HTTPException(status_code=404, detail="양식 파일 경로를 찾을 수 없습니다")
+
+    # 2) 내용 확보
+    content_text = form_data.content_text or ""
+    content_images = None
+    pdf_text_content = ""
+
+    if form_data.content_file_id:
+        content_file = Files.get_file_by_id(form_data.content_file_id, db=db)
+        if content_file:
+            content_type = content_file.meta.get("content_type", "")
+            file_name = content_file.meta.get("name", content_file.filename)
+            if content_type == "application/pdf" or file_name.lower().endswith(".pdf"):
+                content_path = Storage.get_file(content_file.path)
+                try:
+                    pdf_text_content = pdf_to_text(content_path)
+                except Exception as e:
+                    log.warning(f"PDF 텍스트 추출 실패: {e}")
+                try:
+                    content_images = pdf_to_base64_images(content_path)
+                except Exception as e:
+                    log.warning(f"PDF 이미지 변환 실패: {e}")
+            if not pdf_text_content and content_images is None and not content_text:
+                content_text = content_file.data.get("content", "") if content_file.data else ""
+
+    if not content_text and not content_images and not pdf_text_content:
+        raise HTTPException(status_code=400, detail="작성할 내용이 없습니다")
+
+    # 3) 서식 그룹 추출 (코드)
+    try:
+        style_catalog = extract_style_groups(template_path)
+        log.info(f"서식 그룹 {len(style_catalog['groups'])}개 추출")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"서식 그룹 추출 실패: {e}")
+
+    # 4) 모델 확인
+    models = request.app.state.MODELS
+    model_id = form_data.model
+    if not model_id:
+        model_id = get_task_model_id(
+            "", request.app.state.config.TASK_MODEL,
+            request.app.state.config.TASK_MODEL_EXTERNAL, models,
+        )
+    if not model_id or model_id not in models:
+        raise HTTPException(status_code=400, detail=f"모델 없음: {model_id}")
+
+    async def _call_llm(messages, task_name):
+        payload = {
+            "model": model_id, "messages": messages,
+            "stream": False, "metadata": {"task": task_name},
+        }
+        resp = await generate_chat_completion(request, form_data=payload, user=user)
+        if hasattr(resp, "body"):
+            resp = json.loads(resp.body.decode("utf-8"))
+        if "error" in resp:
+            raise HTTPException(status_code=502, detail=f"AI 오류 ({task_name}): {resp['error']}")
+        return resp["choices"][0]["message"]["content"]
+
+    # 5) 1차 AI: 역할 해석
+    try:
+        messages_1 = build_role_interpret_prompt(style_catalog)
+        llm_1 = await _call_llm(messages_1, "hwpx_role_interpret")
+        role_map = parse_role_interpret_from_llm(llm_1)
+        log.info(f"역할 해석 완료: {len(role_map)}개")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"역할 해석 실패: {e}")
+
+    # 6) 2차 AI: 콘텐츠 생성
+    try:
+        messages_2 = build_role_content_prompt(
+            style_catalog, role_map,
+            content_text=content_text,
+            content_images=content_images,
+            pdf_text=pdf_text_content,
+        )
+        llm_2 = await _call_llm(messages_2, "hwpx_role_content")
+        content_data = parse_role_content_from_llm(llm_2)
+        log.info(f"콘텐츠 생성 완료: body {len(content_data.get('body', []))}개 항목")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"콘텐츠 생성 실패: {e}")
+
+    # 7) 문서 조립
+    try:
+        result = assemble_hwpx(template_path, style_catalog, role_map, content_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"문서 조립 실패: {e}")
+
+    # 8) 응답
+    doc_title = form_data.doc_title or template_file.meta.get("name", "document")
+    if not doc_title.endswith(".hwpx"):
+        doc_title = f"{Path(doc_title).stem}.hwpx"
+
+    encoded = quote(doc_title)
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}",
+        "X-Hwpx-Success": str(result.success_count),
+        "X-Hwpx-Fail": str(result.fail_count),
+    }
+    if result.errors:
+        from urllib.parse import quote as url_quote
+        headers["X-Hwpx-Errors"] = url_quote("; ".join(result.errors[:10]))
+
+    return StreamingResponse(
+        BytesIO(result.data),
+        media_type="application/hwpx",
+        headers=headers,
+    )
+
+
 @router.get("/{id}/content/{file_name}")
 async def get_file_content_by_id(
     id: str, user=Depends(get_verified_user), db: Session = Depends(get_session)
