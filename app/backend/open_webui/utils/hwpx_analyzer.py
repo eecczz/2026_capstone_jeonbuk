@@ -1456,7 +1456,8 @@ CONTENT_MAPPING_PROMPT = """당신은 HWPX 문서 작성 전문가입니다.
   - chapter 안에 subsection, subsection 안에 detail_item
   - 양식에서 summary_box가 chapter 뒤에 나왔으면 소스에서도 그렇게
 - 각 항목의 text는 **한 문단** 분량 (여러 문단을 \\n으로 합치지 마세요)
-- spacer, toc, fixed role은 사용하지 마세요 — 시스템이 자동 처리
+- spacer, fixed role은 사용하지 마세요 — 시스템이 자동 처리
+- toc(목차) role은 사용 가능 — 새 문서의 목차 내용으로 채우세요
 
 ### 내용 개수
 - 소스 내용이 양식보다 많아도 됩니다 — 시스템이 자동 복제
@@ -1570,7 +1571,7 @@ def build_content_mapping_prompt(
             }
 
     # role 시퀀스 생성 (양식 구조 패턴)
-    skip_roles = {"spacer", "toc", "fixed", "spacer_text", "toc_box"}
+    skip_roles = {"spacer", "toc", "fixed", "spacer_text"}
     sequence_lines = []
     for p in structure_json.get("paragraphs", []):
         role = p.get("role", "")
