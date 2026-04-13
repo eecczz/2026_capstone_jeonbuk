@@ -911,11 +911,26 @@ def assemble_hwpx_hybrid(
 
 def _set_element_text(para, text: str, NS: str):
     """기존 문단(HwpxOxmlParagraph)의 텍스트를 교체합니다."""
-    # 표가 있는 문단이면 첫 번째 셀의 텍스트 교체
+    # 표가 있는 문단이면 텍스트가 있는 셀을 찾아 교체
     if para.tables:
         tbl = para.tables[0]
-        cell = tbl.cell(0, 0)
-        cell_paras = cell.paragraphs
+        # 텍스트가 있는 첫 번째 셀 찾기 (빈 장식 행 건너뜀)
+        target_cell = None
+        for r in range(tbl.row_count):
+            for c in range(tbl.col_count):
+                cell = tbl.cell(r, c)
+                cell_text = "".join(
+                    p.text for p in cell.paragraphs if p.text
+                ).strip()
+                if cell_text:
+                    target_cell = cell
+                    break
+            if target_cell:
+                break
+        # 텍스트 있는 셀이 없으면 (전부 빈 셀) cell(0,0) 사용
+        if target_cell is None:
+            target_cell = tbl.cell(0, 0)
+        cell_paras = target_cell.paragraphs
         if cell_paras:
             cell_paras[0].text = text
             for cp in cell_paras[1:]:
