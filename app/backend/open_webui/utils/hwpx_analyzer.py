@@ -1427,15 +1427,46 @@ _idx가 있는 모든 문단에 대해:
 - **charPrIDRef**: 첫 번째 <hp:run>의 charPrIDRef 속성값
 
 ### role 부여 규칙
-role은 **서식 조합**이 기준입니다. 의미가 아닌 모양이 같으면 같은 role입니다.
+role은 **서식 조합 + 마커 종류**가 기준입니다.
 
-1. 같은 paraPrIDRef + charPrIDRef + 표구조(1x1, 1x3 등) → **반드시 같은 role**
+1. 같은 paraPrIDRef + charPrIDRef + 표구조(1x1, 1x3 등) + **같은 마커 종류** → **반드시 같은 role**
 2. **다른 paraPrIDRef이면 반드시 다른 role을 부여하세요** — 의미가 비슷해도 서식이 다르면 다른 role
-3. role 이름은 자유롭게 지정하되, 용도를 알 수 있게 하세요
+3. **다른 마커 종류이면 반드시 다른 role** — paraPrIDRef가 같아도 마커가 다르면 다른 role
+   예: ㅇ로 시작하는 문단과 ➊로 시작하는 문단은 다른 role
+4. role 이름은 자유롭게 지정하되, 용도를 알 수 있게 하세요
    예: "chapter_title", "section_header", "detail_item", "note", "summary_box", "toc", "cover_title"
-3. 특수 역할:
+5. 특수 역할:
    - "spacer": 빈 문단 (구분용 빈 줄)
    - "fixed": 페이지 번호, 머리글/바닥글 등 수정 불필요한 레이아웃 요소
+
+### 마커와 계층 관계
+마커(번호 기호)의 종류가 계층을 나타냅니다. 아래는 흔한 한국 행정문서 마커 계층입니다:
+
+```
+Ⅰ, Ⅱ, Ⅲ ...          — 대분류 (level 1)
+□                       — 중분류 (level 2)
+ㅇ                      — 세부 항목 (level 3)
+󰊱, 󰊲, 󰊳 ...          — 과제/실행 항목 (순번)
+➊, ➋, ➌ ...            — 하위 실행 항목 (순번)
+①, ②, ③ ...            — 세부 하위 항목 (순번)
+1), 2), 3) ...          — 번호 항목
+가., 나., 다. ...       — 한글 번호 항목
+*, **, ***              — 보충/참고 (note)
+※                       — 비고/참고 (note)
+◈, ◇, ◆                — 요약/강조 박스
+⇒, →                    — 결론/방향
+```
+
+**들여쓰기 + 마커 종류로 부모-자식 관계를 판단하세요.**
+예를 들어:
+```
+󰊱 세부과제 제목          ← task_detail (level 4)
+  ➊ 실행 내용 A          ← sub_detail (level 5, 󰊱의 자식)
+    ① 상세 A-1           ← sub_sub_detail (level 6, ➊의 자식)
+    ② 상세 A-2           ← sub_sub_detail (level 6)
+  ➋ 실행 내용 B          ← sub_detail (level 5)
+  * 보충 설명             ← note (level 5)
+```
 
 ### description 작성 규칙
 1. 해당 위치에 들어갈 내용의 **용도와 형식**을 구체적으로 적으세요
@@ -1876,7 +1907,129 @@ def parse_structure_from_llm(llm_response: str) -> dict:
         f"구조 분석 완료: 문단 {len(data.get('paragraphs', []))}개, "
         f"표 {len(data.get('tables', []))}개"
     )
+
+    # 후처리: 같은 role인데 마커가 다르면 자동 분리
+    data["paragraphs"] = _split_roles_by_marker(data.get("paragraphs", []))
+
     return data
+
+
+def _normalize_marker_type(marker: str) -> str:
+    """마커를 종류별로 정규화. 같은 시퀀스의 마커는 같은 타입으로 취급."""
+    if not marker:
+        return ""
+    first = marker.strip()[0] if marker.strip() else ""
+    cp = ord(first) if first else 0
+
+    # 󰊱~󰊹 시퀀스 (PUA)
+    if 0xF02B1 <= cp <= 0xF02B9:
+        return "circle_num_pua"
+    # ➊~➓ 시퀀스
+    if 0x278A <= cp <= 0x2793:
+        return "dingbat_neg_circle"
+    # ①~⑳ 시퀀스
+    if 0x2460 <= cp <= 0x2473:
+        return "circle_num"
+    # ❶~❿ 시퀀스
+    if 0x2776 <= cp <= 0x277F:
+        return "dingbat_neg_circle2"
+    # Ⅰ~Ⅻ 로마숫자
+    if 0x2160 <= cp <= 0x216B:
+        return "roman"
+    # 1), 2), 3) 등
+    if re.match(r'^\d+\)', marker.strip()):
+        return "num_paren"
+    # 가., 나., 다. 등
+    if re.match(r'^[가-힣]\.', marker.strip()):
+        return "hangul_dot"
+    # 단일 문자 마커 (□, ㅇ, *, ※, ◈, ◇, ◆, ⇒, →, ▪, -)
+    return f"char_{first}"
+
+
+def _split_roles_by_marker(paragraphs: list[dict]) -> list[dict]:
+    """
+    같은 role인데 마커 종류가 다른 문단들을 자동으로 다른 role로 분리.
+
+    예: detail_item 중 marker="ㅇ"인 것과 marker="➊"인 것이 섞여 있으면
+        detail_item (ㅇ) / detail_item_sub1 (➊) 로 분리.
+    """
+    skip_roles = {"spacer", "toc", "fixed", "spacer_text"}
+
+    # 1단계: role별 마커 종류 수집
+    role_markers = {}  # role → {marker_type → [markers]}
+    for p in paragraphs:
+        role = p.get("role", "")
+        marker = p.get("marker", "")
+        if not role or role in skip_roles:
+            continue
+        mt = _normalize_marker_type(marker)
+        if role not in role_markers:
+            role_markers[role] = {}
+        if mt not in role_markers[role]:
+            role_markers[role][mt] = set()
+        if marker:
+            role_markers[role][mt].add(marker)
+
+    # 2단계: 마커 종류가 2개 이상인 role 찾기
+    roles_to_split = {}
+    for role, mt_dict in role_markers.items():
+        # 빈 마커("")와 실제 마커가 섞인 건 무시 (빈 마커는 분리 대상 아님)
+        actual_types = {mt for mt in mt_dict if mt}
+        if len(actual_types) >= 2:
+            roles_to_split[role] = mt_dict
+
+    if not roles_to_split:
+        return paragraphs
+
+    log.info(f"마커 기반 role 분리 대상: {list(roles_to_split.keys())}")
+
+    # 3단계: 분리 실행
+    # 마커 타입별로 suffix를 부여: 첫 번째 타입은 원래 이름 유지, 나머지는 _sub1, _sub2...
+    role_type_order = {}
+    for role in roles_to_split:
+        # 등장 순서대로 정렬
+        seen = []
+        for p in paragraphs:
+            if p.get("role") == role:
+                mt = _normalize_marker_type(p.get("marker", ""))
+                if mt and mt not in seen:
+                    seen.append(mt)
+        role_type_order[role] = seen
+
+    result = []
+    for p in paragraphs:
+        role = p.get("role", "")
+        if role not in roles_to_split:
+            result.append(p)
+            continue
+
+        marker = p.get("marker", "")
+        mt = _normalize_marker_type(marker)
+        if not mt:
+            result.append(p)
+            continue
+
+        order = role_type_order[role]
+        idx = order.index(mt) if mt in order else 0
+        if idx == 0:
+            # 첫 번째 마커 타입 → 원래 role 이름 유지
+            result.append(p)
+        else:
+            # 이후 마커 타입 → role 이름에 suffix 추가
+            new_p = dict(p)
+            new_p["role"] = f"{role}_sub{idx}"
+            result.append(new_p)
+            log.debug(
+                f"role 분리: idx={p.get('idx')} {role}(marker={marker}) → {new_p['role']}"
+            )
+
+    # 분리 결과 로그
+    split_count = sum(1 for p in result if "_sub" in p.get("role", ""))
+    if split_count:
+        new_roles = set(p.get("role", "") for p in result if "_sub" in p.get("role", ""))
+        log.info(f"마커 기반 role 분리 완료: {split_count}개 문단 → 새 role: {new_roles}")
+
+    return result
 
 
 def _escape_json_string_newlines(raw: str) -> str:
