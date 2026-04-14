@@ -1106,10 +1106,9 @@ async def generate_hwpx_dynamic_endpoint(
             )
         return resp["choices"][0]["message"]["content"]
 
-    # 5a) 1차 AI 호출 — 양식 구조 분석
+    # 5a) 1차 AI 호출 — 양식 구조 분석 (role + description + marker + table)
     try:
         messages_1 = build_structure_analysis_prompt(truncated_xml, auto_truncate=False)
-        # --- 디버그: 1차 요청 ---
         for i, m in enumerate(messages_1):
             content_preview = m.get("content", "")
             if isinstance(content_preview, str):
@@ -1117,18 +1116,13 @@ async def generate_hwpx_dynamic_endpoint(
             log.info(f"[HWP-DEBUG] 1차 요청 messages[{i}] role={m.get('role')}, content(앞2000자):\n{content_preview}")
 
         llm_content_1 = await _call_llm(messages_1, "hwpx_structure_analysis")
-
-        # --- 디버그: 1차 응답 ---
         log.info(f"[HWP-DEBUG] 1차 LLM 응답 (전체 {len(llm_content_1)}자):\n{llm_content_1}")
 
         structure = parse_structure_from_llm(llm_content_1)
 
-        # --- 디버그: 1차 파싱 결과 ---
-        log.info(f"[HWP-DEBUG] 1차 파싱된 structure:\n{json.dumps(structure, ensure_ascii=False, indent=2)}")
-
         log.info(
             f"1차 구조 분석 완료: 문단 {len(structure.get('paragraphs', []))}개, "
-            f"표 {len(structure.get('tables', []))}개"
+            f"표 {len(structure.get('tables', []))}개 (level은 아직 없음)"
         )
     except HTTPException:
         raise
@@ -1138,12 +1132,44 @@ async def generate_hwpx_dynamic_endpoint(
             detail=f"양식 구조 분석 실패: {e}",
         )
 
+    # 5a-2) 1.5차 AI 호출 — level(계층 깊이) 결정
+    try:
+        from open_webui.utils.hwpx_analyzer import (
+            build_level_analysis_prompt,
+            parse_level_from_llm,
+            merge_levels_into_structure,
+            build_chapter_types_from_structure,
+        )
+        messages_level = build_level_analysis_prompt(structure)
+        log.info(f"[HWP-DEBUG] 1.5차 요청: {len(structure.get('paragraphs', []))}개 문단 level 판단")
+
+        llm_content_level = await _call_llm(messages_level, "hwpx_level_analysis")
+        log.info(f"[HWP-DEBUG] 1.5차 LLM 응답 ({len(llm_content_level)}자):\n{llm_content_level}")
+
+        level_map = parse_level_from_llm(llm_content_level)
+        log.info(f"[HWP-DEBUG] 1.5차 파싱: {len(level_map)}개 level 결정")
+
+        # level을 structure에 병합
+        structure = merge_levels_into_structure(structure, level_map)
+
+        # chapter_types 생성 (level 기반 트리 + variant 분리)
+        structure = build_chapter_types_from_structure(structure)
+
+        log.info(f"[HWP-DEBUG] 1.5차 후 최종 structure:\n{json.dumps(structure, ensure_ascii=False, indent=2)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"level 분석 실패: {e}",
+        )
+
     # ── 5b) 2a AI 호출 — 소스 대제목 추출 + 양식 타입 분류 ──
     chapter_types = structure.get("chapter_types", {})
     if not chapter_types:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="1차 분석에서 chapter_types가 없습니다. 양식에 대제목이 없을 수 있습니다.",
+            detail="chapter_types 생성 실패. 양식에 level 1 문단이 없을 수 있습니다.",
         )
 
     # header role 목록 추출
