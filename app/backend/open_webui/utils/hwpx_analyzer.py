@@ -2172,28 +2172,30 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                 continue
 
             # 공통 요소(core) 추출 — 모든 variant에 나타나는 자식
-            # 예: {note, detail_item} vs {note, circled_detail_item}에서 note는 공통
             core = set(unique_variants[0])
             for v in unique_variants[1:]:
                 core &= set(v)
 
-            # 공통 요소 제외하고 각 variant의 특유 부분만 추출
+            # 각 variant의 특유 부분 (공통 요소 제외)
             non_core_variants = [
                 frozenset(set(v) - core) for v in unique_variants
             ]
 
-            # 특유 부분이 모두 빈 집합이면 배타적 아님 (그냥 동일 패턴 중복)
-            if all(len(v) == 0 for v in non_core_variants):
+            # ⚠️ 빈 variant가 하나라도 있으면 배타적 분리 안 함
+            # (다른 variant의 상위집합에 포함되므로 합쳐서 optional로 처리 가능)
+            # 예: {note, circled_detail_item} vs {circled_detail_item}
+            #     특유: {note} vs {} → 하나의 variant에 모든 children 포함 가능
+            if any(len(v) == 0 for v in non_core_variants):
                 continue
 
-            # 특유 부분끼리 쌍별 교집합이 없어야 배타적
+            # 모든 variant가 각자의 특유 부분을 가지고 서로 disjoint일 때만 분리
+            # 예: {detail_item, note} vs {circled_detail_item, note}
+            #     특유: {detail_item} vs {circled_detail_item} → disjoint → 진짜 배타적
             is_disjoint = all(
                 v1.isdisjoint(v2)
                 for v1, v2 in combinations(non_core_variants, 2)
             )
             if is_disjoint:
-                # variant 저장 시 공통 요소도 포함 (원래 instance 그대로)
-                # 이렇게 해야 각 type의 pattern에 공통 자식도 유지됨
                 results[parent_role] = unique_variants
 
         return results
@@ -2233,6 +2235,46 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                 children_sig = _pattern_signature(info["children"])
             parts.append(f"{role}({children_sig})")
         return "|".join(parts)
+
+    def _pattern_depth(pattern: dict) -> int:
+        """패턴 트리의 최대 깊이"""
+        if not pattern:
+            return 0
+        max_d = 0
+        for role, info in pattern.items():
+            children = info.get("children", {})
+            if children:
+                d = 1 + _pattern_depth(children)
+            else:
+                d = 1
+            if d > max_d:
+                max_d = d
+        return max_d
+
+    def _pattern_total_roles(pattern: dict) -> int:
+        """패턴 트리의 전체 role 개수 (중첩 포함)"""
+        count = 0
+        for role, info in pattern.items():
+            count += 1
+            children = info.get("children", {})
+            if children:
+                count += _pattern_total_roles(children)
+        return count
+
+    def _pattern_summary(pattern: dict) -> str:
+        """
+        패턴을 요약한 설명 문자열 생성.
+        2a AI가 chapter_types를 구분할 수 있도록 구조적 특성을 압축.
+
+        예: "3단 깊이, 8개 role, 최상위: section_header, detail_item"
+        """
+        depth = _pattern_depth(pattern)
+        total = _pattern_total_roles(pattern)
+        top_roles = list(pattern.keys())
+        top_str = ", ".join(top_roles) if top_roles else "(없음)"
+        return (
+            f"{depth}단 깊이, {total}개 role, 최상위: {top_str}"
+        )
 
     chapter_types = {}
     sig_to_type = {}  # signature → type_name
@@ -2287,9 +2329,10 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                 suffix = chr(ord('a') + i)
                 type_name = f"type_{base_num}{suffix}"
                 marker_info = " / ".join(marker_descs)
+                pattern_summary = _pattern_summary(variant_pattern)
                 variant_desc = (
-                    f"{title_desc} ({marker_info})"
-                    if marker_info else title_desc
+                    f"{pattern_summary} · {marker_info}"
+                    if marker_info else pattern_summary
                 )
                 sig_to_type[sig] = type_name
                 chapter_types[type_name] = {
@@ -2308,7 +2351,7 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                 sig_to_type[sig] = type_name
                 chapter_types[type_name] = {
                     "title_role": title_role,
-                    "description": title_desc,
+                    "description": _pattern_summary(pattern),
                     "pattern": pattern,
                 }
 
