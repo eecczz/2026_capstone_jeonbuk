@@ -2688,58 +2688,61 @@ def parse_role_content_from_structure_llm(llm_response: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────
 
 CHAPTER_CLASSIFY_PROMPT = """당신은 문서 구조 분석 전문가입니다.
-소스 자료를 읽고, 대제목(최상위 구분)을 추출한 뒤, 주어진 양식 타입 중 가장 적합한 것을 골라 분류합니다.
+양식의 chapter_types(장 구조 타입)에 맞게 **소스 내용을 분배**하여 chapter 배열을 생성합니다.
+
+## 핵심 역할
+
+양식에는 여러 개의 chapter 타입이 있습니다 (type_1, type_2, ...). 각 타입은 서로 다른 구조(단 깊이, role 개수, 패턴)를 가집니다.
+당신의 일은 **양식의 모든 타입에 소스 내용을 적절히 분배**해서, 양식이 가진 구조를 모두 활용하는 것입니다.
 
 ## 작업
 
-1. **소스 자료에서 대제목 추출**: 소스의 최상위 구분 단위(Ⅰ, Ⅱ, 1장, 제1절 등)를 찾아 순서대로 나열
-2. **양식 타입 분류**: 각 대제목의 성격을 보고, 아래 제공된 양식 타입 중 가장 가까운 것을 선택
+1. **양식의 chapter_types 전체를 확인**: 각 타입의 구조(description)를 보고 어떤 성격인지 파악
+2. **소스 내용을 분배**: 소스의 전체 내용을 양식 타입 개수만큼 나누어 각 타입에 배정
+3. **chapters 배열 생성**: 양식의 각 타입마다 chapter를 하나씩 만들기
 
-## 분류 규칙
+## 분류 규칙 (중요)
 
-- 각 대제목에 가장 적합한 양식 타입 1개를 선택하세요
-- 소스의 대제목이 양식의 어떤 타입에도 잘 안 맞으면, 가장 가까운 타입을 고르고 `"confidence": "low"`를 표시하세요
-- 소스에 대제목 구분이 명확하지 않으면(예: 회의록, 단순 나열), 전체를 하나의 대제목으로 취급하세요
-- **양식에 없는 새 타입을 만들지 마세요** — 반드시 제공된 타입 중에서 선택
+- **chapters 개수는 원칙적으로 chapter_types 개수와 같아야 합니다** (각 type마다 하나씩)
+- **모든 type을 사용하세요** — 한 type으로 몰리면 안 됨 (소스 내용을 다 못 담음)
+- 소스의 대제목 구분은 **참고만** 하고, 없어도 무방합니다
+- **소스가 비정형이어도(회의록, 단순 나열 등) 양식 구조에 맞게 내용을 나누어 분배**하세요
+- 소스에 해당 type에 딱 맞는 주제가 없으면 가까운 성격으로 배정 (`"confidence": "low"`)
+- **양식에 없는 새 type을 만들지 마세요**
+- title은 소스에서 추출한 대표 주제 또는 type에 맞는 대표 제목
 
-## 출력 형식
-
-반드시 아래 JSON만 출력하세요.
+## 예시 (양식에 type_1, type_2 2개가 있는 경우)
 
 ```json
 {
   "chapters": [
     {
-      "type": "overview",
-      "title": "Ⅰ. 추진 배경 및 필요성",
+      "type": "type_1",
+      "title": "소스의 앞부분 주제 or type_1에 맞는 대표 제목",
       "confidence": "high"
     },
     {
-      "type": "strategy",
-      "title": "Ⅱ. 주요 추진 전략",
+      "type": "type_2",
+      "title": "소스의 뒷부분 주제 or type_2에 맞는 대표 제목",
       "confidence": "high"
-    },
-    {
-      "type": "overview",
-      "title": "Ⅲ. 기대효과",
-      "confidence": "medium"
     }
   ],
   "header": {
-    "cover_title": "소스 문서 제목",
-    "cover_date": "작성일자",
-    "cover_org": "기관명"
+    "<양식 header role 이름>": "소스에서 추출한 값",
+    "<양식 header role 이름>": "소스에서 추출한 값"
   }
 }
 ```
 
 ## header 규칙
-- 소스에서 문서 제목, 작성일자, 기관명을 찾아 header에 넣으세요
-- header의 key는 양식의 header role 이름 그대로 사용
-- 소스에 해당 정보가 없으면 해당 key를 생략
+- **header의 key는 user 메시지에 제공된 "양식 header role 목록"만 사용** (다른 이름 금지)
+- 양식 header role 목록의 모든 key에 대해 소스에서 적절한 값을 찾아 넣으세요
+- 소스에 해당 정보가 없으면 그 key는 생략 가능 (단 cover_title, cover_title_box 같은 제목 role은 가능한 채우기)
 
 ## 중요
-- **소스 원문의 마커(Ⅰ, 1., 가. 등)를 title에 포함하세요** — 마커는 시스템이 양식에 맞게 교체합니다
+- **소스 원문의 마커(Ⅰ, 1., 가. 등)를 title에 포함**하세요 — 마커는 시스템이 양식에 맞게 교체합니다
+- **chapters 개수 ≥ chapter_types 개수** — 각 type을 하나 이상 사용
+- chapters의 type은 user 메시지의 "양식 대제목 타입 목록"에 있는 이름만 사용
 - 반드시 JSON만 출력. 다른 설명 포함 금지
 """
 
@@ -2766,10 +2769,10 @@ def build_chapter_classify_prompt(
     """
     # 양식 타입 카탈로그 구성
     type_lines = []
+    valid_type_names = list(chapter_types.keys())
     for type_name, info in chapter_types.items():
         desc = info.get("description", "")
         title_role = info.get("title_role", "")
-        # 패턴의 최상위 role만 나열
         pattern = info.get("pattern", {})
         top_roles = list(pattern.keys())
         roles_str = ", ".join(top_roles) if top_roles else "(단순 구조)"
@@ -2777,16 +2780,31 @@ def build_chapter_classify_prompt(
             f"- **{type_name}**: {desc} (대제목 role: {title_role}, 하위: {roles_str})"
         )
     types_text = "\n".join(type_lines)
+    type_count = len(valid_type_names)
+    type_names_str = ", ".join(valid_type_names) if valid_type_names else "(없음)"
 
     # header role 목록
-    header_text = ", ".join(header_roles) if header_roles else "(없음)"
+    if header_roles:
+        header_text = ", ".join(header_roles)
+        header_rule = (
+            f"**header에는 다음 key만 사용 가능** (필수): {header_text}\n"
+            f"- 위 목록의 각 key에 대해 소스에서 적절한 값을 찾아 채우세요\n"
+            f"- 위 목록에 없는 key를 만들지 마세요\n"
+        )
+    else:
+        header_text = "(없음)"
+        header_rule = "**양식에 header role이 없습니다. header는 빈 객체 `{}`로 출력하세요.**\n"
 
     user_parts = []
     text_block = (
         "## 양식 대제목 타입 목록\n"
         f"{types_text}\n\n"
+        f"**양식 type 개수: {type_count}개** ({type_names_str})\n"
+        f"**chapters 배열은 반드시 {type_count}개 이상 생성하세요** — 각 type을 모두 사용해야 합니다. "
+        f"한 type으로 몰리면 안 됩니다.\n\n"
         f"## 양식 header role 목록\n"
         f"{header_text}\n\n"
+        f"{header_rule}\n"
         "## 소스 자료\n"
     )
 
