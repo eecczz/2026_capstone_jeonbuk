@@ -716,6 +716,10 @@ def assemble_hwpx(
         f"body 항목 {len(body_items)}개"
     )
 
+    # 모든 section을 dirty로 마킹 — lxml 직접 수정이 to_bytes()에 반영되도록 보장
+    for sec in doc.sections:
+        sec.mark_dirty()
+
     return HwpxResult(
         data=doc.to_bytes(),
         success_count=success_count,
@@ -728,6 +732,7 @@ def assemble_hwpx_hybrid(
     template_source,
     structure: dict,
     content: dict,
+    chapter_types: dict = None,
     removed_indices: list[int] = None,
     idx_map: dict = None,
 ) -> HwpxResult:
@@ -739,17 +744,25 @@ def assemble_hwpx_hybrid(
     1. structure에서 role → exemplar idx 매핑 생성
     2. 양식을 열고 exemplar 문단 요소를 deepcopy로 저장
     3. header 문단 텍스트 교체
-    4. 본문 영역 비우기
-    5. body 항목마다 role의 exemplar를 복제 + 텍스트 교체
+    4. 본문 영역 비우기 (다중 section 지원)
+    5. chapter 단위로 type별 패턴에 맞춰 재조립
+       - 각 chapter의 title_role에 title 텍스트 렌더
+       - chapter 내 items를 순서대로 렌더 (2b 출력 신뢰)
     6. 완성된 문서를 bytes로 반환
 
     Args:
         template_source: 양식 HWPX 파일 경로(str), bytes, 또는 file-like
         structure: parse_structure_from_llm() 반환값 (role 포함)
-                   {"paragraphs": [{"idx": N, "role": "...", ...}], "tables": [...]}
-        content: parse_role_content_from_structure_llm() 반환값
-                 {"header": {"title": ..., "date": ..., "org": ...}, "body": [{"role": ..., "text": ...}]}
+        content: {
+            "header": {<header_role>: text, ...},
+            "chapters": [{"type": "type_X", "title": "...", "title_role": "...",
+                          "items": [{"role": ..., "text": ...}]}, ...]
+        }
+            ※ 구버전 호환: content["body"]가 있으면 단일 chapter로 처리
+        chapter_types: 1차에서 생성된 chapter_types dict (type별 pattern 정보).
+                       있으면 패턴 검증/순서 보정에 사용. 없으면 items 순서 신뢰.
         removed_indices: truncate_xml()에서 제거된 인덱스 목록
+        idx_map: AI의 idx(축소본) → 원본 template의 실제 idx
 
     Returns:
         HwpxResult(data=bytes, success_count, fail_count, errors)
@@ -780,7 +793,6 @@ def assemble_hwpx_hybrid(
     # ── 1단계: role → exemplar idx 매핑 (각 role의 첫 번째 idx를 exemplar로) ──
     role_exemplar_idx = {}  # role → 원본 template idx
     role_is_table_box = {}  # role → bool
-    header_roles = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
     skip_roles = {"spacer", "toc", "fixed", "spacer_text"}
 
     for p in paragraphs_info:
@@ -862,7 +874,7 @@ def assemble_hwpx_hybrid(
         if role and role not in role_to_first_idx:
             role_to_first_idx[role] = _to_real_idx(p.get("idx", -1))
 
-    header_indices = set()
+    header_role_indices = set()  # header_data로 텍스트 교체된 idx
     for role_name, text in header_data.items():
         if not text:
             continue
@@ -870,36 +882,91 @@ def assemble_hwpx_hybrid(
         if real_idx < 0 or real_idx >= len(doc.paragraphs):
             errors.append(f"header role '{role_name}' not found in structure")
             continue
-        header_indices.add(real_idx)
+        header_role_indices.add(real_idx)
         try:
             _set_element_text(doc.paragraphs[real_idx], text, NS)
             success_count += 1
         except Exception as e:
             errors.append(f"header({role_name}, idx={real_idx}): {e}")
 
-    # toc, fixed, spacer → 보존 (header_indices에 추가)
+    # 보존 인덱스 통합 (header role + toc/fixed/spacer + section first)
+    header_indices = set(header_role_indices)
+
+    # toc, fixed, spacer → 보존
+    skip_role_indices = set()
     for p in paragraphs_info:
         role = p.get("role", "")
         real_idx = _to_real_idx(p.get("idx", -1))
         if role in skip_roles and 0 <= real_idx < len(doc.paragraphs):
-            header_indices.add(real_idx)  # toc, fixed, spacer 모두 보존
+            skip_role_indices.add(real_idx)
+            header_indices.add(real_idx)
 
-    # 첫 번째 문단(secPr 포함) 반드시 보존
-    if len(doc.paragraphs) > 0:
-        header_indices.add(0)
+    # 각 section의 첫 번째 문단 보존 (secPr 포함될 수 있음)
+    # 다중 section 양식의 경우 모든 section의 첫 문단을 보존해야 함.
+    # 단, 첫 문단이 실제 본문 텍스트를 가지고 있고 header/skip role도 아니면
+    # 텍스트 내용을 비워서 양식 원본 텍스트가 결과에 남지 않도록 함.
+    section_first_indices = []  # 각 section의 첫 paragraph idx
+    seen_section_parents = []
+    for i, p in enumerate(doc.paragraphs):
+        parent = p.element.getparent()
+        if all(parent is not sp for sp in seen_section_parents):
+            seen_section_parents.append(parent)
+            section_first_indices.append(i)
+            header_indices.add(i)
+
+    # 첫 section 외의 section first 중 header/skip이 아닌 것은 텍스트 비우기
+    # (idx=0은 단일 section 양식의 cover이므로 backward compat 위해 그대로)
+    cleared_section_firsts = 0
+    for sec_idx in section_first_indices:
+        if sec_idx == 0:
+            continue
+        if sec_idx in header_role_indices or sec_idx in skip_role_indices:
+            continue
+        if sec_idx >= len(doc.paragraphs):
+            continue
+        para_elem = doc.paragraphs[sec_idx].element
+        _clear_paragraph_content(para_elem, NS)
+        cleared_section_firsts += 1
+    if cleared_section_firsts:
+        log.info(
+            f"section first 문단 {cleared_section_firsts}개의 본문 텍스트 비움 "
+            f"(secPr만 보존)"
+        )
 
     # ── 4단계: 본문 영역 비우기 (header/toc/fixed/secPr 제외) ──
-    section_elem = doc.paragraphs[0].element.getparent()
-    body_elements = []
+    # 다중 section 양식 지원: 각 paragraph를 자신의 실제 parent에서 제거
+    # body_by_parent: id(parent) → (parent_elem, [elements])
+    body_by_parent = {}
     for i, p in enumerate(doc.paragraphs):
-        if i not in header_indices:
-            body_elements.append(p.element)
+        if i in header_indices:
+            continue
+        parent = p.element.getparent()
+        key = id(parent)
+        if key not in body_by_parent:
+            body_by_parent[key] = (parent, [])
+        body_by_parent[key][1].append(p.element)
 
-    for elem in body_elements:
-        section_elem.remove(elem)
+    total_removed = 0
+    for parent, elems in body_by_parent.values():
+        for elem in elems:
+            try:
+                parent.remove(elem)
+                total_removed += 1
+            except ValueError:
+                # 이미 제거됐거나 parent가 다른 경우 (방어적)
+                pass
+
+    # 새 콘텐츠를 append할 target section 결정:
+    # body content가 가장 많았던 section (실제 본문이 있던 곳)
+    if body_by_parent:
+        section_elem = max(
+            body_by_parent.values(), key=lambda v: len(v[1])
+        )[0]
+    else:
+        section_elem = doc.paragraphs[0].element.getparent()
 
     log.info(
-        f"본문 {len(body_elements)}개 문단 제거, "
+        f"본문 {total_removed}개 문단 제거 (sections={len(body_by_parent)}), "
         f"header {len(header_indices)}개 보존"
     )
 
@@ -937,21 +1004,73 @@ def assemble_hwpx_hybrid(
     if role_marker_seq:
         log.info(f"마커 시퀀스: {role_marker_seq}")
 
-    # ── 5단계: body 항목으로 문서 재조립 (prefix 보존 + spacer 자동 삽입) ──
-    body_items = content.get("body", [])
+    # ── 5단계: 본문 재조립 (chapter 기반 또는 구버전 body 기반) ──
+    # content["chapters"]가 있으면 chapter 단위로 처리, 없으면 구버전 body로 fallback
+    chapters_data = content.get("chapters")
+    render_items = []  # 펼친 렌더 항목 리스트 (각 항목에 _chapter_start 플래그)
+
+    if chapters_data is not None:
+        skipped_chapters = 0
+        for ch in chapters_data:
+            ch_type = ch.get("type", "")
+            if (
+                chapter_types is not None
+                and ch_type
+                and ch_type not in chapter_types
+            ):
+                log.warning(
+                    f"assemble: unknown chapter type '{ch_type}', skipping "
+                    f"(title={ch.get('title','')[:30]})"
+                )
+                skipped_chapters += 1
+                continue
+
+            title_role = ch.get("title_role", "")
+            title_text = ch.get("title", "")
+            ch_items = ch.get("items", [])
+
+            is_first_in_chapter = True
+            if title_role and title_text:
+                render_items.append({
+                    "role": title_role,
+                    "text": title_text,
+                    "_chapter_start": True,
+                })
+                is_first_in_chapter = False
+
+            for it in ch_items:
+                entry = dict(it)
+                if is_first_in_chapter:
+                    entry["_chapter_start"] = True
+                    is_first_in_chapter = False
+                render_items.append(entry)
+
+        log.info(
+            f"chapter 기반 조립: {len(chapters_data)}개 chapter "
+            f"(skip {skipped_chapters}개) → {len(render_items)}개 항목"
+        )
+    else:
+        render_items = content.get("body", [])
+        log.info(f"body 기반 조립 (구버전): {len(render_items)}개 항목")
+
     prev_level = -1
     prev_role = ""
     role_marker_counter = {}  # role → 현재 순번 인덱스
 
-    for item in body_items:
+    for item in render_items:
         role = item.get("role", "")
         text = item.get("text", "")
+        is_chapter_start = item.get("_chapter_start", False)
 
         if role not in exemplars:
             errors.append(f"unknown role '{role}', skipping: {text[:50]}")
             continue
 
         cur_level = role_level.get(role, 0)
+
+        # chapter 시작 시 마커 카운터 리셋 (새 chapter는 마커 1부터)
+        if is_chapter_start:
+            role_marker_counter = {}
 
         # spacer 자동 삽입: level이 올라가거나 같은 level의 heading이면 빈 줄 추가
         if spacer_exemplar is not None and prev_level >= 0:
@@ -995,8 +1114,13 @@ def assemble_hwpx_hybrid(
 
     log.info(
         f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
-        f"body 항목 {len(body_items)}개"
+        f"렌더 항목 {len(render_items)}개"
     )
+
+    # 모든 section을 dirty로 마킹 — lxml 직접 수정 (remove/append/text clear)이
+    # to_bytes() 직렬화에 반영되도록 보장. 이게 없으면 변경사항이 무시됨.
+    for sec in doc.sections:
+        sec.mark_dirty()
 
     return HwpxResult(
         data=doc.to_bytes(),
@@ -1033,6 +1157,32 @@ def _strip_secpr(elem, NS: str):
         parent = secpr.getparent()
         if parent is not None:
             parent.remove(secpr)
+
+
+def _clear_paragraph_content(elem, NS: str):
+    """
+    문단 요소의 본문 내용(텍스트, 표, 컨테이너)을 비웁니다.
+    secPr 등 구조적 요소는 보존됩니다.
+
+    다중 section 양식에서 각 section의 첫 문단이 secPr과 함께 본문 텍스트를
+    가지는 경우, 텍스트를 비워서 양식 원본 내용이 결과 문서에 남지 않게 합니다.
+
+    표 박스 문단(run > tbl > tr > tc > subList > p > run > t)도 처리하기 위해
+    elem 내 모든 <t> 요소(중첩 포함)의 텍스트를 비우고, 직접 run의 tbl/container를 제거합니다.
+    """
+    # 모든 깊이의 <t> 요소 텍스트 비우기 (nested table cell 포함)
+    for t in elem.iter(f"{NS}t"):
+        t.text = ""
+        for child in list(t):
+            t.remove(child)
+    # 직접 run 안의 tbl/container 제거 (nested 구조 자체를 제거)
+    for run in elem.findall(f"{NS}run"):
+        for tbl in run.findall(f"{NS}tbl"):
+            run.remove(tbl)
+        for cont in run.findall(f"{NS}container"):
+            run.remove(cont)
+    # linesegarray 제거 — 길이가 달라지면 한글 뷰어가 재계산
+    _strip_linesegarray(elem, NS)
 
 
 def _strip_linesegarray(elem, NS: str):

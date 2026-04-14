@@ -2478,36 +2478,33 @@ CHAPTER_CLASSIFY_PROMPT = """당신은 문서 구조 분석 전문가입니다.
 {
   "chapters": [
     {
-      "type": "overview",
+      "type": "<양식 타입 목록에서 선택한 type 이름>",
       "title": "Ⅰ. 추진 배경 및 필요성",
       "confidence": "high"
     },
     {
-      "type": "strategy",
+      "type": "<양식 타입 목록에서 선택한 type 이름>",
       "title": "Ⅱ. 주요 추진 전략",
       "confidence": "high"
-    },
-    {
-      "type": "overview",
-      "title": "Ⅲ. 기대효과",
-      "confidence": "medium"
     }
   ],
   "header": {
-    "cover_title": "소스 문서 제목",
-    "cover_date": "작성일자",
-    "cover_org": "기관명"
+    "<양식 header role 이름>": "소스에서 추출한 값",
+    "<양식 header role 이름>": "소스에서 추출한 값"
   }
 }
 ```
 
 ## header 규칙
-- 소스에서 문서 제목, 작성일자, 기관명을 찾아 header에 넣으세요
-- header의 key는 양식의 header role 이름 그대로 사용
+- **header의 key는 user 메시지에 제공된 "양식 header role 목록"의 이름만 사용** — 다른 이름 금지
+- 양식 header role 목록에 없는 key를 만들지 마세요 (예: cover_title, cover_date 등 임의 이름 금지)
+- 소스에서 해당 role의 의미에 맞는 값을 찾아 넣으세요
 - 소스에 해당 정보가 없으면 해당 key를 생략
+- 양식 header role 목록이 비어있으면 header를 빈 객체 `{}`로 출력
 
 ## 중요
 - **소스 원문의 마커(Ⅰ, 1., 가. 등)를 title에 포함하세요** — 마커는 시스템이 양식에 맞게 교체합니다
+- **chapters의 type은 user 메시지의 "양식 대제목 타입 목록"에 있는 이름만 사용** — 새 타입 만들기 금지
 - 반드시 JSON만 출력. 다른 설명 포함 금지
 """
 
@@ -2534,6 +2531,7 @@ def build_chapter_classify_prompt(
     """
     # 양식 타입 카탈로그 구성
     type_lines = []
+    valid_type_names = list(chapter_types.keys())
     for type_name, info in chapter_types.items():
         desc = info.get("description", "")
         title_role = info.get("title_role", "")
@@ -2545,16 +2543,31 @@ def build_chapter_classify_prompt(
             f"- **{type_name}**: {desc} (대제목 role: {title_role}, 하위: {roles_str})"
         )
     types_text = "\n".join(type_lines)
+    valid_types_str = ", ".join(valid_type_names) if valid_type_names else "(없음)"
 
     # header role 목록
-    header_text = ", ".join(header_roles) if header_roles else "(없음)"
+    if header_roles:
+        header_text = ", ".join(header_roles)
+        header_rule = (
+            f"**header에는 다음 key만 사용 가능합니다 (필수 규칙)**: {header_text}\n"
+            f"- 위 목록에 없는 key를 만들지 마세요 (예: cover_title, cover_date 등 임의 이름 금지)\n"
+            f"- 위 목록의 각 key에 대해 소스에서 적절한 값을 찾아 채우세요\n"
+            f"- 소스에 해당 정보가 없는 key는 생략하세요\n"
+        )
+    else:
+        header_text = "(없음)"
+        header_rule = (
+            "**양식에 header role이 없습니다. header는 반드시 빈 객체 `{}`로 출력하세요.**\n"
+        )
 
     user_parts = []
     text_block = (
         "## 양식 대제목 타입 목록\n"
         f"{types_text}\n\n"
+        f"**chapters의 type은 위 목록의 이름만 사용 가능 (필수)**: {valid_types_str}\n\n"
         f"## 양식 header role 목록\n"
         f"{header_text}\n\n"
+        f"{header_rule}\n"
         "## 소스 자료\n"
     )
 
