@@ -1849,10 +1849,14 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     Returns:
         {"type_name": {"title_role": ..., "description": ..., "pattern": {...}}, ...}
     """
-    skip_roles = {"spacer", "toc", "fixed", "spacer_text", "cover_title",
-                  "cover_date", "cover_org", "cover_subtitle"}
+    skip_keywords = {"spacer", "toc", "fixed", "cover"}
 
-    # 1단계: level 1 문단으로 챕터 경계 나누기
+    def _should_skip(role: str) -> bool:
+        """role 이름에 skip 키워드가 포함되면 스킵"""
+        role_lower = role.lower()
+        return any(kw in role_lower for kw in skip_keywords)
+
+    # 1단계: level 1 문단으로 챕터 경계 나누기 (level 0은 표지/목차이므로 제외)
     chapters = []  # [(title_para, [body_paras])]
     current_title = None
     current_body = []
@@ -1860,9 +1864,9 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     for p in paragraphs:
         role = p.get("role", "")
         level = p.get("level", 0)
-        if role in skip_roles:
+        if _should_skip(role) or level == 0:
             continue
-        if level <= 1 and role not in skip_roles:
+        if level == 1:
             if current_title is not None:
                 chapters.append((current_title, current_body))
             current_title = p
@@ -1891,7 +1895,7 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         for p in body_paras:
             role = p.get("role", "")
             level = p.get("level", 0)
-            if not role or role in skip_roles:
+            if not role or _should_skip(role):
                 continue
 
             # role 등장 카운트
