@@ -2281,6 +2281,19 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 5. **optional이 아닌 role은 반드시 1개 이상 포함**
 6. **children 관계를 지키세요** — 부모 role 뒤에 자식 role이 와야 합니다
 
+## role의 성격: 제목 vs 본문
+
+**children이 있는 role = 짧은 제목** (한 줄, 20~40자 내외)
+**children이 없는 말단 role = 실제 본문** (한 문장~여러 문장)
+
+예를 들어 패턴이 task_title → task_detail → sub_detail 이면:
+- task_title: "과제 제목" (짧은 제목)
+- task_detail: "세부 과제 제목" (짧은 한 줄 제목)
+- sub_detail: "실제 실행 내용 상세 설명" (본문)
+
+**하나의 role에 여러 계층의 내용을 합치지 마세요.**
+소스에서 상위 내용과 하위 내용이 함께 있으면, 상위는 부모 role에, 하위는 children role에 분리하세요.
+
 ## 출력 순서
 
 패턴의 계층 구조를 flat하게 펼친 순서로 출력하세요.
@@ -2302,6 +2315,12 @@ section_header
 - **양식 마커를 사용하세요** — 소스 원문의 마커(◇, ◆, ⇒ 등)는 무시
 - 각 role의 양식 마커가 제공됩니다. 해당 마커로 시작하세요
 - 마커가 없는 role은 마커 없이 내용만 작성
+- **마커 순번은 시스템이 자동 처리합니다** — 첫 번째 마커만 사용하세요 (예: 󰊱만 사용, 시스템이 󰊱→󰊲→󰊳 순서로 교체)
+
+## 텍스트 작성 규칙
+- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요** — description은 참고용이며 출력에 포함하면 안 됩니다
+- 소스의 실제 내용만 작성하세요
+- 소스에 ◦, -, ※, *, 1), ➊ 등 하위 마커가 보이면, 해당 내용을 children role로 분리하세요. 부모 role에 합치지 마세요.
 
 ## 출력 형식
 
@@ -2323,14 +2342,14 @@ section_header
 ## 중요
 - **소스에 없는 내용을 만들어내지 마세요**
 - **소스의 해당 섹션 내용을 빠짐없이 반영하세요**
+- **하나의 role 항목에는 하나의 계층 내용만** — 여러 계층을 합치지 마세요
 - 양식 샘플과 비슷한 길이/문체를 유지하세요
-- 긴 내용은 같은 role로 여러 항목으로 나누세요
 - 반드시 JSON만 출력. 다른 설명 포함 금지
 """
 
 
 def _format_pattern_tree(pattern: dict, role_markers: dict, indent: int = 0) -> str:
-    """패턴 트리를 사람이 읽기 좋은 텍스트로 변환"""
+    """패턴 트리를 사람이 읽기 좋은 텍스트로 변환. children 유무로 제목/본문 표시."""
     lines = []
     prefix = "  " * indent
     for role_name, info in pattern.items():
@@ -2338,14 +2357,19 @@ def _format_pattern_tree(pattern: dict, role_markers: dict, indent: int = 0) -> 
         marker_str = f' (마커: "{marker}")' if marker else ""
         repeat = info.get("repeat", False)
         optional = info.get("optional", False)
+        children = info.get("children", {})
         flags = []
         if repeat:
             flags.append("반복 가능")
         if optional:
             flags.append("선택")
+        # children 유무로 성격 표시
+        if children:
+            flags.append("짧은 제목만")
+        else:
+            flags.append("본문 내용")
         flags_str = f" [{', '.join(flags)}]" if flags else ""
         lines.append(f"{prefix}- {role_name}{marker_str}{flags_str}")
-        children = info.get("children", {})
         if children:
             lines.append(_format_pattern_tree(children, role_markers, indent + 1))
     return "\n".join(lines)
