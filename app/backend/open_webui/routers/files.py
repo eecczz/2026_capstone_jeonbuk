@@ -985,12 +985,14 @@ async def generate_hwpx_dynamic_endpoint(
         truncate_xml,
         build_structure_analysis_prompt,
         parse_structure_from_llm,
-        build_content_mapping_prompt,
-        parse_actions_from_llm,
+        build_chapter_classify_prompt,
+        parse_chapter_classify_from_llm,
+        build_section_fill_prompt,
+        parse_section_fill_from_llm,
         pdf_to_base64_images,
         pdf_to_text,
     )
-    from open_webui.utils.hwp_generator import generate_hwpx_dynamic
+    from open_webui.utils.hwp_generator import assemble_hwpx_hybrid
     from open_webui.utils.chat import generate_chat_completion
     from open_webui.utils.task import get_task_model_id
 
@@ -1136,56 +1138,160 @@ async def generate_hwpx_dynamic_endpoint(
             detail=f"양식 구조 분석 실패: {e}",
         )
 
-    # 5b) 2차 AI 호출 — 소스 내용 매핑 → 명령 JSON 생성
+    # ── 5b) 2a AI 호출 — 소스 대제목 추출 + 양식 타입 분류 ──
+    chapter_types = structure.get("chapter_types", {})
+    if not chapter_types:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="1차 분석에서 chapter_types가 없습니다. 양식에 대제목이 없을 수 있습니다.",
+        )
+
+    # header role 목록 추출
+    header_roles_set = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
+    header_roles = []
+    for p in structure.get("paragraphs", []):
+        role = p.get("role", "")
+        if role in header_roles_set:
+            header_roles.append(role)
+    header_roles = list(dict.fromkeys(header_roles))  # 순서 유지 중복 제거
+
     try:
-        messages_2 = build_content_mapping_prompt(
-            structure,
+        messages_2a = build_chapter_classify_prompt(
+            chapter_types,
+            header_roles,
             content_text=content_text,
             content_images=content_images,
             pdf_text=pdf_text_content,
         )
-        # --- 디버그: 2차 요청 ---
-        for i, m in enumerate(messages_2):
-            content_val = m.get("content", "")
-            if isinstance(content_val, str):
-                log.info(f"[HWP-DEBUG] 2차 요청 messages[{i}] role={m.get('role')}, content(앞3000자):\n{content_val[:3000]}")
-            elif isinstance(content_val, list):
-                for j, part in enumerate(content_val):
-                    if part.get("type") == "text":
-                        log.info(f"[HWP-DEBUG] 2차 요청 messages[{i}][{j}] type=text (앞3000자):\n{part['text'][:3000]}")
-                    elif part.get("type") == "image_url":
-                        log.info(f"[HWP-DEBUG] 2차 요청 messages[{i}][{j}] type=image (base64 길이={len(part.get('image_url',{}).get('url',''))})")
+        log.info(f"[HWP-DEBUG] 2a 요청: chapter_types={list(chapter_types.keys())}, header_roles={header_roles}")
 
-        llm_content_2 = await _call_llm(messages_2, "hwpx_content_mapping")
+        llm_content_2a = await _call_llm(messages_2a, "hwpx_chapter_classify")
+        log.info(f"[HWP-DEBUG] 2a LLM 응답 (전체 {len(llm_content_2a)}자):\n{llm_content_2a}")
 
-        # --- 디버그: 2차 응답 ---
-        log.info(f"[HWP-DEBUG] 2차 LLM 응답 (전체 {len(llm_content_2)}자):\n{llm_content_2}")
+        classify_result = parse_chapter_classify_from_llm(llm_content_2a)
+        chapters = classify_result.get("chapters", [])
+        header_data = classify_result.get("header", {})
+
+        log.info(f"[HWP-DEBUG] 2a 파싱: {len(chapters)}개 대제목, header={list(header_data.keys())}")
+        log.info(f"[HWP-DEBUG] 2a chapters:\n{json.dumps(chapters, ensure_ascii=False, indent=2)}")
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"내용 매핑 실패: {e}",
+            detail=f"소스 대제목 분류 실패: {e}",
         )
 
-    # 6) AI 응답에서 명령 JSON 파싱
-    try:
-        actions = parse_actions_from_llm(llm_content_2)
-        # --- 디버그: 파싱된 actions ---
-        log.info(f"[HWP-DEBUG] 파싱된 actions ({len(actions)}개):\n{json.dumps(actions, ensure_ascii=False, indent=2)}")
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"AI 응답 파싱 실패: {e}",
-        )
+    # ── 5c) 2b AI 호출 — 섹션별 콘텐츠 채우기 (대제목마다 1회) ──
+    # 소스 텍스트를 대제목별로 분할
+    from open_webui.utils.hwpx_analyzer import (
+        _extract_texts_by_idx,
+        split_source_by_chapters,
+    )
 
-    # 7) HWPX 생성
+    chapter_titles_list = [ch.get("title", "") for ch in chapters]
+    if pdf_text_content:
+        source_sections = split_source_by_chapters(pdf_text_content, chapter_titles_list)
+    else:
+        source_sections = [""] * len(chapters)
+
+    # role 카탈로그 구성 (1차 structure에서 추출)
+    idx_texts = {}
+    if truncated_xml:
+        try:
+            idx_texts = _extract_texts_by_idx(truncated_xml)
+        except Exception:
+            pass
+
+    full_role_catalog = {}
+    for p in structure.get("paragraphs", []):
+        role = p.get("role", "")
+        if role and role not in full_role_catalog:
+            sample = idx_texts.get(p.get("idx", -1), "")
+            full_role_catalog[role] = {
+                "description": p.get("description", ""),
+                "marker": p.get("marker", ""),
+                "level": p.get("level", 0),
+                "sample": sample,
+            }
+
+    body_items = []
+    for ch_idx, chapter in enumerate(chapters):
+        ch_type = chapter.get("type", "")
+        ch_title = chapter.get("title", "")
+
+        if ch_type not in chapter_types:
+            log.warning(f"[HWP-DEBUG] 2b 스킵: 알 수 없는 타입 '{ch_type}' (대제목: {ch_title})")
+            continue
+
+        type_info = chapter_types[ch_type]
+        pattern = type_info.get("pattern", {})
+        title_role = type_info.get("title_role", "chapter_title")
+
+        # 이 패턴에 사용되는 role만 카탈로그에서 추출
+        def _collect_roles(pat: dict) -> set:
+            roles = set()
+            for rname, info in pat.items():
+                roles.add(rname)
+                children = info.get("children", {})
+                if children:
+                    roles.update(_collect_roles(children))
+            return roles
+
+        pattern_roles = _collect_roles(pattern)
+        section_catalog = {r: full_role_catalog[r] for r in pattern_roles if r in full_role_catalog}
+
+        # 이 섹션에 해당하는 소스 텍스트만 전달
+        section_pdf_text = source_sections[ch_idx] if ch_idx < len(source_sections) else ""
+
+        try:
+            messages_2b = build_section_fill_prompt(
+                ch_title,
+                ch_type,
+                pattern,
+                section_catalog,
+                content_text=content_text,
+                content_images=content_images,
+                pdf_text=section_pdf_text,
+            )
+
+            log.info(f"[HWP-DEBUG] 2b[{ch_idx}] 요청: type={ch_type}, title={ch_title}, roles={list(section_catalog.keys())}")
+
+            llm_content_2b = await _call_llm(messages_2b, f"hwpx_section_fill_{ch_idx}")
+            log.info(f"[HWP-DEBUG] 2b[{ch_idx}] LLM 응답 ({len(llm_content_2b)}자):\n{llm_content_2b}")
+
+            items = parse_section_fill_from_llm(llm_content_2b)
+            log.info(f"[HWP-DEBUG] 2b[{ch_idx}] 파싱: {len(items)}개 항목")
+
+            # 대제목 항목 추가 (2b 출력에는 대제목 자체가 없으므로)
+            body_items.append({"role": title_role, "text": ch_title})
+            body_items.extend(items)
+
+        except Exception as e:
+            log.warning(f"2b[{ch_idx}] 실패 ({ch_title}): {e}")
+            # 실패한 섹션은 대제목만 추가
+            body_items.append({"role": title_role, "text": ch_title})
+
+    # ── 6) 결과 조합 → assemble_hwpx_hybrid ──
+    content = {
+        "header": header_data,
+        "body": body_items,
+    }
+    log.info(
+        f"[HWP-DEBUG] 최종 콘텐츠: header={list(header_data.keys())}, "
+        f"body={len(body_items)}개 항목"
+    )
+    log.info(f"[HWP-DEBUG] body 내용:\n{json.dumps(body_items, ensure_ascii=False, indent=2)}")
+
+    # 7) HWPX 조립
     try:
-        result = generate_hwpx_dynamic(
-            template_path, actions,
+        result = assemble_hwpx_hybrid(
+            template_path,
             structure=structure,
+            content=content,
             removed_indices=removed_indices,
+            idx_map=truncate_result.get("idx_map"),
         )
     except Exception as e:
         raise HTTPException(
