@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import zipfile
+from itertools import combinations, product
 from lxml import etree
 from typing import Optional
 
@@ -1844,7 +1845,8 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
 
     1. level 1 문단으로 챕터 경계를 나눔
     2. 각 챕터 안에서 level 순서를 보고 부모-자식 트리를 만듦
-    3. 동일한 트리 구조를 가진 챕터는 같은 타입으로 묶음
+    3. 같은 부모 아래 배타적 자식(서로 다른 마커 경로)이 있으면 별도 타입으로 분리
+    4. 동일한 트리 구조를 가진 챕터는 같은 타입으로 묶음
 
     Returns:
         {"type_name": {"title_role": ..., "description": ..., "pattern": {...}}, ...}
@@ -1881,15 +1883,11 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         log.warning("chapter_types 생성 실패: level 1 문단이 없습니다")
         return {}
 
-    # 2단계: 각 챕터의 body에서 level 기반 트리 생성
-    def _build_tree(body_paras: list[dict]) -> dict:
-        """body 문단 리스트에서 role 패턴 트리를 생성"""
-        if not body_paras:
-            return {}
+    # 2단계: 내부 도우미 함수들
 
-        # role별 등장 정보: {role: {"level": N, "count": N, "children_roles": set}}
+    def _build_role_info(body_paras: list[dict]) -> dict:
+        """body 문단에서 role별 level/count/parent 정보를 추출"""
         role_info = {}
-        # 부모-자식 관계를 level 순서로 추적
         level_stack = []  # [(level, role)]
 
         for p in body_paras:
@@ -1898,47 +1896,145 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
             if not role or _should_skip(role):
                 continue
 
-            # role 등장 카운트
             if role not in role_info:
                 role_info[role] = {"level": level, "count": 0, "parent": None}
             role_info[role]["count"] += 1
 
-            # level stack에서 부모 찾기
             while level_stack and level_stack[-1][0] >= level:
                 level_stack.pop()
 
             if level_stack:
                 parent_role = level_stack[-1][1]
-                # 첫 번째 부모만 기록 (이미 설정된 경우 유지)
                 if role_info[role]["parent"] is None:
                     role_info[role]["parent"] = parent_role
 
             level_stack.append((level, role))
 
-        # 트리 구조 생성
-        # 최상위 role (parent가 없는 것) 찾기
+        return role_info
+
+    def _build_pattern(role_info: dict, children_filter: dict = None) -> dict:
+        """role_info로부터 패턴 트리 생성.
+
+        children_filter: {parent_role: set(allowed_children)} — 해당 부모의 자식만 포함
+        """
         top_roles = [r for r, info in role_info.items() if info["parent"] is None]
 
-        def _build_subtree(parent_role: str) -> dict:
+        def _subtree(parent_role: str) -> dict:
             info = role_info[parent_role]
             children_roles = [
-                r for r, ri in role_info.items() if ri["parent"] == parent_role
+                r for r, ri in role_info.items()
+                if ri["parent"] == parent_role
+                and (children_filter is None
+                     or parent_role not in children_filter
+                     or r in children_filter[parent_role])
             ]
             node = {"repeat": info["count"] >= 2}
             if children_roles:
-                children = {}
-                for cr in children_roles:
-                    children[cr] = _build_subtree(cr)
-                node["children"] = children
+                node["children"] = {cr: _subtree(cr) for cr in children_roles}
             return node
 
-        pattern = {}
-        for tr in top_roles:
-            pattern[tr] = _build_subtree(tr)
+        return {tr: _subtree(tr) for tr in top_roles}
 
-        return pattern
+    def _detect_exclusive_children(
+        body_paras: list[dict], role_info: dict
+    ) -> dict:
+        """
+        부모 role의 인스턴스별로 직접 자식을 추적하여 배타적 자식 관계를 감지.
+        같은 부모의 서로 다른 인스턴스가 겹치지 않는 자식 집합을 가지면 배타적.
+
+        Returns:
+            {parent_role: [frozenset(variant1_children), ...]}
+            비어있으면 배타적 관계 없음
+        """
+        parent_children = {}
+        for role, info in role_info.items():
+            parent = info["parent"]
+            if parent:
+                parent_children.setdefault(parent, set()).add(role)
+
+        multi_child_parents = {
+            p: c for p, c in parent_children.items() if len(c) >= 2
+        }
+        if not multi_child_parents:
+            return {}
+
+        results = {}
+        for parent_role, all_children in multi_child_parents.items():
+            parent_level = role_info[parent_role]["level"]
+
+            # 각 부모 인스턴스에서 나타나는 직접 자식 추적
+            instances = []
+            current_children = set()
+            in_scope = False
+
+            for p in body_paras:
+                role = p.get("role", "")
+                level = p.get("level", 0)
+                if not role or _should_skip(role):
+                    continue
+
+                if role == parent_role:
+                    if in_scope and current_children:
+                        instances.append(frozenset(current_children))
+                    current_children = set()
+                    in_scope = True
+                elif in_scope:
+                    if level <= parent_level:
+                        if current_children:
+                            instances.append(frozenset(current_children))
+                        current_children = set()
+                        in_scope = False
+                    elif role in all_children:
+                        current_children.add(role)
+
+            if in_scope and current_children:
+                instances.append(frozenset(current_children))
+
+            # 고유 변형 추출 (등장 순서 유지)
+            unique_variants = []
+            for inst in instances:
+                if inst not in unique_variants:
+                    unique_variants.append(inst)
+
+            if len(unique_variants) < 2:
+                continue
+
+            # 배타적인지 확인: 쌍별 교집합이 없어야 함
+            is_disjoint = all(
+                v1.isdisjoint(v2)
+                for v1, v2 in combinations(unique_variants, 2)
+            )
+            if is_disjoint:
+                results[parent_role] = unique_variants
+
+        return results
+
+    def _get_variant_marker_desc(
+        body_paras: list[dict], parent_role: str, variant_children: frozenset
+    ) -> str:
+        """변형의 마커 경로 설명 생성 (예: '□→ㅇ 블록')"""
+        parent_marker = ""
+        child_markers = []
+
+        for p in body_paras:
+            role = p.get("role", "")
+            marker = p.get("marker", "")
+            if not marker:
+                continue
+            if role == parent_role and not parent_marker:
+                parent_marker = marker.strip()
+            elif role in variant_children and marker.strip() not in child_markers:
+                child_markers.append(marker.strip())
+
+        parts = []
+        if parent_marker:
+            parts.append(parent_marker)
+        parts.extend(child_markers[:2])
+        return "→".join(parts) + " 블록" if parts else ""
 
     # 3단계: 각 챕터의 트리를 비교해서 같은 구조면 같은 타입으로 묶기
+    #        배타적 자식이 있으면 변형별로 타입 분리 (type_Na, type_Nb)
+
     def _pattern_signature(pattern: dict) -> str:
         """패턴의 구조적 시그니처 (role 이름 + 계층)"""
         parts = []
@@ -1956,20 +2052,76 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     for title_para, body_paras in chapters:
         title_role = title_para.get("role", "chapter_title")
         title_desc = title_para.get("description", "")
-        pattern = _build_tree(body_paras)
-        sig = _pattern_signature(pattern)
 
-        if sig in sig_to_type:
-            type_name = sig_to_type[sig]
-        else:
+        role_info = _build_role_info(body_paras)
+        if not role_info:
+            continue
+
+        exclusive = _detect_exclusive_children(body_paras, role_info)
+
+        if exclusive:
+            # 배타적 자식 → 변형별로 타입 분리
+            exclusive_items = list(exclusive.items())
+            variant_combos = list(product(
+                *[variants for _, variants in exclusive_items]
+            ))
+            variant_combos = variant_combos[:8]  # 변형 수 제한
+
             type_counter += 1
-            type_name = f"type_{type_counter}"
-            sig_to_type[sig] = type_name
-            chapter_types[type_name] = {
-                "title_role": title_role,
-                "description": title_desc,
-                "pattern": pattern,
-            }
+            base_num = type_counter
+
+            log.info(
+                f"배타적 자식 감지 → {len(variant_combos)}개 변형 분리: "
+                + ", ".join(
+                    f"{pr}={[set(v) for v in vs]}"
+                    for pr, vs in exclusive_items
+                )
+            )
+
+            for i, combo in enumerate(variant_combos):
+                children_filter = {}
+                marker_descs = []
+                for (parent_role, _), variant in zip(exclusive_items, combo):
+                    children_filter[parent_role] = variant
+                    md = _get_variant_marker_desc(
+                        body_paras, parent_role, variant
+                    )
+                    if md:
+                        marker_descs.append(md)
+
+                variant_pattern = _build_pattern(role_info, children_filter)
+                sig = _pattern_signature(variant_pattern)
+
+                if sig in sig_to_type:
+                    continue
+
+                suffix = chr(ord('a') + i)
+                type_name = f"type_{base_num}{suffix}"
+                marker_info = " / ".join(marker_descs)
+                variant_desc = (
+                    f"{title_desc} ({marker_info})"
+                    if marker_info else title_desc
+                )
+                sig_to_type[sig] = type_name
+                chapter_types[type_name] = {
+                    "title_role": title_role,
+                    "description": variant_desc,
+                    "pattern": variant_pattern,
+                }
+        else:
+            # 일반 케이스: 배타적 자식 없음
+            pattern = _build_pattern(role_info)
+            sig = _pattern_signature(pattern)
+
+            if sig not in sig_to_type:
+                type_counter += 1
+                type_name = f"type_{type_counter}"
+                sig_to_type[sig] = type_name
+                chapter_types[type_name] = {
+                    "title_role": title_role,
+                    "description": title_desc,
+                    "pattern": pattern,
+                }
 
     log.info(
         f"chapter_types 코드 생성: {len(chapters)}개 챕터 → "
