@@ -1146,19 +1146,14 @@ async def generate_hwpx_dynamic_endpoint(
             detail="1차 분석에서 chapter_types가 없습니다. 양식에 대제목이 없을 수 있습니다.",
         )
 
-    # header role 목록 추출 — level 0이면서 toc/fixed/spacer가 아닌 role
-    # (chapter_types 생성과 동일한 정의: level 0은 표지/header 영역)
-    skip_keywords = {"spacer", "toc", "fixed"}
+    # header role 목록 추출
+    header_roles_set = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
     header_roles = []
     for p in structure.get("paragraphs", []):
         role = p.get("role", "")
-        level = p.get("level", 0)
-        if not role or level != 0:
-            continue
-        if any(kw in role.lower() for kw in skip_keywords):
-            continue
-        if role not in header_roles:
+        if role in header_roles_set:
             header_roles.append(role)
+    header_roles = list(dict.fromkeys(header_roles))  # 순서 유지 중복 제거
 
     try:
         messages_2a = build_chapter_classify_prompt(
@@ -1221,7 +1216,7 @@ async def generate_hwpx_dynamic_endpoint(
                 "sample": sample,
             }
 
-    chapters_for_assembly = []
+    body_items = []
     for ch_idx, chapter in enumerate(chapters):
         ch_type = chapter.get("type", "")
         ch_title = chapter.get("title", "")
@@ -1250,7 +1245,6 @@ async def generate_hwpx_dynamic_endpoint(
         # 이 섹션에 해당하는 소스 텍스트만 전달
         section_pdf_text = source_sections[ch_idx] if ch_idx < len(source_sections) else ""
 
-        items = []
         try:
             messages_2b = build_section_fill_prompt(
                 ch_title,
@@ -1270,28 +1264,25 @@ async def generate_hwpx_dynamic_endpoint(
             items = parse_section_fill_from_llm(llm_content_2b)
             log.info(f"[HWP-DEBUG] 2b[{ch_idx}] 파싱: {len(items)}개 항목")
 
+            # 대제목 항목 추가 (2b 출력에는 대제목 자체가 없으므로)
+            body_items.append({"role": title_role, "text": ch_title})
+            body_items.extend(items)
+
         except Exception as e:
             log.warning(f"2b[{ch_idx}] 실패 ({ch_title}): {e}")
-            # 실패한 섹션은 대제목만 (items 빈 채로)
-
-        chapters_for_assembly.append({
-            "type": ch_type,
-            "title": ch_title,
-            "title_role": title_role,
-            "items": items,
-        })
+            # 실패한 섹션은 대제목만 추가
+            body_items.append({"role": title_role, "text": ch_title})
 
     # ── 6) 결과 조합 → assemble_hwpx_hybrid ──
     content = {
         "header": header_data,
-        "chapters": chapters_for_assembly,
+        "body": body_items,
     }
-    total_items = sum(len(ch["items"]) for ch in chapters_for_assembly)
     log.info(
         f"[HWP-DEBUG] 최종 콘텐츠: header={list(header_data.keys())}, "
-        f"chapters={len(chapters_for_assembly)}개, items 합계={total_items}"
+        f"body={len(body_items)}개 항목"
     )
-    log.info(f"[HWP-DEBUG] chapters 내용:\n{json.dumps(chapters_for_assembly, ensure_ascii=False, indent=2)}")
+    log.info(f"[HWP-DEBUG] body 내용:\n{json.dumps(body_items, ensure_ascii=False, indent=2)}")
 
     # 7) HWPX 조립
     try:
@@ -1299,7 +1290,6 @@ async def generate_hwpx_dynamic_endpoint(
             template_path,
             structure=structure,
             content=content,
-            chapter_types=chapter_types,
             removed_indices=removed_indices,
             idx_map=truncate_result.get("idx_map"),
         )
