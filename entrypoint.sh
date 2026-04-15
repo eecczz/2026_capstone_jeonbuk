@@ -78,6 +78,8 @@ export ENABLE_PASSWORD_AUTH="True"
 export ENABLE_WEBSOCKET_SUPPORT="true"
 export WEBSOCKET_MANAGER="redis"
 export WEBSOCKET_REDIS_URL="redis://localhost:6379/1"
+export ENABLE_PUBLIC_CHATBOT="True"
+export CRAWLER_ENABLED="True"
 
 exec python3 -m uvicorn open_webui.main:app \
     --host 0.0.0.0 \

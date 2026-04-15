@@ -409,8 +409,10 @@ async def _process_url(
         CrawledPages.mark_error(url, site_config["code"], str(e))
         return "error"
 
-    # CrawledPage upsert
-    CrawledPages.upsert(
+    # CrawledPage upsert (PostgreSQL 추적 테이블)
+    # 주의: vector DB 저장은 이미 성공했으므로, upsert 실패 시 raise는 하지 않고
+    # 별도 "tracking_missing" 상태로 표시하여 stats에서 집계한다.
+    upsert_result = CrawledPages.upsert(
         url=url,
         site_code=site_config["code"],
         institution=metadata["institution"],
@@ -423,8 +425,104 @@ async def _process_url(
         chunks_count=len(docs),
         content_changed=True,
     )
+    if upsert_result is None:
+        log.error(
+            f"crawled_page upsert returned None for {url} "
+            f"(site={site_config['code']}) — vector DB saved but tracking row MISSING. "
+            f"Check alembic migrations (head should be e7f8a9b0c1d2)."
+        )
+        return "tracking_missing"
+
+    # GraphRAG 엔티티 추출 (feature flag로 gate, 실패해도 크롤링은 성공 유지)
+    if getattr(
+        request.app.state.config, "ENABLE_GRAPH_RAG_EXTRACTION", False
+    ):
+        try:
+            await _extract_entities_for_page(request, docs, url, metadata)
+        except Exception as e:
+            log.warning(
+                f"graph entity extraction failed for {url}: {e} "
+                "(crawling continues)"
+            )
 
     return "updated" if existing else "new"
+
+
+async def _extract_entities_for_page(
+    request, docs: list[Document], url: str, metadata: dict
+) -> None:
+    """
+    한 페이지의 docs(청크)에서 엔티티/관계 트리플을 LLM으로 추출한 뒤
+    entity/entity_mention/entity_relation 테이블에 저장.
+
+    LLM 호출 횟수: URL 당 1회 (docs 합본 텍스트 사용).
+    실패는 호출자가 try/except로 처리.
+    """
+    # 지연 import — 그래프 모듈이 없어도 크롤러 자체는 import 가능해야 함
+    from open_webui.retrieval.graph.extractor import (
+        build_extraction_messages,
+        parse_and_store,
+    )
+    from open_webui.routers.public_chatbot import _get_public_user
+    from open_webui.utils.chat import generate_chat_completion
+
+    if not docs:
+        return
+
+    # 페이지 본문 합본 (첫 3청크, 최대 3000자)
+    combined = "\n\n".join((d.page_content or "")[:1500] for d in docs[:3])
+    if not combined.strip():
+        return
+
+    base_model = getattr(
+        request.app.state.config, "PUBLIC_CHATBOT_BASE_MODEL", "gpt-5.4-mini"
+    )
+    form_data = {
+        "model": base_model,
+        "messages": build_extraction_messages(combined),
+        "stream": False,
+        "temperature": 0.0,
+    }
+    user = _get_public_user(request)
+    try:
+        resp = await generate_chat_completion(
+            request, form_data, user=user, bypass_filter=True
+        )
+    except Exception as e:
+        log.warning(f"LLM call failed in entity extraction for {url}: {e}")
+        return
+
+    # resp 형태: dict with 'choices' or JSONResponse
+    raw_text = _extract_response_text(resp)
+    if not raw_text:
+        return
+
+    stats = parse_and_store(
+        llm_raw_output=raw_text,
+        chunk_id=url,  # URL을 chunk_id로 사용 (retriever가 url로 vector filter)
+        url=url,
+        confidence=0.8,
+    )
+    log.info(f"graph extraction stored for {url}: {stats}")
+
+
+def _extract_response_text(resp: Any) -> str:
+    """generate_chat_completion 응답에서 text 추출."""
+    if isinstance(resp, dict):
+        try:
+            return resp["choices"][0]["message"]["content"] or ""
+        except Exception:
+            return ""
+    # JSONResponse 등
+    try:
+        body = getattr(resp, "body", None) or b""
+        if body:
+            import json as _json
+            d = _json.loads(body.decode("utf-8"))
+            return d["choices"][0]["message"]["content"] or ""
+    except Exception:
+        pass
+    return ""
 
 
 ####################
@@ -458,6 +556,7 @@ async def crawl_site(
         "unchanged": 0,
         "skipped": 0,
         "error": 0,
+        "tracking_missing": 0,  # vector DB 저장은 됐으나 crawled_page upsert 실패
         "elapsed_sec": 0.0,
     }
 

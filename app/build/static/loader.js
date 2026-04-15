@@ -1695,6 +1695,8 @@
       }
 
       // 패턴 2: "domain.co.kr +N more sources" (다중 소스) — v6에서 누락됐던 부분
+      // a 태그(웹 링크)는 기본 동작(새 탭 열기)을 그대로 사용
+      if (e.target.closest('a[target="_blank"]')) return;
       const btn = e.target.closest('button');
       if (btn) {
         const text = (btn.textContent || '').trim();
@@ -1707,21 +1709,71 @@
           e.stopImmediatePropagation();
           const domain = multiMatch[1];
           console.log('[JBTP] Multi-source clicked, domain:', domain);
-          await openPanelForSource(domain);
+          // Web domain → find full URL and open in new tab
+          const newTab = window.open("about:blank", "_blank");
+          const fullUrl = await _findUrlForDomain(domain);
+          if (fullUrl) {
+            if (newTab) newTab.location.href = fullUrl;
+          } else {
+            if (newTab) newTab.close();
+            await openPanelForSource(domain);
+          }
           return;
         }
 
-        // "N개의 소스" 버튼
-        if (text.match(/\d+개의 소스/)) {
+        // 패턴 2b: 단일 도메인 버튼 (domain.co.kr, +N 없는 경우)
+        const singleDomainMatch = text.match(/^([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/);
+        if (singleDomainMatch) {
           e.preventDefault();
           e.stopPropagation();
           e.stopImmediatePropagation();
-          console.log('[JBTP] Toggle all sources clicked');
-          await openPanelForSource(null);
+          const domain = singleDomainMatch[1];
+          const newTab = window.open("about:blank", "_blank");
+          const fullUrl = await _findUrlForDomain(domain);
+          if (fullUrl) {
+            if (newTab) newTab.location.href = fullUrl;
+          } else {
+            if (newTab) newTab.close();
+            await openPanelForSource(domain);
+          }
           return;
         }
+
+        // "N개의 소스" 버튼 — Svelte 토글에 위임 (고정 패널 안 열림)
+        // if (text.match(/\d+개의 소스/)) { ... }
       }
     }, true);
+  }
+
+
+  // Find full URL for a domain from cached sources (async - fetches if cache empty)
+  async function _findUrlForDomain(domain) {
+    const cleanDomain = domain.replace(/^www\./, '');
+    // If cache empty, try to fetch from API first
+    if (_cachedSources.length === 0) {
+      const chatMatch = location.pathname.match(/\/c\/([0-9a-f-]{36})/);
+      if (chatMatch) {
+        try {
+          const token = getToken();
+          const fetchFn = _realFetch || fetch;
+          const resp = await fetchFn('/api/v1/chats/' + chatMatch[1], {
+            headers: { 'Authorization': 'Bearer ' + token }
+          });
+          const data = await resp.json();
+          extractSourcesFromChat(data);
+        } catch(e) {}
+      }
+    }
+    for (const src of _cachedSources) {
+      const metas = src.metadata || [];
+      for (const m of metas) {
+        const url = m.url || m.source || '';
+        if (url.startsWith('http') && url.includes(cleanDomain)) {
+          return url;
+        }
+      }
+    }
+    return null;
   }
 
   async function openPanelForSource(matchStr, contextText) {
@@ -1795,7 +1847,7 @@
     if (document.getElementById('jbtp-citation-panel')) return;
 
     panel = document.createElement('div');
-    panel.id = 'jbtp-citation-panel';
+    panel.id = 'jbtp-citation-panel'; panel.style.display = 'none';
     panel.innerHTML =
       '<div class="jbtp-panel-header">' +
         '<span class="jbtp-panel-title">\u{1F4C4} \uC778\uC6A9 \uD398\uC774\uC9C0</span>' +
@@ -2016,8 +2068,8 @@
   }
 })();
 
-/*status_widget_start*/
-(function(){
+/*status_widget_start -- DISABLED */
+if(false){(function(){
   'use strict';
   var POLL_MS = 15000;
   var API = '/monitoring/api/public-status';
@@ -2167,5 +2219,226 @@
 
   if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',initWidget);}
   else{initWidget();}
+})();}
+/*status_widget_end -- DISABLED */
+
+/*auto_reconnect_start*/
+(function() {
+  'use strict';
+  var RECONNECT_CHECK = 2000;
+  var SOCKET_CHECK_INTERVAL = 3000;
+  var _overlay = null;
+  var _timer = null;
+  var _disconnected = false;
+
+  function createOverlay() {
+    if (_overlay) return;
+    _overlay = document.createElement('div');
+    _overlay.id = 'owi-reconnect-overlay';
+    _overlay.innerHTML =
+      '<div style="display:flex;flex-direction:column;align-items:center;gap:12px">' +
+        '<div style="width:36px;height:36px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:owi-spin 0.8s linear infinite"></div>' +
+        '<div style="font-size:15px;font-weight:500;color:#fff">서버 연결 중...</div>' +
+        '<div style="font-size:12px;color:rgba(255,255,255,0.6)">잠시만 기다려주세요</div>' +
+      '</div>';
+    _overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:999999;' +
+      'display:flex;align-items:center;justify-content:center;' +
+      'background:rgba(0,0,0,0.5);backdrop-filter:blur(4px);' +
+      'opacity:0;transition:opacity 0.3s ease;pointer-events:none';
+    var style = document.createElement('style');
+    style.textContent = '@keyframes owi-spin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(style);
+    document.body.appendChild(_overlay);
+    setTimeout(function() {
+      if (_overlay) { _overlay.style.opacity = '1'; _overlay.style.pointerEvents = 'auto'; }
+    }, 300);
+  }
+
+  function onDisconnect() {
+    if (_disconnected) return;
+    _disconnected = true;
+    createOverlay();
+    pollAndReload();
+  }
+
+  function pollAndReload() {
+    fetch('/health', { method: 'GET', cache: 'no-store' })
+      .then(function(r) {
+        if (r.ok) {
+          location.reload();
+        } else {
+          _timer = setTimeout(pollAndReload, RECONNECT_CHECK);
+        }
+      })
+      .catch(function() {
+        _timer = setTimeout(pollAndReload, RECONNECT_CHECK);
+      });
+  }
+
+  // === Socket.IO 연결 상태 직접 모니터링 ===
+  function findSocketIO() {
+    // OWI Socket.IO 클라이언트 찾기 (전역 객체 탐색)
+    if (window.__socket) return window.__socket;
+    if (window.io && window.io.sockets) return window.io.sockets[0];
+    // SvelteKit 앱 내부의 socket 찾기
+    var frames = document.querySelectorAll('iframe');
+    return null;
+  }
+
+  function monitorSocketIO() {
+    setInterval(function() {
+      if (_disconnected) return;
+
+      // 방법 1: Socket.IO 전역 객체 확인
+      var sock = findSocketIO();
+      if (sock && sock.disconnected) {
+        console.log('[auto-reconnect] Socket.IO disconnected detected');
+        onDisconnect();
+        return;
+      }
+
+      // 방법 2: DOM 기반 감지 — OWI는 연결 끊기면 특정 UI 변화 발생
+      // socket 상태 표시 요소 확인
+      var statusEl = document.querySelector('[data-state="disconnected"]');
+      if (statusEl) {
+        console.log('[auto-reconnect] Disconnected state in DOM');
+        onDisconnect();
+        return;
+      }
+
+      // 방법 3: 네트워크 기반 — fetch로 API 호출해서 응답 확인
+      // (proxy_next_upstream 때문에 /health는 항상 성공하므로, 인증이 필요한 API 사용)
+      // 사용자 세션이 끊겼는지 확인
+    }, SOCKET_CHECK_INTERVAL);
+  }
+
+  // === WebSocket 생성자 래핑 (새로 만들어지는 WS 감지) ===
+  var _origWS = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    var ws = protocols ? new _origWS(url, protocols) : new _origWS(url);
+    ws.addEventListener('close', function(e) {
+      if (!e.wasClean && !_disconnected) {
+        console.log('[auto-reconnect] WebSocket unclean close:', url);
+        // 1초 후 재확인 (일시적 끊김일 수 있음)
+        setTimeout(function() {
+          if (!_disconnected) {
+            // WebSocket이 재연결됐는지 확인
+            var allWS = performance.getEntriesByType ? [] : [];
+            onDisconnect();
+          }
+        }, 2000);
+      }
+    });
+    return ws;
+  };
+  window.WebSocket.prototype = _origWS.prototype;
+  window.WebSocket.CONNECTING = _origWS.CONNECTING;
+  window.WebSocket.OPEN = _origWS.OPEN;
+  window.WebSocket.CLOSING = _origWS.CLOSING;
+  window.WebSocket.CLOSED = _origWS.CLOSED;
+
+  // === 페이지 비활성→활성 전환 시 연결 상태 확인 ===
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible' && !_disconnected) {
+      // 탭이 다시 활성화되면 연결 상태 확인
+      setTimeout(function() {
+        var sock = findSocketIO();
+        if (sock && sock.disconnected) {
+          onDisconnect();
+        }
+      }, 500);
+    }
+  });
+
+  // 시작
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', monitorSocketIO);
+  } else {
+    monitorSocketIO();
+  }
 })();
-/*status_widget_end*/
+/*auto_reconnect_end*/
+
+
+
+
+/*public_chatbot_button_start*/
+(function(){
+  'use strict';
+  var BTN_ID='public-chatbot-fab';
+  var MODAL_ID='public-chatbot-modal';
+  var URL='/static/public-chatbot.html';
+
+  function init(){
+    if(document.getElementById(BTN_ID))return;
+    var btn=document.createElement('button');
+    btn.id=BTN_ID;
+    btn.type='button';
+    btn.title='대도민 공개 챗봇 미리보기';
+    btn.innerHTML='🎙 대도민 챗봇';
+    Object.assign(btn.style,{
+      position:'fixed', bottom:'20px', right:'20px',
+      zIndex:'99998', padding:'12px 20px',
+      borderRadius:'999px', border:'none',
+      background:'linear-gradient(135deg,#1d4ed8,#2563eb)',
+      color:'#fff', fontSize:'14px', fontWeight:'700',
+      fontFamily:'inherit', cursor:'pointer',
+      boxShadow:'0 6px 18px rgba(29,78,216,0.35)',
+      letterSpacing:'-0.2px', transition:'all 0.18s ease'
+    });
+    btn.addEventListener('mouseenter',function(){btn.style.transform='translateY(-2px)';btn.style.boxShadow='0 10px 24px rgba(29,78,216,0.45)';});
+    btn.addEventListener('mouseleave',function(){btn.style.transform='';btn.style.boxShadow='0 6px 18px rgba(29,78,216,0.35)';});
+    btn.addEventListener('click',openModal);
+    document.body.appendChild(btn);
+  }
+
+  function openModal(){
+    if(document.getElementById(MODAL_ID))return;
+    var wrap=document.createElement('div');
+    wrap.id=MODAL_ID;
+    Object.assign(wrap.style,{
+      position:'fixed', inset:'0', zIndex:'99999',
+      background:'rgba(0,0,0,0.55)',
+      display:'flex', alignItems:'center', justifyContent:'center',
+      backdropFilter:'blur(3px)', padding:'20px'
+    });
+    var box=document.createElement('div');
+    Object.assign(box.style,{
+      position:'relative', width:'min(480px,100%)', height:'min(820px,90vh)',
+      background:'#fff', borderRadius:'16px', overflow:'hidden',
+      boxShadow:'0 24px 64px rgba(0,0,0,0.4)'
+    });
+    var close=document.createElement('button');
+    close.type='button';
+    close.innerHTML='✕';
+    close.title='닫기';
+    Object.assign(close.style,{
+      position:'absolute', top:'10px', right:'12px', zIndex:'2',
+      width:'34px', height:'34px', borderRadius:'50%',
+      border:'none', background:'rgba(0,0,0,0.55)', color:'#fff',
+      fontSize:'16px', cursor:'pointer', fontWeight:'700'
+    });
+    close.addEventListener('click',closeModal);
+    var iframe=document.createElement('iframe');
+    iframe.src=URL;
+    iframe.allow='microphone; autoplay; clipboard-write';
+    iframe.setAttribute('allowfullscreen','');
+    Object.assign(iframe.style,{width:'100%', height:'100%', border:'0', display:'block', background:'#fff'});
+    box.appendChild(iframe);
+    box.appendChild(close);
+    wrap.appendChild(box);
+    wrap.addEventListener('click',function(e){if(e.target===wrap)closeModal();});
+    document.addEventListener('keydown',escClose);
+    document.body.appendChild(wrap);
+  }
+  function closeModal(){
+    var wrap=document.getElementById(MODAL_ID);
+    if(wrap)wrap.remove();
+    document.removeEventListener('keydown',escClose);
+  }
+  function escClose(e){if(e.key==='Escape')closeModal();}
+
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',init);}
+  else{init();}
+})();
+/*public_chatbot_button_end*/

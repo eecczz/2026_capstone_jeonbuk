@@ -39,6 +39,79 @@ router = APIRouter()
 
 
 ####################
+# GraphRAG 헬퍼
+####################
+
+
+async def _build_graph_context(request: Request, query: str) -> str:
+    """
+    쿼리로부터 graph_bonus_chunks 를 얻고, 그 URL들에 해당하는 vector DB 청크 텍스트를
+    모아 system prompt 에 주입할 문자열을 만든다.
+
+    성능 최적화:
+    - URL 당 대표 청크 1개만 사용
+    - 상위 3개 URL만 (기존 6개에서 축소)
+    - Qdrant query 를 asyncio.gather 로 병렬 실행 (to_thread)
+    - 최대 1200자로 절삭
+    """
+    import asyncio as _aio
+    import time as _time
+    from open_webui.retrieval.graph.retriever import graph_bonus_chunks
+    from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
+
+    t0 = _time.perf_counter()
+    url_scores = graph_bonus_chunks(query, max_chunks=8)
+    t1 = _time.perf_counter()
+    if not url_scores:
+        return ""
+
+    collection = getattr(
+        request.app.state.config, "CRAWLER_COLLECTION_NAME", "jeonbuk_gov"
+    )
+
+    top_urls = [
+        url
+        for url, _ in sorted(
+            url_scores.items(), key=lambda kv: kv[1], reverse=True
+        )[:3]
+    ]
+
+    def _fetch_one(u: str):
+        try:
+            return VECTOR_DB_CLIENT.query(
+                collection_name=collection, filter={"url": u}, limit=1
+            )
+        except Exception as e:
+            log.debug(f"graph context fetch failed for {u}: {e}")
+            return None
+
+    results = await _aio.gather(
+        *[_aio.to_thread(_fetch_one, u) for u in top_urls]
+    )
+    t2 = _time.perf_counter()
+
+    lines: list[str] = []
+    for url, result in zip(top_urls, results):
+        if result is None:
+            continue
+        docs = (result.documents or [[]])[0] if result.documents else []
+        metas = (result.metadatas or [[]])[0] if result.metadatas else []
+        if not docs:
+            continue
+        text = (docs[0] or "")[:350]
+        meta = metas[0] if metas else {}
+        inst = meta.get("institution") or "-"
+        lines.append(f"[{inst}] {text}\n출처: {url}")
+
+    joined = "\n\n".join(lines)[:1200]
+    log.info(
+        f"graph context timing: bonus={1000 * (t1 - t0):.0f}ms "
+        f"fetch={1000 * (t2 - t1):.0f}ms urls={len(top_urls)} chars={len(joined)}"
+    )
+    return joined
+
+
+####################
 # 공개 가상 사용자 (DB 저장 안 함, 메모리 객체)
 ####################
 
@@ -224,6 +297,26 @@ async def _run_public_llm(
     system_prompt = system_prompt + _today_context_prefix()
 
     # 3. messages 조립 (system → history → 현재 질문)
+    #    GraphRAG 증강: feature flag ON이면 쿼리 엔티티로부터 관련 페이지 URL을 찾아
+    #    그 페이지의 벡터 청크 텍스트를 system prompt에 별첨으로 주입한다.
+    if getattr(
+        request.app.state.config, "ENABLE_GRAPH_RAG_RETRIEVAL", False
+    ):
+        try:
+            graph_context = await _build_graph_context(request, user_message)
+            if graph_context:
+                system_prompt = (
+                    system_prompt
+                    + "\n\n## 그래프 추론으로 추가 발견된 관련 자료\n"
+                    + graph_context
+                )
+                log.info(
+                    f"graph RAG augmented system prompt with "
+                    f"{len(graph_context)} chars"
+                )
+        except Exception as e:
+            log.warning(f"graph retrieval augmentation failed: {e}")
+
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt}
     ]
@@ -240,7 +333,7 @@ async def _run_public_llm(
     message_id = str(uuid.uuid4())
     metadata = {
         "user_id": user.id,
-        "chat_id": None,  # stateless: 기존 chat 테이블 사용 안 함
+        "chat_id": "",  # stateless: 기존 chat 테이블 사용 안 함
         "message_id": message_id,
         "session_id": session_id,
         "parent_message_id": None,
@@ -276,14 +369,15 @@ async def _run_public_llm(
         pass
 
     # 6. 핵심 — process_chat_payload로 RAG 컨텍스트/도구 주입
+    _t_rag = time.perf_counter()
     try:
         form_data, metadata, events = await process_chat_payload(
             request, form_data, user, metadata, model
         )
     except Exception as e:
         log.exception(f"process_chat_payload failed: {e}")
-        # RAG 주입 실패해도 plain LLM 호출은 계속 시도
         log.warning("Falling back to plain LLM call without RAG injection")
+    _t_rag_done = time.perf_counter()
 
     # 7. LLM 호출
     try:
@@ -299,6 +393,11 @@ async def _run_public_llm(
             status_code=500,
             detail=f"챗봇 응답 생성 중 오류: {str(e)}",
         )
+    _t_llm_done = time.perf_counter()
+    log.info(
+        f"public chat timing: rag={1000 * (_t_rag_done - _t_rag):.0f}ms "
+        f"llm={1000 * (_t_llm_done - _t_rag_done):.0f}ms"
+    )
 
     # 8. 응답 파싱 (dict / StreamingResponse 둘 다 처리)
     reply_text = ""
@@ -337,6 +436,174 @@ async def _run_public_llm(
     return reply_text.strip(), sources, model_id
 
 
+async def _stream_public_llm(
+    request: Request,
+    user: UserModel,
+    user_message: str,
+    history: list[dict],
+    session_id: str,
+):
+    """SSE 스트리밍 버전. _run_public_llm과 같은 흐름이지만 LLM 응답을 토큰 단위로 yield."""
+    # 1. 모델 결정
+    model_id = getattr(
+        request.app.state.config,
+        "PUBLIC_CHATBOT_MODEL_ID",
+        "jeonbuk-public-chatbot",
+    )
+    if not request.app.state.MODELS:
+        try:
+            await get_all_models(request, user=user)
+        except Exception as e:
+            log.warning(f"get_all_models failed in public chatbot stream: {e}")
+    if model_id not in (request.app.state.MODELS or {}):
+        fallback = getattr(
+            request.app.state.config,
+            "PUBLIC_CHATBOT_BASE_MODEL",
+            "gpt-4o-mini",
+        )
+        if fallback not in (request.app.state.MODELS or {}):
+            raise HTTPException(
+                status_code=500,
+                detail=f"LLM 모델을 찾을 수 없습니다: {model_id}, {fallback}",
+            )
+        model_id = fallback
+    model = request.app.state.MODELS[model_id]
+
+    # 2. 시스템 프롬프트 + 그래프 컨텍스트
+    system_prompt = getattr(
+        request.app.state.config,
+        "PUBLIC_CHATBOT_SYSTEM_PROMPT",
+        "당신은 전북특별자치도청 대도민 안내 AI입니다.",
+    )
+    system_prompt = system_prompt + _today_context_prefix()
+    if getattr(
+        request.app.state.config, "ENABLE_GRAPH_RAG_RETRIEVAL", False
+    ):
+        try:
+            graph_context = await _build_graph_context(request, user_message)
+            if graph_context:
+                system_prompt = (
+                    system_prompt
+                    + "\n\n## 그래프 추론으로 추가 발견된 관련 자료\n"
+                    + graph_context
+                )
+        except Exception as e:
+            log.warning(f"graph retrieval augmentation failed (stream): {e}")
+
+    # 3. messages
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt}
+    ]
+    for turn in history or []:
+        role = turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", None)
+        content = (
+            turn.get("content") if isinstance(turn, dict) else getattr(turn, "content", None)
+        )
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
+    # 4. metadata + form_data (stream=True)
+    message_id = str(uuid.uuid4())
+    metadata = {
+        "user_id": user.id,
+        "chat_id": "",
+        "message_id": message_id,
+        "session_id": session_id,
+        "parent_message_id": None,
+        "parent_message": None,
+        "filter_ids": [],
+        "tool_ids": None,
+        "tool_servers": None,
+        "files": None,
+        "features": {},
+        "variables": {},
+        "model": model,
+        "direct": False,
+        "params": {
+            "stream_delta_chunk_size": None,
+            "reasoning_tags": None,
+            "function_calling": "default",
+        },
+        "public_chatbot": True,
+    }
+    form_data = {
+        "model": model_id,
+        "messages": messages,
+        "stream": True,
+        "metadata": metadata,
+    }
+    try:
+        request.state.metadata = metadata
+    except Exception:
+        pass
+
+    # 5. RAG 주입 (process_chat_payload, hybrid 비활성 + query gen 비활성 상태)
+    try:
+        form_data, metadata, _events = await process_chat_payload(
+            request, form_data, user, metadata, model
+        )
+    except Exception as e:
+        log.exception(f"process_chat_payload (stream) failed: {e}")
+
+    # 6. LLM 호출 (stream)
+    try:
+        response = await generate_chat_completion(
+            request, form_data, user=user, bypass_filter=True
+        )
+    except Exception as e:
+        log.exception(f"generate_chat_completion (stream) failed: {e}")
+        yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        return
+
+    # 7. 응답 스트림 → 토큰 delta 만 추출해서 yield
+    if isinstance(response, StreamingResponse):
+        buf = ""
+        async for chunk in response.body_iterator:
+            if isinstance(chunk, bytes):
+                buf += chunk.decode("utf-8", errors="replace")
+            elif isinstance(chunk, str):
+                buf += chunk
+            # SSE line-by-line 파싱
+            while "\n\n" in buf:
+                event, buf = buf.split("\n\n", 1)
+                for line in event.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if payload == "" or payload == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(payload)
+                        delta = (
+                            obj.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content", "")
+                        )
+                        if delta:
+                            out = json.dumps(
+                                {"delta": delta}, ensure_ascii=False
+                            )
+                            yield f"data: {out}\n\n"
+                    except Exception:
+                        continue
+    elif isinstance(response, dict):
+        # non-stream fallback
+        try:
+            text = response["choices"][0]["message"]["content"] or ""
+        except Exception:
+            text = ""
+        if text:
+            yield f"data: {json.dumps({'delta': text}, ensure_ascii=False)}\n\n"
+
+    # 8. 종료 마커
+    final = json.dumps(
+        {"done": True, "session_id": session_id, "model": model_id},
+        ensure_ascii=False,
+    )
+    yield f"data: {final}\n\n"
+
+
 @router.post("/chat", response_model=PublicChatResponse)
 async def public_chat(request: Request, body: PublicChatRequest):
     """공개 텍스트 챗봇 엔드포인트.
@@ -373,6 +640,55 @@ async def public_chat(request: Request, body: PublicChatRequest):
         session_id=session_id,
         sources=sources,
         model=resolved_model,
+    )
+
+
+@router.post("/chat/stream")
+async def public_chat_stream(request: Request, body: PublicChatRequest):
+    """공개 챗봇 SSE 스트리밍 엔드포인트.
+
+    응답 형식: text/event-stream
+    각 청크: `data: {"delta": "..."}\\n\\n`
+    종료:   `data: {"done": true, "session_id": "...", "model": "..."}\\n\\n`
+
+    프론트는 fetch + ReadableStream 으로 받아서 화면에 즉시 누적 표시한다.
+    """
+    if not getattr(request.app.state.config, "ENABLE_PUBLIC_CHATBOT", False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="공개 챗봇 서비스가 비활성화되어 있습니다.",
+        )
+
+    await _check_rate_limit(request)
+
+    user = _get_public_user(request)
+    session_id = body.session_id or str(uuid.uuid4())
+    history_dicts = [
+        {"role": h.role, "content": h.content} for h in (body.history or [])
+    ]
+
+    async def _gen():
+        try:
+            async for chunk in _stream_public_llm(
+                request, user, body.message, history_dicts, session_id
+            ):
+                yield chunk
+        except HTTPException as e:
+            err = json.dumps({"error": str(e.detail)}, ensure_ascii=False)
+            yield f"data: {err}\n\n"
+        except Exception as e:
+            log.exception(f"public_chat_stream failed: {e}")
+            err = json.dumps({"error": str(e)}, ensure_ascii=False)
+            yield f"data: {err}\n\n"
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

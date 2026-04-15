@@ -25,6 +25,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Column, Integer, String, Text, func
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from open_webui.internal.db import Base, get_db, get_db_context
@@ -134,6 +135,21 @@ class CrawledPagesTable:
     ) -> Optional[CrawledPageModel]:
         """URL 기준 upsert. content_changed=True면 last_changed_at 갱신."""
         now = int(time.time())
+        # PostgreSQL text 컬럼은 NUL 바이트(0x00) 를 거부한다.
+        # 바이너리 파일(.hwpx, .pdf 등)을 크롤링할 때 title 에 NUL이 섞일 수 있음.
+        def _sanitize(s: Optional[str]) -> Optional[str]:
+            if s is None:
+                return None
+            return s.replace("\x00", "")
+
+        url = _sanitize(url) or ""
+        institution = _sanitize(institution)
+        category = _sanitize(category)
+        title = _sanitize(title)
+        content_hash = _sanitize(content_hash)
+        http_etag = _sanitize(http_etag)
+        http_last_modified = _sanitize(http_last_modified)
+        error_message = _sanitize(error_message)
         try:
             with get_db_context() as db:
                 row = db.query(CrawledPage).filter(CrawledPage.url == url).first()
@@ -183,6 +199,14 @@ class CrawledPagesTable:
                 db.commit()
                 db.refresh(row)
                 return CrawledPageModel.model_validate(row)
+        except OperationalError as e:
+            # 테이블 자체가 없거나 스키마 불일치. 마이그레이션 미적용 의심.
+            log.error(
+                f"CrawledPagesTable.upsert: operational error for {url} "
+                f"(likely missing table or schema mismatch). "
+                f"Run 'alembic upgrade head'. Detail: {e}"
+            )
+            return None
         except Exception as e:
             log.exception(f"CrawledPagesTable.upsert failed for {url}: {e}")
             return None

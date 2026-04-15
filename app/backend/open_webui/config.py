@@ -4427,6 +4427,25 @@ CRAWLER_WEEKLY_FULL_ENABLED = PersistentConfig(
     os.environ.get("CRAWLER_WEEKLY_FULL_ENABLED", "False").lower() == "true",
 )
 
+
+####################################
+# GraphRAG — 엔티티/관계 추출 및 그래프 증강 검색
+####################################
+
+# 크롤러가 청크 저장 후 LLM에 엔티티 추출을 돌릴지
+ENABLE_GRAPH_RAG_EXTRACTION = PersistentConfig(
+    "ENABLE_GRAPH_RAG_EXTRACTION",
+    "graph_rag.extraction_enabled",
+    os.environ.get("ENABLE_GRAPH_RAG_EXTRACTION", "False").lower() == "true",
+)
+
+# 공개 챗봇이 응답 생성 전에 그래프 이웃 확장으로 컨텍스트를 증강할지
+ENABLE_GRAPH_RAG_RETRIEVAL = PersistentConfig(
+    "ENABLE_GRAPH_RAG_RETRIEVAL",
+    "graph_rag.retrieval_enabled",
+    os.environ.get("ENABLE_GRAPH_RAG_RETRIEVAL", "False").lower() == "true",
+)
+
 CRAWLER_WEEKLY_FULL_DAY = PersistentConfig(
     "CRAWLER_WEEKLY_FULL_DAY",
     "crawler.weekly_full_day",
