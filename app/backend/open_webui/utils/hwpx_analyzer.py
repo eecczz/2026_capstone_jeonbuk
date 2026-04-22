@@ -2082,6 +2082,70 @@ def parse_structure_from_llm(llm_response: str) -> dict:
     return data
 
 
+TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
+
+
+def get_template_cache_path(template_file_id: str) -> str:
+    """템플릿 분석 결과 캐시 파일 경로"""
+    import os
+    safe_id = template_file_id.replace("/", "_").replace("..", "_")
+    return os.path.join(TEMPLATE_CACHE_DIR, f"{safe_id}.json")
+
+
+def save_template_cache(template_file_id: str, data: dict) -> bool:
+    """양식 분석 결과를 캐시에 저장.
+
+    Args:
+        template_file_id: 양식 파일의 DB id
+        data: 저장할 구조 (structure, signals, chapter_types, truncated_xml 등)
+    """
+    import os
+    path = get_template_cache_path(template_file_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        log.info(f"[CACHE] 템플릿 캐시 저장: {path} ({os.path.getsize(path):,}B)")
+        return True
+    except Exception as e:
+        log.warning(f"[CACHE] 저장 실패: {e}")
+        return False
+
+
+def load_template_cache(template_file_id: str) -> dict | None:
+    """캐시에서 양식 분석 결과 로드.
+
+    Returns:
+        데이터 dict 또는 None(캐시 없음/로드 실패)
+    """
+    import os
+    path = get_template_cache_path(template_file_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        log.info(f"[CACHE] 템플릿 캐시 로드: {path} ({os.path.getsize(path):,}B)")
+        return data
+    except Exception as e:
+        log.warning(f"[CACHE] 로드 실패 ({path}): {e}")
+        return None
+
+
+def clear_template_cache(template_file_id: str) -> bool:
+    """캐시 파일 삭제 (강제 재분석 용도)"""
+    import os
+    path = get_template_cache_path(template_file_id)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            log.info(f"[CACHE] 삭제: {path}")
+            return True
+    except Exception as e:
+        log.warning(f"[CACHE] 삭제 실패: {e}")
+    return False
+
+
 def compute_role_context_signals(paragraphs: list[dict], idx_texts: dict = None) -> dict:
     """
     1차 AI 결과(paragraphs)로부터 level/parent/exclusive 판단용 시그널을 추출.
