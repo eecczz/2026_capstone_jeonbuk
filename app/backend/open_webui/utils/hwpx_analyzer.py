@@ -2304,10 +2304,13 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         for role, info in role_info.items():
             parent = info.get("parent")
             if not parent:
+                # body 안에 parent가 없는 top-level role (= chapter_title의 직속 자식 등)
+                # parent 인스턴스별 count는 못 세지만, 전체 count로 single/multiple 추정
+                total = info.get("count", 0)
                 info["observed_counts"] = []
-                info["per_parent"] = "single"
+                info["per_parent"] = "multiple" if total >= 2 else "single"
                 info["optional"] = False
-                info["suggested_count"] = info.get("count", 0)
+                info["suggested_count"] = total
                 continue
 
             parent_inst_ids = role_instance_ids.get(parent, [])
