@@ -2090,15 +2090,21 @@ def compute_role_context_signals(paragraphs: list[dict], idx_texts: dict = None)
     from collections import Counter, defaultdict
     import string
 
-    def _should_skip(role: str) -> bool:
-        role_lower = role.lower()
+    # 본문 필터: 이 함수는 1.5차 AI 이전에 호출되므로 level이 없음.
+    # role 이름 매칭 대신 "실제 텍스트가 없는 문단"만 제외.
+    # cover/toc 같은 도입부 문단은 signals에 포함해도 AI가 level 0으로 판단 가능.
+    def _is_empty(para: dict) -> bool:
+        text = ""
+        if idx_texts:
+            text = (idx_texts.get(para.get("idx", -1)) or "").strip()
+        # 텍스트도 없고 마커도 없고 description도 없는 경우 = spacer로 간주
         return (
-            role_lower in {"spacer", "toc", "fixed"}
-            or "cover" in role_lower
-            or "spacer" in role_lower
+            not text
+            and not para.get("marker", "").strip()
+            and not para.get("description", "").strip()
         )
 
-    body = [p for p in paragraphs if not _should_skip(p.get("role", ""))]
+    body = [p for p in paragraphs if not _is_empty(p)]
     role_sequence = [p.get("role", "") for p in body]
 
     role_to_letter = {}
@@ -2219,14 +2225,11 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     Returns:
         {"type_name": {"title_role": ..., "description": ..., "pattern": {...}}, ...}
     """
-    skip_keywords = {"spacer", "toc", "fixed", "cover"}
-
     def _should_skip(role: str) -> bool:
-        """role 이름에 skip 키워드가 포함되면 스킵"""
-        role_lower = role.lower()
-        return any(kw in role_lower for kw in skip_keywords)
+        """호환용 wrapper — 실제 필터는 level == 0 기반"""
+        return False
 
-    # 1단계: level 1 문단으로 챕터 경계 나누기 (level 0은 표지/목차이므로 제외)
+    # 1단계: level 1 문단으로 챕터 경계 나누기 (level 0은 표지/목차/spacer)
     chapters = []  # [(title_para, [body_paras])]
     current_title = None
     current_body = []
@@ -2234,7 +2237,7 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     for p in paragraphs:
         role = p.get("role", "")
         level = p.get("level", 0)
-        if _should_skip(role) or level == 0:
+        if level == 0:
             continue
         if level == 1:
             if current_title is not None:
