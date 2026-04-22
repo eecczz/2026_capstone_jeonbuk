@@ -979,6 +979,10 @@ async def generate_hwpx_dynamic_endpoint(
     3. AI에게 양식 + 내용 전달 → 명령 JSON 수신
     4. 명령 실행하여 HWPX 생성
     """
+    # ── TEMP DEBUG: 1차 구조분석 + 마커 분리까지만 실행 (2a/2b 건너뜀) ──
+    # role 분류 알고리즘 개선 작업 중. 되돌리려면 이 return 블록 삭제.
+    return await debug_hwpx_structure_endpoint(request, form_data, user, db)
+
     from io import BytesIO
     from open_webui.utils.hwpx_analyzer import (
         analyze_hwpx,
@@ -1384,6 +1388,234 @@ async def generate_hwpx_dynamic_endpoint(
         media_type="application/hwpx",
         headers=headers,
     )
+
+
+############################
+# Debug: HWPX 1차 구조분석 + 마커 분리까지만 (2a/2b 건너뜀)
+############################
+
+
+@router.post("/debug-hwpx-structure")
+async def debug_hwpx_structure_endpoint(
+    request: Request,
+    form_data: HwpxGenerateForm,
+    user=Depends(get_verified_user),
+    db: Session = Depends(get_session),
+):
+    """
+    디버그: 1차 AI 구조분석 + _split_roles_by_marker 까지만 실행하고 JSON으로 반환.
+    2a/2b 는 건너뜀. 결과는 /tmp/hwpx_debug_last.json 에도 덤프.
+    """
+    import copy
+    import re
+    from open_webui.utils.hwpx_analyzer import (
+        analyze_hwpx,
+        truncate_xml,
+        build_structure_analysis_prompt,
+        _split_roles_by_marker,
+        _normalize_marker_type,
+        _repair_json,
+        pdf_to_text,
+    )
+    from open_webui.utils.chat import generate_chat_completion
+    from open_webui.utils.task import get_task_model_id
+
+    # 1) 양식 파일
+    template_file = Files.get_file_by_id(form_data.template_file_id, db=db)
+    if not template_file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="양식 파일을 찾을 수 없습니다",
+        )
+    template_path = Storage.get_file(template_file.path)
+    if not template_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="양식 파일 경로를 찾을 수 없습니다",
+        )
+
+    # 2) 소스(선택) — 1차엔 쓰지 않지만 컨텍스트 기록용
+    content_text = form_data.content_text or ""
+    pdf_text_content = ""
+    if form_data.content_file_id:
+        content_file = Files.get_file_by_id(form_data.content_file_id, db=db)
+        if content_file:
+            content_type = content_file.meta.get("content_type", "")
+            file_name = content_file.meta.get("name", content_file.filename)
+            if content_type == "application/pdf" or file_name.lower().endswith(".pdf"):
+                content_path = Storage.get_file(content_file.path)
+                try:
+                    pdf_text_content = pdf_to_text(content_path)
+                except Exception as e:
+                    log.warning(f"[DEBUG-HWPX] PDF 텍스트 추출 실패: {e}")
+
+    # 3) 양식 분석
+    try:
+        analysis = analyze_hwpx(template_path)
+        light_xml = analysis["light_xml"]
+        truncate_result = truncate_xml(light_xml)
+        truncated_xml = truncate_result["xml"]
+        removed_indices = truncate_result["removed_indices"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"양식 분석 실패: {e}",
+        )
+
+    # 4) 모델
+    models = request.app.state.MODELS
+    model_id = form_data.model
+    if not model_id:
+        model_id = get_task_model_id(
+            "",
+            request.app.state.config.TASK_MODEL,
+            request.app.state.config.TASK_MODEL_EXTERNAL,
+            models,
+        )
+    if not model_id or model_id not in models:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"사용 가능한 모델이 없습니다: {model_id}",
+        )
+
+    # 5) 1차 AI 호출
+    messages_1 = build_structure_analysis_prompt(truncated_xml, auto_truncate=False)
+    payload = {
+        "model": model_id,
+        "messages": messages_1,
+        "stream": False,
+        "metadata": {"task": "hwpx_structure_analysis_debug"},
+    }
+    try:
+        resp = await generate_chat_completion(request, form_data=payload, user=user)
+        if hasattr(resp, "body"):
+            resp = json.loads(resp.body.decode("utf-8"))
+        if "error" in resp:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"AI 응답 오류: {resp['error']}",
+            )
+        llm_raw = resp["choices"][0]["message"]["content"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"1차 AI 호출 실패: {e}",
+        )
+
+    # 6) 파싱 (split 전 상태 보존 위해 인라인)
+    json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_raw)
+    if json_match:
+        raw = json_match.group(1)
+    else:
+        brace_match = re.search(r'\{[\s\S]*\}', llm_raw)
+        if brace_match:
+            raw = brace_match.group(0)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="1차 응답에서 JSON을 찾을 수 없음",
+            )
+    try:
+        data = json.loads(raw, strict=False)
+    except json.JSONDecodeError:
+        try:
+            data = json.loads(_repair_json(raw), strict=False)
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"1차 JSON 파싱 실패: {e}",
+            )
+    if not isinstance(data, dict) or "paragraphs" not in data:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="1차 응답에 'paragraphs' 키 없음",
+        )
+
+    paragraphs_before = copy.deepcopy(data.get("paragraphs", []))
+
+    # 7) 마커 분리 적용
+    paragraphs_after = _split_roles_by_marker(copy.deepcopy(paragraphs_before))
+
+    # 8) split_log — idx 기준 before/after 비교
+    before_by_idx = {p.get("idx"): p.get("role", "") for p in paragraphs_before}
+    split_log = []
+    for p in paragraphs_after:
+        idx = p.get("idx")
+        after_role = p.get("role", "")
+        before_role = before_by_idx.get(idx, "")
+        if before_role != after_role:
+            split_log.append({
+                "idx": idx,
+                "marker": p.get("marker", ""),
+                "marker_type": _normalize_marker_type(p.get("marker", "")),
+                "before_role": before_role,
+                "after_role": after_role,
+            })
+
+    # 9) marker_normalization 맵 (role → {marker_type → [markers]})
+    marker_norm = {}
+    for p in paragraphs_before:
+        role = p.get("role", "")
+        marker = p.get("marker", "")
+        if not role:
+            continue
+        mt = _normalize_marker_type(marker)
+        marker_norm.setdefault(role, {}).setdefault(mt, set()).add(marker)
+    marker_norm_serializable = {
+        role: {mt: sorted(list(markers)) for mt, markers in by_type.items()}
+        for role, by_type in marker_norm.items()
+    }
+
+    # 10) 응답 구성
+    result_payload = {
+        "success": True,
+        "template": {
+            "file_id": form_data.template_file_id,
+            "name": template_file.meta.get("name", template_file.filename),
+            "paragraph_count": analysis.get("paragraph_count", 0),
+            "table_count": analysis.get("table_count", 0),
+        },
+        "source": {
+            "file_id": form_data.content_file_id,
+            "text_length": len(pdf_text_content or content_text),
+        },
+        "xml": {
+            "light_xml_size": len(light_xml),
+            "truncated_xml_size": len(truncated_xml),
+            "removed_indices_count": len(removed_indices),
+            "removed_indices": removed_indices,
+        },
+        "model_id": model_id,
+        "stage_1_structure_analysis": {
+            "prompt_messages": messages_1,
+            "llm_raw_response": llm_raw,
+            "structure_before_split": {
+                "paragraphs": paragraphs_before,
+                "tables": data.get("tables", []),
+            },
+            "structure_after_split": {
+                "paragraphs": paragraphs_after,
+                "tables": data.get("tables", []),
+            },
+            "split_log": split_log,
+            "marker_normalization": marker_norm_serializable,
+        },
+    }
+
+    # 11) 디스크 덤프 (/tmp/hwpx_debug_last.json)
+    dump_path = "/tmp/hwpx_debug_last.json"
+    try:
+        with open(dump_path, "w", encoding="utf-8") as f:
+            json.dump(result_payload, f, ensure_ascii=False, indent=2)
+        result_payload["debug_file_path"] = dump_path
+        log.info(f"[DEBUG-HWPX] 덤프 완료: {dump_path}")
+    except Exception as e:
+        log.warning(f"[DEBUG-HWPX] 덤프 실패: {e}")
+        result_payload["debug_file_path"] = None
+
+    return result_payload
 
 
 ############################
