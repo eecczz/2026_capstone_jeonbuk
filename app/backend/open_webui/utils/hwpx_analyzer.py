@@ -1443,13 +1443,26 @@ role은 **마커 종류 + 의미적 역할**이 기준입니다. 서식 속성(p
    - "fixed": 페이지 번호, 머리글/바닥글 등 수정 불필요한 레이아웃 요소
 
 ### description 작성 규칙
-1. 해당 위치에 들어갈 내용의 **용도와 형식**을 구체적으로 적으세요
-   - 좋은 예: "문서 전체 제목 (연도+기관+사업명+문서종류 형식)"
-   - 좋은 예: "작성일자 (yyyy. m. d. 형식)"
-   - 나쁜 예: "제목", "날짜", "내용" (너무 추상적)
-2. **같은 구조적 위치에 있는 필드는 동일한 description 사용**
-3. **"(고정 텍스트, 수정 불필요)"는 극히 제한적으로만 사용** — 페이지 번호, 머리글/바닥글 같은 순수 레이아웃만
-   양식의 내용 텍스트(제목, 본문, 요약 등)는 절대 고정 텍스트가 아닙니다
+1. 해당 위치의 **구조적·관계적 역할**을 기술하세요. **주제/도메인은 절대 언급 금지**.
+   - ❌ 주제 기반(잘못됨): "과일 가격 변동 설명", "교육정책 추진 현황", "조달청 사업 목록"
+   - ✓ 구조 기반(맞음): "상위 항목에 대한 구체적 사례 또는 수치 제시 (단문)"
+   - 이유: 양식과 전혀 다른 주제의 소스를 매핑해야 하므로, 주제가 들어가면 매핑 혼란
+2. 기술해야 할 것:
+   - **함수** (제목/요약/세부 항목/보충/결론/참고/강조 등)
+   - **관계** (부모와의 관계: 설명/근거/예시/반대 사례/부연/요약)
+   - **형식 단서** (짧은 한 줄 / 한 문장 / 여러 문장 / 수치 포함 / 인용문 등)
+   - **옵션**: 시간·인과·열거 등 관계 패턴
+3. 좋은 예:
+   - "문서 최상위 제목 (한 줄, 핵심 주제 명시)"
+   - "작성일자 (yyyy. m. d. 형식, 순수 날짜)"
+   - "장 시작부 서두 박스 (전체 요지 1~2문장)"
+   - "중분류 항목 제목 (짧은 한 줄, 하위 세부 항목의 주제)"
+   - "상위 항목 아래 구체 사실/수치 (한 문장, 증거성)"
+   - "보충 설명 또는 예시 (부모 내용에 대한 부연, 선택적)"
+   - "관련 법령·규정 인용 박스 (원문 인용형)"
+   - "장 종료 전환 요약 박스 (다음 장으로의 흐름)"
+4. **같은 구조적 위치의 필드는 동일한 description 사용**
+5. **"(고정 텍스트, 수정 불필요)"는 극히 제한적으로만 사용** — 페이지 번호, 머리글/바닥글 같은 순수 레이아웃만
 
 ### 표 분석
 문서 내 모든 표에 대해 (0번부터 순서대로):
@@ -3153,14 +3166,26 @@ def parse_chapter_classify_from_llm(llm_response: str) -> dict:
 SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다.
 하나의 대제목 섹션에 대해, 주어진 **role 패턴**에 따라 소스 내용을 배치합니다.
 
-## 핵심 규칙
+## 핵심 규칙 (강제)
 
-1. **패턴에 명시된 role만 사용하세요** — 새 role을 만들지 마세요
-2. **repeat: true인 role은 내용에 맞게 자유롭게 반복** (1개~여러 개)
-3. **repeat: false인 role은 최대 1개**
-4. **optional: true인 role은 해당 내용이 없으면 생략 가능**
-5. **optional이 아닌 role은 반드시 1개 이상 포함**
-6. **children 관계를 지키세요** — 부모 role 뒤에 자식 role이 와야 합니다
+1. **패턴에 명시된 role만 사용하세요** — 새 role 생성 금지
+2. **개수 제약**:
+   - `정확히 1개/부모`: 부모 인스턴스 아래 딱 1개만 생성. 2개 이상 절대 금지.
+   - `여러 개 가능`: 내용에 맞게 1개~여러 개 생성 가능.
+   - `권장 개수 약 N`: 양식에서 관찰된 최적 개수. 소스 내용이 충분하면 이 근처로 맞추는 것이 자연스러움. 강제는 아님.
+3. **필수/선택**:
+   - `필수(최소 1개)`: 반드시 1개 이상 포함
+   - `선택(생략 가능)`: 해당 내용이 소스에 없으면 생략
+4. **children 관계를 지키세요** — 부모 role 뒤에 자식 role이 와야 합니다
+
+## ⚠️ 소스와 양식의 주제가 완전히 다를 수 있음
+
+양식은 **어떤 주제**(예: 과일 가격)를 다뤘더라도, 당신이 채울 소스는 **전혀 다른 주제**(예: 야구장 관객 수)일 수 있습니다.
+
+- **role의 description은 구조적·관계적 역할만 기술**합니다. 주제는 무관.
+- **role의 sample text는 스타일(문장 길이/포맷) 참고용**입니다. **주제는 완전히 무시**하세요.
+- sample이 "딸기 가격이 15% 상승"이라도 당신 소스가 야구라면 "관중 수가 15% 증가"처럼 **해당 소스 주제로 작성**
+- sample의 **길이/문체/마커/숫자 포함 여부** 같은 형식만 따르세요
 
 ## role의 성격: 제목 vs 본문
 
@@ -3250,14 +3275,28 @@ def _format_pattern_tree(pattern: dict, role_markers: dict, indent: int = 0) -> 
     for role_name, info in pattern.items():
         marker = role_markers.get(role_name, "")
         marker_str = f' (마커: "{marker}")' if marker else ""
-        repeat = info.get("repeat", False)
+        per_parent = info.get("per_parent", "single")
         optional = info.get("optional", False)
+        suggested = info.get("suggested_count", 1)
+        observed = info.get("observed_counts", [])
         children = info.get("children", {})
         flags = []
-        if repeat:
-            flags.append("반복 가능")
+        # 개수 제약 (강제)
+        if per_parent == "single":
+            flags.append("정확히 1개/부모")
+        else:
+            flags.append("여러 개 가능")
         if optional:
-            flags.append("선택")
+            flags.append("선택(생략 가능)")
+        else:
+            flags.append("필수(최소 1개)")
+        # 개수 힌트 (권장)
+        if suggested and suggested > 0:
+            flags.append(f"권장 개수 약 {suggested}")
+        if observed:
+            observed_preview = observed[:6]
+            more = "…" if len(observed) > len(observed_preview) else ""
+            flags.append(f"관찰={observed_preview}{more}")
         # children 유무로 성격 표시
         if children:
             flags.append("짧은 제목만")
