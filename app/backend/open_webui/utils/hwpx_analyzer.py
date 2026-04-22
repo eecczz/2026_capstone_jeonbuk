@@ -1017,7 +1017,7 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
             if len(result) <= max_chars:
                 break
 
-    # ── 6단계: 그래도 초과 시 — 중간 본문 문단 제거 (최후 수단) ──
+    # ── 6단계: 그래도 초과 시 — 중간 본문 문단 제거 (marker-aware) ──
     if len(result) > max_chars:
         root4 = etree.fromstring(result.encode("utf-8"))
         table_elements4 = _collect_table_elements(root4)
@@ -1028,22 +1028,69 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
 
         KEEP_FRONT = 30
         KEEP_BACK = 15
+        KEEP_PER_MARKER = 3  # 각 마커 타입별로 최소 이만큼은 보존
+
         if len(body_paras) > KEEP_FRONT + KEEP_BACK + 10:
-            middle = body_paras[KEEP_FRONT:-KEEP_BACK] if KEEP_BACK > 0 else body_paras[KEEP_FRONT:]
+            # 각 문단의 marker type 추출
+            def _get_marker_first_char(p) -> str:
+                """문단 첫 텍스트의 첫 글자(마커 후보)"""
+                for t in p.iter(f"{NS_HP}t"):
+                    if t.text and t.text.strip():
+                        stripped = t.text.strip()
+                        # "1)", "가." 같은 패턴도 처리
+                        import re as _re_m
+                        m = _re_m.match(r'^(\d+\)|[가-힣]\.|[IVXivx]+\.)', stripped)
+                        if m:
+                            return m.group(0)
+                        return stripped[0] if stripped else ""
+                return ""
+
+            # 앞/뒤 보존 + marker 다양성 보존 문단 선별
+            front_paras = body_paras[:KEEP_FRONT]
+            back_paras = body_paras[-KEEP_BACK:] if KEEP_BACK > 0 else []
+            middle_paras = body_paras[KEEP_FRONT:-KEEP_BACK] if KEEP_BACK > 0 else body_paras[KEEP_FRONT:]
+
+            # 이미 앞/뒤에서 본 marker type 카운트
+            marker_counts = {}
+            for p in front_paras + back_paras:
+                mk_char = _get_marker_first_char(p)
+                if mk_char:
+                    mk_type = _normalize_marker_type(mk_char)
+                    marker_counts[mk_type] = marker_counts.get(mk_type, 0) + 1
+
+            # middle에서 "새 marker type" 또는 "보존 부족한 type"의 문단을 추가 보존
+            protected_in_middle = set()
+            for p in middle_paras:
+                mk_char = _get_marker_first_char(p)
+                if not mk_char:
+                    continue
+                mk_type = _normalize_marker_type(mk_char)
+                if marker_counts.get(mk_type, 0) < KEEP_PER_MARKER:
+                    protected_in_middle.add(id(p))
+                    marker_counts[mk_type] = marker_counts.get(mk_type, 0) + 1
+
+            # 보호되지 않은 middle 문단만 제거
             mid_removed = 0
-            for p in middle:
+            for p in middle_paras:
+                if id(p) in protected_in_middle:
+                    continue
                 parent = p.getparent()
                 if parent is not None:
                     parent.remove(p)
                     mid_removed += 1
 
-            if middle and body_paras[KEEP_FRONT - 1].getparent() is not None:
+            if mid_removed > 0 and body_paras[KEEP_FRONT - 1].getparent() is not None:
                 anchor = body_paras[KEEP_FRONT - 1]
                 parent = anchor.getparent()
                 idx = list(parent).index(anchor) + 1
                 parent.insert(idx, etree.Comment(
-                    f" 본문 문단 {mid_removed}개 생략 (앞 {KEEP_FRONT}개, 뒤 {KEEP_BACK}개 보존) "
+                    f" 본문 문단 {mid_removed}개 생략 "
+                    f"(앞 {KEEP_FRONT}개, 뒤 {KEEP_BACK}개, 마커 다양성 {len(protected_in_middle)}개 보존) "
                 ))
+            log.info(
+                f"Stage 6: middle {len(middle_paras)}개 중 {mid_removed}개 제거, "
+                f"{len(protected_in_middle)}개 marker-protected"
+            )
 
         result = etree.tostring(root4, encoding="unicode", pretty_print=True)
 
