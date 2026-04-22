@@ -3125,7 +3125,18 @@ type의 최상위 role 이름에서 성격 유추:
 ```json
 {
   "chapters": [
-    {"type": "type_X", "title": "...", "confidence": "high"},
+    {
+      "type": "type_X",
+      "title": "소스의 chapter 제목",
+      "envisioned": {
+        "components": ["상상한 구성 요소 목록 (예: 요약 박스, 세부 항목 4개, 참고 1개)"],
+        "total_items": "예상 항목 수 (예: '5-7')",
+        "depth": "예상 계층 깊이 (예: 2)",
+        "nature": "내용 성격 (예: '짧은 요약', '다단 분석', '목록 나열')",
+        "reason_for_type": "왜 이 type을 선택했는지 간단 설명"
+      },
+      "confidence": "high"
+    },
     ...
   ],
   "header": {
@@ -3135,8 +3146,11 @@ type의 최상위 role 이름에서 성격 유추:
 }
 ```
 
+⭐ **`envisioned` 필드는 필수**. Step 2.5의 상상 결과를 반드시 명시하세요.
+이 필드가 AI가 상상 단계를 실제로 거쳤는지 확인용입니다. 빈 필드 금지.
+
 `confidence`:
-- `high`: 내용이 이 type에서 자연스럽게 표현됨
+- `high`: 상상한 내용이 이 type에서 자연스럽게 표현됨
 - `medium`: 약간 어긋나지만 이 type이 가장 나음
 - `low`: 마땅한 type이 없어 불가피한 선택
 
