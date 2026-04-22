@@ -1703,20 +1703,27 @@ def build_structure_analysis_prompt(
     ]
 
 
-def build_level_analysis_prompt(structure_json: dict) -> list[dict]:
+def build_level_analysis_prompt(structure_json: dict, signals: dict = None) -> list[dict]:
     """
     1.5차 호출: 구조 분석 결과 → 각 문단의 level 결정
 
     Args:
         structure_json: build_structure_analysis_prompt/parse_structure_from_llm의 결과
                         paragraphs에 idx/role/marker/description이 있어야 함
+        signals: compute_role_context_signals() 결과 (선택, 있으면 프롬프트에 포함)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
     """
     paragraphs = structure_json.get("paragraphs", [])
 
-    # 간결한 입력: idx, role, marker, description만
+    # signals에서 paragraph 텍스트 맵
+    text_by_idx = {}
+    if signals:
+        for pt in signals.get("paragraph_texts", []):
+            text_by_idx[pt.get("idx")] = pt.get("text", "")
+
+    # 문단 입력: idx, role, marker, text(있으면), description
     para_lines = []
     for p in paragraphs:
         idx = p.get("idx", -1)
@@ -1724,17 +1731,62 @@ def build_level_analysis_prompt(structure_json: dict) -> list[dict]:
         marker = p.get("marker", "")
         desc = p.get("description", "")
         marker_str = f'"{marker}"' if marker else '""'
-        para_lines.append(
-            f'{{"idx": {idx}, "marker": {marker_str}, "role": "{role}", "description": "{desc}"}}'
-        )
+        text_preview = text_by_idx.get(idx, "")[:80] if text_by_idx else ""
+        if text_preview:
+            text_esc = (
+                text_preview.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+            )
+            para_lines.append(
+                f'{{"idx": {idx}, "marker": {marker_str}, "role": "{role}", '
+                f'"text": "{text_esc}", "description": "{desc}"}}'
+            )
+        else:
+            para_lines.append(
+                f'{{"idx": {idx}, "marker": {marker_str}, "role": "{role}", "description": "{desc}"}}'
+            )
     para_text = "[\n  " + ",\n  ".join(para_lines) + "\n]"
 
+    # signals 섹션 (선택적)
+    signals_section = ""
+    if signals:
+        compressed = signals.get("compressed_sequence", "")
+        role_to_letter = signals.get("role_to_letter", {})
+        role_stats = signals.get("role_stats", {})
+        adjacency = signals.get("adjacency", {})
+
+        signals_section += "\n## 구조 시그널 (코드 추출)\n\n"
+        if compressed:
+            signals_section += f"### 압축 시퀀스\n`{compressed}`\n\n"
+            if role_to_letter:
+                signals_section += "### role → letter 매핑\n"
+                for r, l in role_to_letter.items():
+                    signals_section += f"- {l} = {r}\n"
+                signals_section += "\n"
+        if role_stats:
+            signals_section += "### Role별 등장 통계\n"
+            for role, stats in role_stats.items():
+                cnt = stats.get("count", 0)
+                markers = stats.get("markers", [])
+                mk_preview = markers[:3]
+                if len(markers) > 3:
+                    mk_preview.append(f"...외 {len(markers) - 3}개")
+                signals_section += f"- {role}: {cnt}회, markers={mk_preview}\n"
+            signals_section += "\n"
+        if adjacency.get("prev"):
+            signals_section += "### 인접 role 통계 (각 role 직전에 무엇이 왔나)\n"
+            for r, prevs in adjacency["prev"].items():
+                signals_section += f"- {r} ← {prevs}\n"
+            signals_section += "\n"
+
     user_msg = (
-        "아래는 양식의 문단 목록입니다. 각 문단에 대해 **level(계층 깊이)**을 결정하세요.\n\n"
-        "**판단 원리**:\n"
-        "- 같은 마커 시퀀스의 연속은 같은 level (과제 1, 과제 2, 과제 3 → 모두 같은 level)\n"
-        "- 새 마커 시퀀스가 시작되면 직전 문단의 자식 (level +1)\n"
-        "- 이전 시퀀스로 돌아오면 level도 돌아감\n"
+        "아래는 양식의 문단 목록 + 구조 분석 시그널입니다. "
+        "각 문단에 대해 **level(계층 깊이)**을 결정하세요.\n"
+        + signals_section
+        + "## 판단 원리\n"
+        "- **실제 텍스트 내용(text 필드)을 보고 의미적 계층 파악** — 제일 중요\n"
+        "- 압축 시퀀스와 인접 role 통계로 자식 관계 추정\n"
+        "- 같은 role이라도 맥락 다르면 인스턴스별로 다른 level 가능\n"
+        "- 같은 마커 시퀀스의 연속은 같은 level\n"
         "- 마커 없는 cover_title/date/org/toc은 level 0\n"
         "- 마커 없는 chapter_title은 level 1\n"
         "- 문단 순서대로 시퀀스 흐름을 추적해서 판단\n\n"
@@ -2180,9 +2232,22 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     # 2단계: 내부 도우미 함수들
 
     def _build_role_info(body_paras: list[dict]) -> dict:
-        """body 문단에서 role별 level/count/parent 정보를 추출"""
+        """body 문단에서 role별 정보 추출.
+
+        기본: level, count, parent
+        추가: observed_counts (부모 인스턴스별 자식 개수 리스트),
+              per_parent ('single'|'multiple'),
+              optional (부모 인스턴스 중 자식 0개인 경우 있으면 True),
+              suggested_count (non-zero count의 최빈값, 힌트용)
+        """
+        from collections import Counter as _Counter
+
         role_info = {}
-        level_stack = []  # [(level, role)]
+        # 스택에 (level, role, instance_id) 저장하여 인스턴스 구분
+        stack = []
+        instance_counter = 0
+        parent_inst_children = {}  # (parent_role, parent_inst_id) -> {child_role: count}
+        role_instance_ids = {}     # role -> [instance_ids]
 
         for p in body_paras:
             role = p.get("role", "")
@@ -2194,15 +2259,50 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                 role_info[role] = {"level": level, "count": 0, "parent": None}
             role_info[role]["count"] += 1
 
-            while level_stack and level_stack[-1][0] >= level:
-                level_stack.pop()
+            while stack and stack[-1][0] >= level:
+                stack.pop()
 
-            if level_stack:
-                parent_role = level_stack[-1][1]
+            if stack:
+                parent_role = stack[-1][1]
+                parent_inst_id = stack[-1][2]
                 if role_info[role]["parent"] is None:
                     role_info[role]["parent"] = parent_role
+                # 자식 count 증가
+                key = (parent_role, parent_inst_id)
+                if key not in parent_inst_children:
+                    parent_inst_children[key] = {}
+                parent_inst_children[key][role] = parent_inst_children[key].get(role, 0) + 1
 
-            level_stack.append((level, role))
+            inst_id = instance_counter
+            instance_counter += 1
+            role_instance_ids.setdefault(role, []).append(inst_id)
+            stack.append((level, role, inst_id))
+
+        # per-parent-instance 통계
+        for role, info in role_info.items():
+            parent = info.get("parent")
+            if not parent:
+                info["observed_counts"] = []
+                info["per_parent"] = "single"
+                info["optional"] = False
+                info["suggested_count"] = info.get("count", 0)
+                continue
+
+            parent_inst_ids = role_instance_ids.get(parent, [])
+            counts = []
+            for pid in parent_inst_ids:
+                c = parent_inst_children.get((parent, pid), {}).get(role, 0)
+                counts.append(c)
+
+            info["observed_counts"] = counts
+            has_zero = any(c == 0 for c in counts)
+            has_multiple = any(c >= 2 for c in counts)
+            info["per_parent"] = "multiple" if has_multiple else "single"
+            info["optional"] = has_zero
+            non_zero = [c for c in counts if c > 0]
+            info["suggested_count"] = (
+                _Counter(non_zero).most_common(1)[0][0] if non_zero else 0
+            )
 
         return role_info
 
@@ -2222,7 +2322,13 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                      or parent_role not in children_filter
                      or r in children_filter[parent_role])
             ]
-            node = {"repeat": info["count"] >= 2}
+            node = {
+                "repeat": info["count"] >= 2,  # 기존 호환
+                "per_parent": info.get("per_parent", "single"),
+                "optional": info.get("optional", False),
+                "observed_counts": info.get("observed_counts", []),
+                "suggested_count": info.get("suggested_count", 1),
+            }
             if children_roles:
                 node["children"] = {cr: _subtree(cr) for cr in children_roles}
             return node
