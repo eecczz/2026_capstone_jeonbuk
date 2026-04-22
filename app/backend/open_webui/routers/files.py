@@ -1176,14 +1176,22 @@ async def generate_hwpx_dynamic_endpoint(
             detail="chapter_types 생성 실패. 양식에 level 1 문단이 없을 수 있습니다.",
         )
 
-    # header role 목록 추출
-    header_roles_set = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
+    # header role 목록 추출 — 속성 기반:
+    # level 0 + 첫 level 1 문단 이전에 등장 + role 이름 무관 (동적 양식 대응)
+    first_ch_idx = next(
+        (p.get("idx", 0) for p in structure.get("paragraphs", []) if p.get("level", 0) == 1),
+        float("inf"),
+    )
     header_roles = []
     for p in structure.get("paragraphs", []):
         role = p.get("role", "")
-        if role in header_roles_set:
-            header_roles.append(role)
-    header_roles = list(dict.fromkeys(header_roles))  # 순서 유지 중복 제거
+        if not role or role in header_roles:
+            continue
+        if p.get("level", 0) != 0:
+            continue
+        if p.get("idx", 0) >= first_ch_idx:
+            continue
+        header_roles.append(role)
 
     try:
         messages_2a = build_chapter_classify_prompt(
