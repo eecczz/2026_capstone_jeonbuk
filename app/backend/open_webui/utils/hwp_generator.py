@@ -780,14 +780,15 @@ def assemble_hwpx_hybrid(
     # ── 1단계: role → exemplar idx 매핑 (각 role의 첫 번째 idx를 exemplar로) ──
     role_exemplar_idx = {}  # role → 원본 template idx
     role_is_table_box = {}  # role → bool
-    header_roles = {"cover_title", "cover_date", "cover_org", "cover_subtitle"}
-    skip_roles = {"spacer", "toc", "fixed", "spacer_text"}
+    # skip: level 0 문단 (cover/toc/spacer 모두 level 0)
+    def _is_skip(para: dict) -> bool:
+        return para.get("level", 0) == 0
 
     for p in paragraphs_info:
         role = p.get("role", "")
         ai_idx = p.get("idx", -1)
         real_idx = _to_real_idx(ai_idx)
-        if role and role not in role_exemplar_idx and role not in skip_roles:
+        if role and role not in role_exemplar_idx and not _is_skip(p):
             role_exemplar_idx[role] = real_idx
 
     # 표 포함 여부 판별 (표가 있는 문단 = table box로 처리)
@@ -815,13 +816,16 @@ def assemble_hwpx_hybrid(
             log.debug(f"exemplar 저장: {role} (idx={idx}, prefix={repr(role_text_prefix[role])})")
 
     # spacer exemplar 별도 저장 (빈 줄 자동 삽입용)
+    # 판별: level 0 + 실제 텍스트 없음 (이름 매칭 대신 속성 기반)
     spacer_exemplar = None
     for p in paragraphs_info:
-        role = p.get("role", "")
-        if role in ("spacer", "spacer_text"):
-            spacer_idx = _to_real_idx(p.get("idx", -1))
-            if 0 <= spacer_idx < len(doc.paragraphs):
-                spacer_exemplar = deepcopy(doc.paragraphs[spacer_idx].element)
+        if p.get("level", 0) != 0:
+            continue
+        real_idx = _to_real_idx(p.get("idx", -1))
+        if 0 <= real_idx < len(doc.paragraphs):
+            para = doc.paragraphs[real_idx]
+            if not (para.text or "").strip():
+                spacer_exemplar = deepcopy(para.element)
                 _strip_linesegarray(spacer_exemplar, NS)
                 _strip_secpr(spacer_exemplar, NS)
                 break
@@ -877,12 +881,11 @@ def assemble_hwpx_hybrid(
         except Exception as e:
             errors.append(f"header({role_name}, idx={real_idx}): {e}")
 
-    # toc, fixed, spacer → 보존 (header_indices에 추가)
+    # level 0 문단(cover/toc/spacer 등) → 보존 (header_indices에 추가)
     for p in paragraphs_info:
-        role = p.get("role", "")
         real_idx = _to_real_idx(p.get("idx", -1))
-        if role in skip_roles and 0 <= real_idx < len(doc.paragraphs):
-            header_indices.add(real_idx)  # toc, fixed, spacer 모두 보존
+        if _is_skip(p) and 0 <= real_idx < len(doc.paragraphs):
+            header_indices.add(real_idx)
 
     # 첫 번째 문단(secPr 포함) 반드시 보존
     if len(doc.paragraphs) > 0:
