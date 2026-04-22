@@ -1995,6 +1995,126 @@ def parse_structure_from_llm(llm_response: str) -> dict:
     return data
 
 
+def compute_role_context_signals(paragraphs: list[dict], idx_texts: dict = None) -> dict:
+    """
+    1차 AI 결과(paragraphs)로부터 level/parent/exclusive 판단용 시그널을 추출.
+
+    Args:
+        paragraphs: [{"idx", "role", "marker", "description", ...}, ...]
+        idx_texts: {idx: text} — _extract_texts_by_idx() 결과 (선택)
+
+    Returns:
+        {
+            "role_to_letter": {role: letter, ...},
+            "compressed_sequence": "abcdddec...",
+            "role_stats": {role: {count, positions, markers, marker_types}},
+            "adjacency": {"prev": {...}, "next": {...}},
+            "role_scope_children": {role: [[children in each scope], ...]},
+            "paragraph_texts": [{idx, role, marker, text}, ...]
+        }
+    """
+    from collections import Counter, defaultdict
+    import string
+
+    def _should_skip(role: str) -> bool:
+        role_lower = role.lower()
+        return (
+            role_lower in {"spacer", "toc", "fixed"}
+            or "cover" in role_lower
+            or "spacer" in role_lower
+        )
+
+    body = [p for p in paragraphs if not _should_skip(p.get("role", ""))]
+    role_sequence = [p.get("role", "") for p in body]
+
+    role_to_letter = {}
+    letters = iter(string.ascii_lowercase)
+    for r in role_sequence:
+        if r not in role_to_letter:
+            try:
+                role_to_letter[r] = next(letters)
+            except StopIteration:
+                role_to_letter[r] = "?"
+    compressed = "".join(role_to_letter.get(r, "?") for r in role_sequence)
+
+    role_stats = {}
+    for i, p in enumerate(body):
+        role = p.get("role", "")
+        marker = p.get("marker", "")
+        if role not in role_stats:
+            role_stats[role] = {
+                "count": 0,
+                "positions": [],
+                "markers": [],
+                "marker_types": set(),
+            }
+        role_stats[role]["count"] += 1
+        role_stats[role]["positions"].append(i)
+        if marker and marker not in role_stats[role]["markers"]:
+            role_stats[role]["markers"].append(marker)
+        if marker:
+            role_stats[role]["marker_types"].add(_normalize_marker_type(marker))
+
+    for s in role_stats.values():
+        s["marker_types"] = sorted(list(s["marker_types"]))
+
+    prev_counts = defaultdict(Counter)
+    next_counts = defaultdict(Counter)
+    for i, p in enumerate(body):
+        role = p.get("role", "")
+        if i > 0:
+            prev_counts[role][body[i - 1].get("role", "")] += 1
+        if i < len(body) - 1:
+            next_counts[role][body[i + 1].get("role", "")] += 1
+
+    adjacency = {
+        "prev": {r: dict(c.most_common(5)) for r, c in prev_counts.items()},
+        "next": {r: dict(c.most_common(5)) for r, c in next_counts.items()},
+    }
+
+    # 각 role을 잠정 부모로 가정했을 때, 그 role 인스턴스 사이 구간에 나타나는 자식 role들
+    role_scope_children = {}
+    for parent_role, stats in role_stats.items():
+        positions = stats["positions"]
+        if len(positions) < 1:
+            continue
+        scopes_children = []
+        for i, pos in enumerate(positions):
+            start = pos + 1
+            end = positions[i + 1] if i + 1 < len(positions) else len(body)
+            children = []
+            for j in range(start, end):
+                r = body[j].get("role", "")
+                if r != parent_role:
+                    children.append(r)
+            scopes_children.append(children)
+        role_scope_children[parent_role] = scopes_children
+
+    paragraph_texts = []
+    for p in paragraphs:
+        idx = p.get("idx", -1)
+        text = ""
+        if idx_texts and idx in idx_texts:
+            text = idx_texts[idx]
+        paragraph_texts.append(
+            {
+                "idx": idx,
+                "role": p.get("role", ""),
+                "marker": p.get("marker", ""),
+                "text": (text or "")[:150],
+            }
+        )
+
+    return {
+        "role_to_letter": role_to_letter,
+        "compressed_sequence": compressed,
+        "role_stats": role_stats,
+        "adjacency": adjacency,
+        "role_scope_children": role_scope_children,
+        "paragraph_texts": paragraph_texts,
+    }
+
+
 def build_chapter_types_from_structure(structure: dict) -> dict:
     """
     level이 포함된 structure로부터 chapter_types를 생성하여 structure에 추가합니다.
