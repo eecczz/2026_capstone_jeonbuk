@@ -3021,62 +3021,91 @@ def parse_role_content_from_structure_llm(llm_response: str) -> dict:
 # ──────────────────────────────────────────────────────────────────────
 
 CHAPTER_CLASSIFY_PROMPT = """당신은 문서 구조 분석 전문가입니다.
-양식의 chapter_types(장 구조 타입)에 맞게 **소스 내용을 분배**하여 chapter 배열을 생성합니다.
+**소스 문서의 주제별 경계를 먼저 식별**한 뒤, 각 주제에 **가장 적합한 양식 type을 배정**합니다.
 
-## 핵심 역할
+## 핵심 관점
 
-양식에는 여러 개의 chapter 타입이 있습니다 (type_1, type_2, ...). 각 타입은 서로 다른 구조(단 깊이, role 개수, 패턴)를 가집니다.
-당신의 일은 **양식의 모든 타입에 소스 내용을 적절히 분배**해서, 양식이 가진 구조를 모두 활용하는 것입니다.
+- 양식은 여러 chapter_type을 제공합니다 (구조 템플릿의 "카탈로그").
+- 당신의 임무는 **소스의 주제 구성을 존중하면서 각 주제에 맞는 type을 고르는 것**.
+- 양식 type 개수를 억지로 맞추거나 소스 내용을 쪼갤 필요 없음.
 
-## 작업
+## 작업 순서
 
-1. **양식의 chapter_types 전체를 확인**: 각 타입의 구조(description)를 보고 어떤 성격인지 파악
-2. **소스 내용을 분배**: 소스의 전체 내용을 양식 타입 개수만큼 나누어 각 타입에 배정
-3. **chapters 배열 생성**: 양식의 각 타입마다 chapter를 하나씩 만들기
+### Step 1: 소스 구조 먼저 파악
+소스의 목차·대제목·주제 경계를 우선 식별. 비정형이면 내용상 주제 전환점 찾기.
+→ **소스의 자연스러운 chapter 단위 개수를 결정** (N개)
 
-## 분류 규칙 (중요)
+### Step 2: 각 chapter의 "복잡도" 평가
+각 chapter를 다음 기준으로 분석:
+- **분량**: 문단 수, 대략 페이지 수
+- **내부 계층 깊이**: 중제목/소제목/세부항목 단계 (1단 / 2-3단 / 4단+)
+- **항목 개수**: 소제목 몇 개, 세부 bullet 몇 개
 
-- **chapters 개수는 원칙적으로 chapter_types 개수와 같아야 합니다** (각 type마다 하나씩)
-- **모든 type을 사용하세요** — 한 type으로 몰리면 안 됨 (소스 내용을 다 못 담음)
-- 소스의 대제목 구분은 **참고만** 하고, 없어도 무방합니다
-- **소스가 비정형이어도(회의록, 단순 나열 등) 양식 구조에 맞게 내용을 나누어 분배**하세요
-- 소스에 해당 type에 딱 맞는 주제가 없으면 가까운 성격으로 배정 (`"confidence": "low"`)
-- **양식에 없는 새 type을 만들지 마세요**
-- title은 소스에서 추출한 대표 주제 또는 type에 맞는 대표 제목
+### Step 3: 각 chapter에 적합한 type 배정
+양식 type들의 구조 특성과 매칭:
+- **깊은 type** (단 깊이 4+, role 6개+) → 분량 많고 다단 계층의 chapter
+- **중간 type** (2-3단, 4-6 role) → 중간 분량·복잡도
+- **단순 type** (1-2단, 2-3 role) → 짧은 요약성·단순 열거 chapter
 
-## 예시 (양식에 type_1, type_2 2개가 있는 경우)
+**같은 type을 여러 chapter에 반복 사용 OK** (소스에 비슷한 성격 주제가 여럿이면).
+**사용 안 하는 type이 있어도 OK** (소스에 그런 복잡도 내용이 없으면).
+
+## 출력 규칙
+
+### chapters 배열
+- **개수 = 소스의 자연스러운 chapter 개수 (N)**, type 개수와 무관
+- 소스 원문의 **대제목/주제명을 title에 그대로 사용** (마커 포함)
+- 소스에 명확한 제목 없으면 그 chapter의 핵심을 한 줄로 요약
+
+### confidence
+- `high`: 소스 주제와 선택한 type이 복잡도·성격 모두 잘 맞음
+- `medium`: 약간 어긋나지만 이 type이 가장 낫다고 판단
+- `low`: 적합한 type이 없어서 불가피한 선택 (새 type 만들지 말 것)
+
+### header
+- `header`의 key는 user 메시지의 "양식 header role 목록"만 사용
+- 소스에서 표지 정보(제목/날짜/기관명 등) 추출하여 채움
+- 소스에 없으면 해당 key 생략 가능
+
+## 출력 형식
 
 ```json
 {
   "chapters": [
-    {
-      "type": "type_1",
-      "title": "소스의 앞부분 주제 or type_1에 맞는 대표 제목",
-      "confidence": "high"
-    },
-    {
-      "type": "type_2",
-      "title": "소스의 뒷부분 주제 or type_2에 맞는 대표 제목",
-      "confidence": "high"
-    }
+    {"type": "type_X", "title": "소스 원문 제목(마커 포함)", "confidence": "high"},
+    ...
   ],
   "header": {
     "<양식 header role 이름>": "소스에서 추출한 값",
-    "<양식 header role 이름>": "소스에서 추출한 값"
+    ...
   }
 }
 ```
 
-## header 규칙
-- **header의 key는 user 메시지에 제공된 "양식 header role 목록"만 사용** (다른 이름 금지)
-- 양식 header role 목록의 모든 key에 대해 소스에서 적절한 값을 찾아 넣으세요
-- 소스에 해당 정보가 없으면 그 key는 생략 가능 (단 cover_title, cover_title_box 같은 제목 role은 가능한 채우기)
+## 예시 상황별 동작
+
+**상황 A**: 양식 type 3개(단순/중간/복잡), 소스 chapter 3개
+→ 각 chapter를 복잡도 맞는 type에 1:1 (단, 순서대로 아님! 복잡도대로)
+
+**상황 B**: 양식 type 3개, 소스 chapter 5개 (3개는 유사한 중간 복잡도, 2개는 단순)
+→ chapters 5개: [중간, 중간, 중간, 단순, 단순] 같이 type 반복 사용
+
+**상황 C**: 양식 type 3개, 소스 chapter 1개 (단순한 내용)
+→ chapters 1개: 단순 type 하나만 사용. 나머지 2개 type은 사용 안 함.
+
+**상황 D**: 소스가 비정형(회의록, 메모 등)
+→ 주제 전환점을 찾아 N개로 나눈 뒤 각각 type 배정
+
+## 금지사항
+
+- ❌ 양식에 없는 새 type 이름 만들기
+- ❌ 소스에 없는 내용 창작하기
+- ❌ "type 개수에 맞춰" 억지로 chapter 쪼개기/합치기
+- ❌ 복잡도 무시하고 순서대로 type_1, type_2, type_3 배정
 
 ## 중요
-- **소스 원문의 마커(Ⅰ, 1., 가. 등)를 title에 포함**하세요 — 마커는 시스템이 양식에 맞게 교체합니다
-- **chapters 개수 ≥ chapter_types 개수** — 각 type을 하나 이상 사용
-- chapters의 type은 user 메시지의 "양식 대제목 타입 목록"에 있는 이름만 사용
 - 반드시 JSON만 출력. 다른 설명 포함 금지
+- chapters의 type은 user 메시지의 "양식 대제목 타입 목록"에 있는 이름만 사용
 """
 
 
@@ -3130,11 +3159,10 @@ def build_chapter_classify_prompt(
 
     user_parts = []
     text_block = (
-        "## 양식 대제목 타입 목록\n"
+        "## 양식 대제목 타입 목록 (카탈로그)\n"
         f"{types_text}\n\n"
-        f"**양식 type 개수: {type_count}개** ({type_names_str})\n"
-        f"**chapters 배열은 반드시 {type_count}개 이상 생성하세요** — 각 type을 모두 사용해야 합니다. "
-        f"한 type으로 몰리면 안 됩니다.\n\n"
+        f"양식이 제공하는 type: **{type_count}개** ({type_names_str})\n"
+        f"이 중 소스 chapter 개수만큼 적절히 선택(중복 사용/일부 생략 모두 가능).\n\n"
         f"## 양식 header role 목록\n"
         f"{header_text}\n\n"
         f"{header_rule}\n"
