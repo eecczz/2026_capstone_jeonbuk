@@ -2085,22 +2085,33 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-def get_template_cache_path(template_file_id: str) -> str:
-    """템플릿 분석 결과 캐시 파일 경로"""
-    import os
-    safe_id = template_file_id.replace("/", "_").replace("..", "_")
-    return os.path.join(TEMPLATE_CACHE_DIR, f"{safe_id}.json")
+def compute_template_hash(template_path: str) -> str:
+    """양식 파일 바이트의 SHA256 해시 앞 16자리 (캐시 키용).
 
-
-def save_template_cache(template_file_id: str, data: dict) -> bool:
-    """양식 분석 결과를 캐시에 저장.
-
-    Args:
-        template_file_id: 양식 파일의 DB id
-        data: 저장할 구조 (structure, signals, chapter_types, truncated_xml 등)
+    file_id와 달리 내용이 같으면 같은 해시 → 재업로드해도 캐시 hit.
     """
+    import hashlib
+    h = hashlib.sha256()
+    with open(template_path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def get_template_cache_path(cache_key: str) -> str:
+    """템플릿 분석 결과 캐시 파일 경로 (cache_key는 보통 content hash)"""
     import os
-    path = get_template_cache_path(template_file_id)
+    safe_key = cache_key.replace("/", "_").replace("..", "_")
+    return os.path.join(TEMPLATE_CACHE_DIR, f"{safe_key}.json")
+
+
+def save_template_cache(cache_key: str, data: dict) -> bool:
+    """양식 분석 결과를 캐시에 저장."""
+    import os
+    path = get_template_cache_path(cache_key)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -2112,14 +2123,10 @@ def save_template_cache(template_file_id: str, data: dict) -> bool:
         return False
 
 
-def load_template_cache(template_file_id: str) -> dict | None:
-    """캐시에서 양식 분석 결과 로드.
-
-    Returns:
-        데이터 dict 또는 None(캐시 없음/로드 실패)
-    """
+def load_template_cache(cache_key: str) -> dict | None:
+    """캐시에서 양식 분석 결과 로드. 없거나 실패시 None."""
     import os
-    path = get_template_cache_path(template_file_id)
+    path = get_template_cache_path(cache_key)
     if not os.path.exists(path):
         return None
     try:
@@ -2132,10 +2139,10 @@ def load_template_cache(template_file_id: str) -> dict | None:
         return None
 
 
-def clear_template_cache(template_file_id: str) -> bool:
-    """캐시 파일 삭제 (강제 재분석 용도)"""
+def clear_template_cache(cache_key: str) -> bool:
+    """캐시 파일 삭제"""
     import os
-    path = get_template_cache_path(template_file_id)
+    path = get_template_cache_path(cache_key)
     try:
         if os.path.exists(path):
             os.remove(path)
@@ -3020,59 +3027,80 @@ def parse_role_content_from_structure_llm(llm_response: str) -> dict:
 # 2a AI: 소스 PDF → 대제목 추출 + 타입 분류
 # ──────────────────────────────────────────────────────────────────────
 
-CHAPTER_CLASSIFY_PROMPT = """당신은 문서 구조 분석 전문가입니다.
-**소스 문서의 주제별 경계를 먼저 식별**한 뒤, 각 주제에 **가장 적합한 양식 type을 배정**합니다.
+CHAPTER_CLASSIFY_PROMPT = """당신은 양식에 내용을 담는 **편집자/기획자**입니다.
+소스 문서의 내용을 깊이 이해한 뒤, 그 내용을 **가장 잘 표현할 수 있는 방식**으로 양식 구성을 설계합니다.
 
-## 핵심 관점
+## 핵심 관점: "구조 매칭"이 아닌 "표현 최적화"
 
-- 양식은 여러 chapter_type을 제공합니다 (구조 템플릿의 "카탈로그").
-- 당신의 임무는 **소스의 주제 구성을 존중하면서 각 주제에 맞는 type을 고르는 것**.
-- 양식 type 개수를 억지로 맞추거나 소스 내용을 쪼갤 필요 없음.
+당신의 임무는 소스 구조를 양식 구조와 1:1로 맞추는 게 아닙니다.
+**"이 내용을 독자에게 어떻게 잘 전달할까?"** 관점에서 양식 type을 선택합니다.
+
+- 소스가 **비정형**(뉴스, 메모, 회의록, 에세이 등) — 원래 chapter가 없어도 OK. 당신이 내용 기반으로 나누세요.
+- 소스가 **구조화**(보고서, 규정) — 기존 구조 활용 가능하지만 꼭 따를 필요는 없음.
+- 핵심은: **이 내용을 보여주기에 어떤 type이 최적인가?**
 
 ## 작업 순서
 
-### Step 1: 소스 구조 먼저 파악
-소스의 목차·대제목·주제 경계를 우선 식별. 비정형이면 내용상 주제 전환점 찾기.
-→ **소스의 자연스러운 chapter 단위 개수를 결정** (N개)
+### Step 1: 소스 내용 이해 (구조 무관)
 
-### Step 2: 각 chapter의 "복잡도" 평가
-각 chapter를 다음 기준으로 분석:
-- **분량**: 문단 수, 대략 페이지 수
-- **내부 계층 깊이**: 중제목/소제목/세부항목 단계 (1단 / 2-3단 / 4단+)
-- **항목 개수**: 소제목 몇 개, 세부 bullet 몇 개
+소스가 무엇을 전달하려 하는지 파악:
+- 핵심 메시지는 무엇?
+- 주요 정보 (사실/주장/데이터)는?
+- 보조 정보 (배경·예시·수치·인용·반응)는?
+- 결론/시사점/전망은?
 
-### Step 3: 각 chapter에 적합한 type 배정
-양식 type들의 구조 특성과 매칭:
-- **깊은 type** (단 깊이 4+, role 6개+) → 분량 많고 다단 계층의 chapter
-- **중간 type** (2-3단, 4-6 role) → 중간 분량·복잡도
-- **단순 type** (1-2단, 2-3 role) → 짧은 요약성·단순 열거 chapter
+### Step 2: 양식 구성 설계 (편집적 창의성)
 
-**같은 type을 여러 chapter에 반복 사용 OK** (소스에 비슷한 성격 주제가 여럿이면).
-**사용 안 하는 type이 있어도 OK** (소스에 그런 복잡도 내용이 없으면).
+이 소스를 어떻게 "보여줄까" 결정:
+- 소스 한 덩어리를 여러 chapter로 나누는 게 나은가? 하나로 충분한가?
+- 소스가 뉴스라면: "개요 + 배경 + 상세 + 영향" 같이 chapter를 창작할 수 있음
+- 소스에 명시된 주제 구분이 있으면 활용 가능 (강제 X)
+- chapter 개수는 **내용 표현을 가장 잘 하는 개수** (1개든 N개든)
 
-## 출력 규칙
+### Step 3: 각 chapter에 "표현 최적화" type 선택
 
-### chapters 배열
-- **개수 = 소스의 자연스러운 chapter 개수 (N)**, type 개수와 무관
-- 소스 원문의 **대제목/주제명을 title에 그대로 사용** (마커 포함)
-- 소스에 명확한 제목 없으면 그 chapter의 핵심을 한 줄로 요약
+양식이 제공하는 type 중 해당 chapter 내용을 **가장 잘 담을 type**을 고릅니다.
 
-### confidence
-- `high`: 소스 주제와 선택한 type이 복잡도·성격 모두 잘 맞음
-- `medium`: 약간 어긋나지만 이 type이 가장 낫다고 판단
-- `low`: 적합한 type이 없어서 불가피한 선택 (새 type 만들지 말 것)
+판단 기준 (우선순위):
 
-### header
-- `header`의 key는 user 메시지의 "양식 header role 목록"만 사용
-- 소스에서 표지 정보(제목/날짜/기관명 등) 추출하여 채움
-- 소스에 없으면 해당 key 생략 가능
+**(1) Role 구조 적합성 — 가장 중요**
+이 type의 role 조합이 내용의 구성 요소(요약/세부/참고/예시/전략/과제 등)와 자연스럽게 매핑되나?
+- 예: 내용에 "요약 + 근거 + 반론"이 있으면 → `summary_box + detail_item + note` 류 role 있는 type
+- 예: 내용이 "전략 + 과제 + 세부계획"이면 → `strategy > task > subtask` 같은 깊은 계층 type
+
+**(2) Pattern 흐름 적합성**
+이 type의 반복·옵션·계층 구조가 내용 전개를 지원하나?
+- 예: 내용이 "주제 → 사례 반복"이면 → `section > detail(multiple)` pattern
+- 예: 내용이 "목록 나열"이면 → 반복 가능한 단순 list pattern
+
+**(3) 용기(capacity) 적합성**
+type의 깊이가 내용 분량과 맞나?
+- 내용 풍부 → 깊은 type (정보 다 담음)
+- 내용 간결 → 단순 type (억지로 늘리지 않음)
+- 내용 없는데 깊은 type 선택하면 → 빈 슬롯 많아지거나 AI가 허구 생성
+
+**(4) Top-level role 이름의 기능 힌트**
+type의 최상위 role 이름에서 성격 유추:
+- `strategy_*` — 전략·방향성 내용
+- `numbered_section_*` — 번호 매긴 논리 전개
+- `summary_box` 중심 — 요약성 내용
+- `regulation_clause` — 조·항 구조
+- 소스 chapter의 기능과 매칭
+
+## 핵심 원칙
+
+- **같은 type 여러 chapter에 반복 사용 OK** — 소스에 비슷한 성격 주제 여럿이면
+- **사용 안 하는 type이 있어도 OK** — 소스에 그런 성격 내용 없으면
+- **chapter 개수 ≠ type 개수** — 소스 표현에 필요한 만큼
+- 소스에 명확한 대제목 있으면 **title에 원문 그대로** (마커 포함)
+- 없으면 chapter의 핵심을 한 줄로 요약한 title 작성
 
 ## 출력 형식
 
 ```json
 {
   "chapters": [
-    {"type": "type_X", "title": "소스 원문 제목(마커 포함)", "confidence": "high"},
+    {"type": "type_X", "title": "...", "confidence": "high"},
     ...
   ],
   "header": {
@@ -3082,26 +3110,34 @@ CHAPTER_CLASSIFY_PROMPT = """당신은 문서 구조 분석 전문가입니다.
 }
 ```
 
-## 예시 상황별 동작
+`confidence`:
+- `high`: 내용이 이 type에서 자연스럽게 표현됨
+- `medium`: 약간 어긋나지만 이 type이 가장 나음
+- `low`: 마땅한 type이 없어 불가피한 선택
 
-**상황 A**: 양식 type 3개(단순/중간/복잡), 소스 chapter 3개
-→ 각 chapter를 복잡도 맞는 type에 1:1 (단, 순서대로 아님! 복잡도대로)
+## 예시 상황
 
-**상황 B**: 양식 type 3개, 소스 chapter 5개 (3개는 유사한 중간 복잡도, 2개는 단순)
-→ chapters 5개: [중간, 중간, 중간, 단순, 단순] 같이 type 반복 사용
+**상황 A — 뉴스 기사 1편**
+→ chapters 1-3개: "사건 개요"(단순 type) + "배경 분석"(중간 type) + "영향/시사점"(단순 type)
+→ type 개수와 무관하게 내용 표현 중심으로 결정
 
-**상황 C**: 양식 type 3개, 소스 chapter 1개 (단순한 내용)
-→ chapters 1개: 단순 type 하나만 사용. 나머지 2개 type은 사용 안 함.
+**상황 B — 보고서 (대제목 5개)**
+→ 기존 대제목 활용해도 OK, 내용상 합치거나 나눠도 OK
+→ 각 chapter에 표현 최적 type 선택 (같은 type 반복 사용 OK)
 
-**상황 D**: 소스가 비정형(회의록, 메모 등)
-→ 주제 전환점을 찾아 N개로 나눈 뒤 각각 type 배정
+**상황 C — 회의록 (안건 3개)**
+→ 안건마다 chapter. 각 안건의 내용 성격 보고 type 선택
+→ 짧은 안건은 단순 type, 심층 논의된 안건은 깊은 type
+
+**상황 D — 짧은 메모 (1쪽)**
+→ chapters 1개만: 내용 담기에 충분한 단순 type 하나
 
 ## 금지사항
 
 - ❌ 양식에 없는 새 type 이름 만들기
 - ❌ 소스에 없는 내용 창작하기
-- ❌ "type 개수에 맞춰" 억지로 chapter 쪼개기/합치기
-- ❌ 복잡도 무시하고 순서대로 type_1, type_2, type_3 배정
+- ❌ 양식 type 개수에 맞춰 억지로 chapter 수 맞추기
+- ❌ 구조 유사성만 보고 기능·표현 적합성 무시하기
 
 ## 중요
 - 반드시 JSON만 출력. 다른 설명 포함 금지
