@@ -1981,8 +1981,10 @@ def parse_structure_from_llm(llm_response: str) -> dict:
         f"표 {len(data.get('tables', []))}개"
     )
 
-    # 후처리: 같은 role인데 마커가 다르면 자동 분리
-    data["paragraphs"] = _split_roles_by_marker(data.get("paragraphs", []))
+    # 후처리: 같은 role인데 마커가 다르면 자동 분리 — 임시 비활성화
+    # 1차 AI가 role 분류를 이미 잘 하고 있고, 단일 숫자 마커 등에서 과분리 이슈가 있어
+    # 일단 끄고 결과 확인. 필요 시 다시 켜기.
+    # data["paragraphs"] = _split_roles_by_marker(data.get("paragraphs", []))
 
     # chapter_types는 여기서 생성하지 않음 — level이 아직 없음
     # 흐름:
