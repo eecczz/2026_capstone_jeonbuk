@@ -1017,7 +1017,9 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
             if len(result) <= max_chars:
                 break
 
-    # ── 6단계: 그래도 초과 시 — 중간 본문 문단 제거 (marker-aware) ──
+    # ── 6단계: 그래도 초과 시 — 중간 본문 문단 "뼈대만 남기기" (텍스트 축약) ──
+    # 삭제하지 않음. 문단 구조·마커는 모두 유지하고 텍스트만 공격적으로 축약.
+    # 이유: AI가 시퀀스 전체를 봐야 variant (같은 부모의 서로 다른 자식 조합) 감지 가능.
     if len(result) > max_chars:
         root4 = etree.fromstring(result.encode("utf-8"))
         table_elements4 = _collect_table_elements(root4)
@@ -1026,70 +1028,39 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
             if p not in table_elements4 and p.find(f".//{NS_HP}tbl") is None
         ]
 
-        KEEP_FRONT = 30
-        KEEP_BACK = 15
-        KEEP_PER_MARKER = 3  # 각 마커 타입별로 최소 이만큼은 보존
+        KEEP_FRONT = 30  # 앞쪽 보존 영역 — role 학습용 정상 길이
+        KEEP_BACK = 15   # 뒤쪽 보존 영역
 
         if len(body_paras) > KEEP_FRONT + KEEP_BACK + 10:
-            # 각 문단의 marker type 추출
-            def _get_marker_first_char(p) -> str:
-                """문단 첫 텍스트의 첫 글자(마커 후보)"""
-                for t in p.iter(f"{NS_HP}t"):
-                    if t.text and t.text.strip():
-                        stripped = t.text.strip()
-                        # "1)", "가." 같은 패턴도 처리
-                        import re as _re_m
-                        m = _re_m.match(r'^(\d+\)|[가-힣]\.|[IVXivx]+\.)', stripped)
-                        if m:
-                            return m.group(0)
-                        return stripped[0] if stripped else ""
-                return ""
+            middle_paras = (
+                body_paras[KEEP_FRONT:-KEEP_BACK] if KEEP_BACK > 0 else body_paras[KEEP_FRONT:]
+            )
 
-            # 앞/뒤 보존 + marker 다양성 보존 문단 선별
-            front_paras = body_paras[:KEEP_FRONT]
-            back_paras = body_paras[-KEEP_BACK:] if KEEP_BACK > 0 else []
-            middle_paras = body_paras[KEEP_FRONT:-KEEP_BACK] if KEEP_BACK > 0 else body_paras[KEEP_FRONT:]
+            # 점진적으로 중간 문단 텍스트를 축약 (20→15→10→5)
+            final_limit = None
+            for limit in (20, 15, 10, 5):
+                # middle_paras의 모든 <t> 텍스트를 limit 이하로
+                for p in middle_paras:
+                    for t_elem in p.iter(f"{NS_HP}t"):
+                        if t_elem.text and len(t_elem.text) > limit:
+                            t_elem.text = t_elem.text[:limit] + "…"
+                result = etree.tostring(root4, encoding="unicode", pretty_print=True)
+                final_limit = limit
+                if len(result) <= max_chars:
+                    break
 
-            # 이미 앞/뒤에서 본 marker type 카운트
-            marker_counts = {}
-            for p in front_paras + back_paras:
-                mk_char = _get_marker_first_char(p)
-                if mk_char:
-                    mk_type = _normalize_marker_type(mk_char)
-                    marker_counts[mk_type] = marker_counts.get(mk_type, 0) + 1
-
-            # middle에서 "새 marker type" 또는 "보존 부족한 type"의 문단을 추가 보존
-            protected_in_middle = set()
-            for p in middle_paras:
-                mk_char = _get_marker_first_char(p)
-                if not mk_char:
-                    continue
-                mk_type = _normalize_marker_type(mk_char)
-                if marker_counts.get(mk_type, 0) < KEEP_PER_MARKER:
-                    protected_in_middle.add(id(p))
-                    marker_counts[mk_type] = marker_counts.get(mk_type, 0) + 1
-
-            # 보호되지 않은 middle 문단만 제거
-            mid_removed = 0
-            for p in middle_paras:
-                if id(p) in protected_in_middle:
-                    continue
-                parent = p.getparent()
-                if parent is not None:
-                    parent.remove(p)
-                    mid_removed += 1
-
-            if mid_removed > 0 and body_paras[KEEP_FRONT - 1].getparent() is not None:
+            # 축약 완료 주석
+            if body_paras[KEEP_FRONT - 1].getparent() is not None:
                 anchor = body_paras[KEEP_FRONT - 1]
                 parent = anchor.getparent()
                 idx = list(parent).index(anchor) + 1
                 parent.insert(idx, etree.Comment(
-                    f" 본문 문단 {mid_removed}개 생략 "
-                    f"(앞 {KEEP_FRONT}개, 뒤 {KEEP_BACK}개, 마커 다양성 {len(protected_in_middle)}개 보존) "
+                    f" 중간 본문 문단 {len(middle_paras)}개 텍스트를 {final_limit}자 이하로 축약 "
+                    f"(앞 {KEEP_FRONT}개, 뒤 {KEEP_BACK}개는 정상 길이) "
                 ))
             log.info(
-                f"Stage 6: middle {len(middle_paras)}개 중 {mid_removed}개 제거, "
-                f"{len(protected_in_middle)}개 marker-protected"
+                f"Stage 6: middle {len(middle_paras)}개 문단 텍스트를 {final_limit}자로 축약 "
+                f"(문단 구조·마커 모두 보존)"
             )
 
         result = etree.tostring(root4, encoding="unicode", pretty_print=True)
@@ -1454,16 +1425,21 @@ def build_hwpx_prompt(
 # ============================================================
 
 STRUCTURE_ANALYSIS_PROMPT = """당신은 HWPX 양식 구조 분석 전문가입니다.
-양식 XML을 분석하여 각 필드의 **의미적 역할(role)**, 용도(description), 마커, 표 구조를 JSON으로 출력합니다.
+양식을 분석하여 각 필드의 **의미적 역할(role)**, 용도(description), 마커, 표 구조를 JSON으로 출력합니다.
 
 **⚠️ level(계층 깊이)은 이 단계에서 결정하지 않습니다** — 별도 단계에서 처리합니다.
 
-## XML 구조 안내
-- <hp:p paraPrIDRef="N" _idx="I">: 섹션 레벨 문단 (I가 인덱스, N이 문단 스타일 ID)
-- <hp:run charPrIDRef="N">: 텍스트 런 (N이 글자 스타일 ID)
-- <hp:t>텍스트</hp:t>: 실제 텍스트 내용
-- <hp:tbl rowCnt="R" colCnt="C" _tbl_idx="T">: 표 (R행 C열, T가 표 순번 인덱스)
-- <hp:tc>: 표 셀, <hp:cellAddr colAddr="C" rowAddr="R"/>: 셀 위치
+## 입력 포맷 (컴팩트 텍스트 — XML 아님)
+
+**문단 한 줄**: `idx|pN|cM[|Ttbl_ids] | 텍스트`
+- `idx`: 문단 번호 (0부터)
+- `p<N>`: paraPrIDRef (문단 스타일 ID). 예: `p5` = paraPrIDRef 5
+- `c<M>`: 첫 run의 charPrIDRef (문자 스타일 ID). 예: `c12` = charPrIDRef 12
+- `T<id>[,T<id>]`: 이 문단에 포함된 표 id (선택)
+- `|` 뒤: 문단 텍스트. 내용 없으면 `()`, 표만 있으면 `(표만 포함)`
+
+**표 블록**: `[T<id>] <rows>x<cols> in_para=<idx> [borderFill=<id>]`
+- 뒤에 `  row<N>: 셀1 | 셀2 | ...` 형식으로 각 행 내용
 
 ## 분석 규칙
 
@@ -1728,34 +1704,175 @@ def _extract_texts_by_idx(truncated_xml: str) -> dict:
     return texts
 
 
+def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
+    """
+    Light XML을 AI 전용 컴팩트 텍스트 포맷으로 변환.
+
+    XML 태그 오버헤드(96%)를 제거하고 AI가 role 판단에 쓸 핵심 정보만 뽑음:
+    문단 idx, paraPrIDRef, charPrIDRef, 텍스트, 표 참조.
+
+    Returns:
+        {
+            "text": 컴팩트 텍스트,
+            "paragraph_count": N,
+            "table_count": M,
+        }
+    """
+    root = etree.fromstring(light_xml.encode("utf-8"))
+
+    # 섹션 레벨 문단만 수집 (표 내부 문단 제외)
+    sections = root.findall(f".//{NS_HP}sec")
+    if not sections:
+        # root 자체가 sec인 경우 (section namespace)
+        sections = [root]
+
+    paragraphs = []
+    for section in sections:
+        for p in section.findall(f"{NS_HP}p"):
+            paragraphs.append(p)
+
+    # 표 수집 (문단별 포함 표)
+    tables_by_idx = []  # [(tbl_elem, in_para_idx)]
+    for p_idx, p in enumerate(paragraphs):
+        for tbl in p.iter(f"{NS_HP}tbl"):
+            tables_by_idx.append((tbl, p_idx))
+
+    lines = []
+    lines.append("# 양식 구조 (컴팩트 포맷)")
+    lines.append("#")
+    lines.append("# 문단 형식: idx|paraPr|charPr[|Ttable_id,...] | 텍스트")
+    lines.append("#   - idx: 문단 번호 (0부터)")
+    lines.append("#   - paraPr: paraPrIDRef (문단 스타일 ID)")
+    lines.append("#   - charPr: 첫 run의 charPrIDRef (문자 스타일 ID)")
+    lines.append("#   - Ttable_id: 이 문단에 포함된 표 (여러 개면 쉼표로)")
+    lines.append("#")
+    lines.append("# 표 형식: [T<id>] <rows>x<cols> in_para=<idx> [borderFill=<id>]")
+    lines.append("#   각 행은 'row<N>: 셀1 | 셀2 | ...'로 표시 (셀 텍스트는 일부 축약)")
+    lines.append("")
+
+    lines.append(f"## 문단 목록 (총 {len(paragraphs)}개)")
+    lines.append("")
+
+    for p_idx, p in enumerate(paragraphs):
+        para_pr = p.get("paraPrIDRef", "0")
+        first_run = p.find(f"{NS_HP}run")
+        char_pr = first_run.get("charPrIDRef", "0") if first_run is not None else "0"
+
+        # 표 참조
+        tbls_in_p = list(p.iter(f"{NS_HP}tbl"))
+        table_refs = [f"T{t.get('_tbl_idx', '?')}" for t in tbls_in_p]
+        table_str = ",".join(table_refs) if table_refs else ""
+
+        # 텍스트 (표 내부 텍스트 제외)
+        text_parts = []
+        for run in p.findall(f"{NS_HP}run"):
+            if run.find(f"{NS_HP}tbl") is not None:
+                # 표 포함 run은 텍스트 추출 건너뜀
+                continue
+            for t in run.iter(f"{NS_HP}t"):
+                if t.text:
+                    text_parts.append(t.text)
+        text = "".join(text_parts).strip()
+        if len(text) > 200:
+            text = text[:200] + "…"
+
+        # 한 줄 생성
+        header_parts = [str(p_idx), f"p{para_pr}", f"c{char_pr}"]
+        if table_str:
+            header_parts.append(table_str)
+        header = "|".join(header_parts)
+
+        if text:
+            lines.append(f"{header} | {text}")
+        elif table_str:
+            lines.append(f"{header} | (표만 포함)")
+        else:
+            lines.append(f"{header} | ()")
+
+    lines.append("")
+    lines.append(f"## 표 목록 (총 {len(tables_by_idx)}개)")
+    lines.append("")
+
+    for tbl, in_para in tables_by_idx:
+        tbl_idx = tbl.get("_tbl_idx", "?")
+        rows = int(tbl.get("rowCnt", "1"))
+        cols = int(tbl.get("colCnt", "1"))
+        border = tbl.get("borderFillIDRef", "0")
+
+        header = f"[T{tbl_idx}] {rows}x{cols} in_para={in_para}"
+        if border and border != "0":
+            header += f" borderFill={border}"
+        lines.append(header)
+
+        for r_idx, tr in enumerate(tbl.findall(f"{NS_HP}tr")):
+            row_texts = []
+            for tc in tr.findall(f"{NS_HP}tc"):
+                cell_text_parts = []
+                for t in tc.iter(f"{NS_HP}t"):
+                    if t.text:
+                        cell_text_parts.append(t.text)
+                cell_text = "".join(cell_text_parts).strip().replace("\n", " ")
+                if len(cell_text) > cell_text_limit:
+                    cell_text = cell_text[:cell_text_limit] + "…"
+                row_texts.append(cell_text)
+            lines.append(f"  row{r_idx}: " + " | ".join(row_texts))
+
+        lines.append("")
+
+    result_text = "\n".join(lines)
+    return {
+        "text": result_text,
+        "paragraph_count": len(paragraphs),
+        "table_count": len(tables_by_idx),
+    }
+
+
 def build_structure_analysis_prompt(
     light_xml: str,
     auto_truncate: bool = True,
+    use_compact_format: bool = True,
 ) -> list[dict]:
     """
-    1차 호출: 양식 XML → 구조 분석 프롬프트 (role + description + marker + table)
-
-    level은 별도 단계(build_level_analysis_prompt)에서 결정합니다.
+    1차 호출: 양식 → 구조 분석 프롬프트 (role + description + marker + table)
 
     Args:
         light_xml: 경량화된 양식 XML
-        auto_truncate: 대형 XML 자동 축소 여부
+        auto_truncate: XML 포맷 사용 시에만 적용 (compact 포맷은 불필요)
+        use_compact_format: True면 컴팩트 텍스트 포맷으로 전달 (토큰 효율 ↑)
+                            False면 기존 XML 그대로 전달
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
     """
-    if auto_truncate:
-        tr = truncate_xml(light_xml)
-        light_xml = tr["xml"]
-
-    user_msg = (
-        "아래 HWPX 양식 XML의 구조를 분석하세요.\n"
-        "각 _idx 문단의 **role, description, marker, paraPrIDRef, charPrIDRef**를 파악하고, "
-        "표의 라벨/값 셀을 구분하세요.\n"
-        "**level은 이 단계에서 출력하지 마세요** — 별도 단계에서 결정합니다.\n\n"
-        f"```xml\n{light_xml}\n```\n\n"
-        "반드시 JSON만 출력하세요."
-    )
+    if use_compact_format:
+        compact = serialize_to_compact(light_xml)
+        user_msg = (
+            "아래는 HWPX 양식의 구조를 **컴팩트 텍스트 포맷**으로 정리한 것입니다.\n"
+            "각 문단의 **role, description, marker, paraPrIDRef, charPrIDRef**를 파악하고, "
+            "표의 라벨/값 셀을 구분하세요.\n"
+            "**level은 이 단계에서 출력하지 마세요** — 별도 단계에서 결정합니다.\n\n"
+            "### 입력 포맷 설명\n"
+            "- 문단: `idx|paraPr|charPr[|Ttable_ids] | 텍스트`\n"
+            "  - `p` 접두사: paraPrIDRef (예: `p5` = paraPrIDRef 5)\n"
+            "  - `c` 접두사: 첫 run의 charPrIDRef (예: `c12` = charPrIDRef 12)\n"
+            "  - `T<id>`: 이 문단이 포함한 표 (예: `T0` = table id 0)\n"
+            "- 표: `[T<id>] rows x cols in_para=N` 뒤에 각 행 내용\n\n"
+            f"```\n{compact['text']}\n```\n\n"
+            "반드시 JSON만 출력하세요."
+        )
+    else:
+        # 기존 XML 방식 (백업 옵션)
+        if auto_truncate:
+            tr = truncate_xml(light_xml)
+            light_xml = tr["xml"]
+        user_msg = (
+            "아래 HWPX 양식 XML의 구조를 분석하세요.\n"
+            "각 _idx 문단의 **role, description, marker, paraPrIDRef, charPrIDRef**를 파악하고, "
+            "표의 라벨/값 셀을 구분하세요.\n"
+            "**level은 이 단계에서 출력하지 마세요** — 별도 단계에서 결정합니다.\n\n"
+            f"```xml\n{light_xml}\n```\n\n"
+            "반드시 JSON만 출력하세요."
+        )
 
     return [
         {"role": "system", "content": STRUCTURE_ANALYSIS_PROMPT},
