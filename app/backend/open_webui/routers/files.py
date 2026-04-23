@@ -1137,12 +1137,15 @@ async def generate_hwpx_dynamic_endpoint(
             detail=f"양식 구조 분석 실패: {e}",
         )
 
-    # 5a-2) 1.5차 AI 호출 — level(계층 깊이) 결정
+    # 5a-2) 1b/1c/1d/1e 파이프라인
     try:
         from open_webui.utils.hwpx_analyzer import (
             build_level_analysis_prompt,
             parse_level_from_llm,
             merge_levels_into_structure,
+            build_role_classification_prompt,
+            parse_role_classification_from_llm,
+            merge_roles_into_structure,
             build_chapter_types_from_structure,
             compute_parent_instance_children,
             build_exclusivity_analysis_prompt,
@@ -1151,19 +1154,24 @@ async def generate_hwpx_dynamic_endpoint(
             build_format_analysis_prompt,
             parse_format_rules_from_llm,
         )
-        messages_level = build_level_analysis_prompt(structure)
-        log.info(f"[HWP-DEBUG] 1.5a 요청: {len(structure.get('paragraphs', []))}개 문단 level 판단")
 
-        llm_content_level = await _call_llm(messages_level, "hwpx_level_analysis")
-        log.info(f"[HWP-DEBUG] 1.5a LLM 응답 ({len(llm_content_level)}자):\n{llm_content_level}")
-
+        # 1b: level
+        messages_level = build_level_analysis_prompt(structure, signals=None)
+        log.info(f"[HWP-DEBUG] 1b 요청: {len(structure.get('paragraphs', []))}개 문단 level 판단")
+        llm_content_level = await _call_llm(messages_level, "hwpx_1b_level")
         level_map = parse_level_from_llm(llm_content_level)
-        log.info(f"[HWP-DEBUG] 1.5a 파싱: {len(level_map)}개 level 결정")
-
-        # level을 structure에 병합
+        log.info(f"[HWP-DEBUG] 1b 파싱: {len(level_map)}개 level 결정")
         structure = merge_levels_into_structure(structure, level_map)
 
-        # 1.5b: 부모-자식 인스턴스 데이터 계산 → 배타 규칙 AI 호출
+        # 1c: role 분류
+        messages_role = build_role_classification_prompt(structure, signals=None)
+        log.info(f"[HWP-DEBUG] 1c 요청: role 분류")
+        llm_content_role = await _call_llm(messages_role, "hwpx_1c_role")
+        role_map = parse_role_classification_from_llm(llm_content_role)
+        log.info(f"[HWP-DEBUG] 1c 파싱: {len(role_map)}개 role 결정")
+        structure = merge_roles_into_structure(structure, role_map)
+
+        # 1d: 배타 규칙
         pc_data = compute_parent_instance_children(structure)
         exclusive_rules = []
         if pc_data:
@@ -1174,28 +1182,26 @@ async def generate_hwpx_dynamic_endpoint(
                     role_markers[r] = m
             messages_excl = build_exclusivity_analysis_prompt(pc_data, role_markers=role_markers)
             try:
-                llm_content_excl = await _call_llm(messages_excl, "hwpx_exclusivity_analysis")
-                log.info(f"[HWP-DEBUG] 1.5b LLM 응답 ({len(llm_content_excl)}자)")
+                llm_content_excl = await _call_llm(messages_excl, "hwpx_1d_exclusivity")
                 exclusive_rules = parse_exclusivity_from_llm(llm_content_excl)
-                log.info(f"[HWP-DEBUG] 1.5b 파싱: 배타 규칙 {len(exclusive_rules)}개")
+                log.info(f"[HWP-DEBUG] 1d 파싱: 배타 규칙 {len(exclusive_rules)}개")
             except Exception as e:
-                log.warning(f"[HWP-DEBUG] 1.5b 배타 규칙 판정 실패: {e}")
+                log.warning(f"[HWP-DEBUG] 1d 배타 규칙 판정 실패: {e}")
                 exclusive_rules = []
             if exclusive_rules:
                 structure["exclusive_rules"] = exclusive_rules
 
-        # 1.5c: 양식 XML 관측 → format/blank 규칙 AI 판정
+        # 1e: format / blank 규칙
         format_obs = compute_format_observations(structure, light_xml, idx_map=idx_map)
         if format_obs.get("role_formats") or format_obs.get("transitions"):
             messages_format = build_format_analysis_prompt(format_obs)
             try:
-                llm_content_format = await _call_llm(messages_format, "hwpx_format_analysis")
-                log.info(f"[HWP-DEBUG] 1.5c LLM 응답 ({len(llm_content_format)}자)")
+                llm_content_format = await _call_llm(messages_format, "hwpx_1e_format")
                 parsed_format = parse_format_rules_from_llm(llm_content_format)
                 fmt_rules = parsed_format.get("format_rules", {})
                 blnk_rules = parsed_format.get("blank_rules", [])
                 log.info(
-                    f"[HWP-DEBUG] 1.5c 파싱: format_rules {len(fmt_rules)}개, "
+                    f"[HWP-DEBUG] 1e 파싱: format_rules {len(fmt_rules)}개, "
                     f"blank_rules {len(blnk_rules)}개"
                 )
                 if fmt_rules:
@@ -1203,7 +1209,7 @@ async def generate_hwpx_dynamic_endpoint(
                 if blnk_rules:
                     structure["blank_rules"] = blnk_rules
             except Exception as e:
-                log.warning(f"[HWP-DEBUG] 1.5c 판정 실패: {e}")
+                log.warning(f"[HWP-DEBUG] 1e 판정 실패: {e}")
 
         # chapter_types 생성 (level 기반 트리 + variant 분리)
         structure = build_chapter_types_from_structure(structure)
