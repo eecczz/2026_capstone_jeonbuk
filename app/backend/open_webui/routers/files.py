@@ -1066,6 +1066,7 @@ async def generate_hwpx_dynamic_endpoint(
         truncate_result = truncate_xml(light_xml)
         truncated_xml = truncate_result["xml"]
         removed_indices = truncate_result["removed_indices"]
+        idx_map = truncate_result.get("idx_map")
         log.info(f"XML 축소: {len(light_xml):,} → {len(truncated_xml):,}자, 제거 문단 {len(removed_indices)}개")
     except Exception as e:
         raise HTTPException(
@@ -1184,7 +1185,7 @@ async def generate_hwpx_dynamic_endpoint(
                 structure["exclusive_rules"] = exclusive_rules
 
         # 1.5c: 양식 XML 관측 → format/blank 규칙 AI 판정
-        format_obs = compute_format_observations(structure, light_xml)
+        format_obs = compute_format_observations(structure, light_xml, idx_map=idx_map)
         if format_obs.get("role_formats") or format_obs.get("transitions"):
             messages_format = build_format_analysis_prompt(format_obs)
             try:
