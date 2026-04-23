@@ -1143,25 +1143,42 @@ async def generate_hwpx_dynamic_endpoint(
             parse_level_from_llm,
             merge_levels_into_structure,
             build_chapter_types_from_structure,
+            compute_parent_instance_children,
+            build_exclusivity_analysis_prompt,
+            parse_exclusivity_from_llm,
         )
         messages_level = build_level_analysis_prompt(structure)
-        log.info(f"[HWP-DEBUG] 1.5차 요청: {len(structure.get('paragraphs', []))}개 문단 level 판단")
+        log.info(f"[HWP-DEBUG] 1.5a 요청: {len(structure.get('paragraphs', []))}개 문단 level 판단")
 
         llm_content_level = await _call_llm(messages_level, "hwpx_level_analysis")
-        log.info(f"[HWP-DEBUG] 1.5차 LLM 응답 ({len(llm_content_level)}자):\n{llm_content_level}")
+        log.info(f"[HWP-DEBUG] 1.5a LLM 응답 ({len(llm_content_level)}자):\n{llm_content_level}")
 
-        level_parsed = parse_level_from_llm(llm_content_level)
-        level_map = level_parsed["level_map"]
-        exclusive_rules = level_parsed.get("exclusive_rules", [])
-        log.info(
-            f"[HWP-DEBUG] 1.5차 파싱: {len(level_map)}개 level 결정, "
-            f"배타 규칙 {len(exclusive_rules)}개"
-        )
+        level_map = parse_level_from_llm(llm_content_level)
+        log.info(f"[HWP-DEBUG] 1.5a 파싱: {len(level_map)}개 level 결정")
 
-        # level + exclusive_rules을 structure에 병합
-        structure = merge_levels_into_structure(
-            structure, level_map, exclusive_rules=exclusive_rules
-        )
+        # level을 structure에 병합
+        structure = merge_levels_into_structure(structure, level_map)
+
+        # 1.5b: 부모-자식 인스턴스 데이터 계산 → 배타 규칙 AI 호출
+        pc_data = compute_parent_instance_children(structure)
+        exclusive_rules = []
+        if pc_data:
+            role_markers = {}
+            for p in structure.get("paragraphs", []):
+                r, m = p.get("role", ""), p.get("marker", "")
+                if r and m and r not in role_markers:
+                    role_markers[r] = m
+            messages_excl = build_exclusivity_analysis_prompt(pc_data, role_markers=role_markers)
+            try:
+                llm_content_excl = await _call_llm(messages_excl, "hwpx_exclusivity_analysis")
+                log.info(f"[HWP-DEBUG] 1.5b LLM 응답 ({len(llm_content_excl)}자)")
+                exclusive_rules = parse_exclusivity_from_llm(llm_content_excl)
+                log.info(f"[HWP-DEBUG] 1.5b 파싱: 배타 규칙 {len(exclusive_rules)}개")
+            except Exception as e:
+                log.warning(f"[HWP-DEBUG] 1.5b 배타 규칙 판정 실패: {e}")
+                exclusive_rules = []
+            if exclusive_rules:
+                structure["exclusive_rules"] = exclusive_rules
 
         # chapter_types 생성 (level 기반 트리 + variant 분리)
         structure = build_chapter_types_from_structure(structure)
