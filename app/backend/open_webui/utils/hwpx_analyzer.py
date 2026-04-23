@@ -2186,71 +2186,91 @@ def _extract_indent_and_marker_data(para_elem) -> dict:
     return result
 
 
-def compute_format_observations(structure: dict, light_xml: str) -> dict:
+def compute_format_observations(
+    structure: dict, light_xml: str, idx_map: dict = None
+) -> dict:
     """
     light_xml을 직접 파싱해서 1.5c 입력용 원시 관측 데이터를 만듦.
 
-    - 각 role의 indent/marker/separator 샘플
+    - 각 role의 indent/marker/separator 샘플 (직계 XML 관측)
     - 연속 문단 쌍의 blank 존재 여부 + paraPrIDRef
-      (light_xml의 빈 문단을 "전환 사이의 blank"로 해석)
+      (light_xml은 blank 문단 포함 — truncate_xml에서 제거된 것까지 보임)
+
+    Args:
+        structure: 1.5a 이후 structure (paragraphs에 idx, role, level)
+        light_xml: 경량화 전체 XML (blank 포함)
+        idx_map: {ai_idx: real_idx} — AI가 본 truncated idx → light_xml _idx
 
     Returns:
         {
-          "role_formats": {role: {indent_parts_samples, marker_samples,
-                                  separator_samples, first_text_samples}},
-          "transitions": [
-            {from, to, relation, has_blank, blank_paraPrIDRef},
-            ...
-          ]
+          "role_formats": {role: {indent_parts_samples, first_text_samples,
+                                  marker_samples_from_ai}},
+          "transitions": [{from, to, relation, has_blank, blank_paraPrIDRef}, ...]
         }
     """
     paragraphs = structure.get("paragraphs", [])
     if not paragraphs or not light_xml:
         return {"role_formats": {}, "transitions": []}
 
-    # idx → structure paragraph (정수로 정규화 — str/int 혼재 방지)
-    struct_by_idx = {}
+    # ai_idx → real_idx (light_xml의 원본 _idx)
+    def _translate(ai_idx):
+        if idx_map:
+            return idx_map.get(ai_idx, ai_idx)
+        return ai_idx
+
+    # real_idx → structure paragraph
+    real_to_struct = {}
     for p in paragraphs:
-        raw_idx = p.get("idx")
-        if raw_idx is None:
+        raw = p.get("idx")
+        if raw is None:
             continue
         try:
-            struct_by_idx[int(raw_idx)] = p
+            ai_idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        real_idx = _translate(ai_idx)
+        try:
+            real_to_struct[int(real_idx)] = p
         except (TypeError, ValueError):
             continue
 
-    # XML에서 hp:p들을 document order로 수집
+    # light_xml의 hp:p들을 _idx 기반으로 수집
     try:
         root = etree.fromstring(light_xml.encode("utf-8"))
     except Exception as e:
         log.warning(f"format 관측: XML 파싱 실패 {e}")
         return {"role_formats": {}, "transitions": []}
 
-    xml_paras = root.findall(f".//{NS_HP}p")
-    # 각 hp:p의 document 순번 (0부터)
-    xml_paras_list = []
-    for i, p in enumerate(xml_paras):
-        xml_paras_list.append({
-            "xml_idx": i,  # light_xml의 순번
-            "elem": p,
-            "paraPrIDRef": p.get("paraPrIDRef", "0"),
-        })
-
-    # structure의 idx가 light_xml의 xml_idx와 일치한다고 가정
-    # (parse_structure_from_llm이 같은 순서로 idx 부여)
+    # _idx → xml elem (lighten_xml이 _idx 부여)
+    xml_by_real_idx = {}
+    # fallback: _idx 없으면 document order로 번호 부여
+    fallback_counter = 0
+    sections = [root] if root.tag == f"{NS_HP}sec" else root.findall(f".//{NS_HP}sec")
+    if not sections:
+        sections = [root]
+    for section in sections:
+        for p in section.findall(f"{NS_HP}p"):
+            ridx_str = p.get("_idx")
+            if ridx_str is not None:
+                try:
+                    xml_by_real_idx[int(ridx_str)] = p
+                except (TypeError, ValueError):
+                    xml_by_real_idx[fallback_counter] = p
+            else:
+                xml_by_real_idx[fallback_counter] = p
+            fallback_counter += 1
 
     # role별 format 샘플 수집
     role_formats = {}
-    for xml_p in xml_paras_list:
-        idx = xml_p["xml_idx"]
-        struct_p = struct_by_idx.get(idx)
-        if not struct_p:
+    for real_idx, struct_p in real_to_struct.items():
+        elem = xml_by_real_idx.get(real_idx)
+        if elem is None:
             continue
         role = struct_p.get("role", "")
         if not role:
             continue
 
-        data = _extract_indent_and_marker_data(xml_p["elem"])
+        data = _extract_indent_and_marker_data(elem)
         if data["is_blank"]:
             continue
 
@@ -2258,7 +2278,7 @@ def compute_format_observations(structure: dict, light_xml: str) -> dict:
             role_formats[role] = {
                 "indent_parts_samples": [],
                 "first_text_samples": [],
-                "marker_samples_from_ai": [],  # 1차 AI가 찾은 marker
+                "marker_samples_from_ai": [],
             }
         rf = role_formats[role]
         if len(rf["indent_parts_samples"]) < 6:
@@ -2269,15 +2289,14 @@ def compute_format_observations(structure: dict, light_xml: str) -> dict:
         if raw_marker and raw_marker not in rf["marker_samples_from_ai"]:
             rf["marker_samples_from_ai"].append(raw_marker)
 
-    # 전환(transition) 관측: structure paragraph들을 level 순서로 순회
-    # 두 structure paragraph 사이에 xml의 blank 문단이 있으면 has_blank=True
+    # 전환(transition) 관측: structure paragraph들의 real_idx를 정렬
     transitions = []
-    struct_idx_sorted = sorted(struct_by_idx.keys())
-    for i in range(len(struct_idx_sorted) - 1):
-        a_idx = struct_idx_sorted[i]
-        b_idx = struct_idx_sorted[i + 1]
-        a = struct_by_idx[a_idx]
-        b = struct_by_idx[b_idx]
+    real_sorted = sorted(real_to_struct.keys())
+    for i in range(len(real_sorted) - 1):
+        a_real = real_sorted[i]
+        b_real = real_sorted[i + 1]
+        a = real_to_struct[a_real]
+        b = real_to_struct[b_real]
         from_role = a.get("role", "")
         to_role = b.get("role", "")
         a_level = a.get("level")
@@ -2293,14 +2312,14 @@ def compute_format_observations(structure: dict, light_xml: str) -> dict:
         else:
             relation = "ascent"
 
-        # a_idx와 b_idx 사이의 xml 문단 중 blank인 것 확인
+        # a_real과 b_real 사이의 light_xml 문단 중 blank인 것 확인
         has_blank = False
         blank_paraPrIDRef = None
-        for k in range(a_idx + 1, b_idx):
-            if k >= len(xml_paras_list):
-                break
-            xml_p = xml_paras_list[k]
-            data = _extract_indent_and_marker_data(xml_p["elem"])
+        for k in range(a_real + 1, b_real):
+            elem = xml_by_real_idx.get(k)
+            if elem is None:
+                continue
+            data = _extract_indent_and_marker_data(elem)
             if data["is_blank"]:
                 has_blank = True
                 blank_paraPrIDRef = data["paraPrIDRef"]
