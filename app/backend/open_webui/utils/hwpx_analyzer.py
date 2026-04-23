@@ -2208,8 +2208,16 @@ def compute_format_observations(structure: dict, light_xml: str) -> dict:
     if not paragraphs or not light_xml:
         return {"role_formats": {}, "transitions": []}
 
-    # idx → structure paragraph
-    struct_by_idx = {p["idx"]: p for p in paragraphs if "idx" in p}
+    # idx → structure paragraph (정수로 정규화 — str/int 혼재 방지)
+    struct_by_idx = {}
+    for p in paragraphs:
+        raw_idx = p.get("idx")
+        if raw_idx is None:
+            continue
+        try:
+            struct_by_idx[int(raw_idx)] = p
+        except (TypeError, ValueError):
+            continue
 
     # XML에서 hp:p들을 document order로 수집
     try:
