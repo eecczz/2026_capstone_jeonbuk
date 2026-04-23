@@ -835,6 +835,29 @@ def _smart_truncate(text: str, limit: int) -> str:
     return text[:limit] + "…"
 
 
+def _truncate_paragraph_text(para_elem, limit: int):
+    """
+    문단 전체 텍스트를 합쳐 본 뒤 축약 (여러 <hp:t> 경계 때문에 공백이
+    잘리는 문제 방지). 첫 <hp:t>에 축약 결과 넣고 나머지는 비움.
+
+    NOTE: 문단 직계 <hp:run> 안의 <hp:t>만 대상 (표 내부 제외).
+    """
+    t_elements = []
+    for run in para_elem.findall(f"{NS_HP}run"):
+        t = run.find(f"{NS_HP}t")
+        if t is not None:
+            t_elements.append(t)
+    if not t_elements:
+        return
+    full_text = "".join(t.text or "" for t in t_elements)
+    if len(full_text) <= limit:
+        return
+    new_text = _smart_truncate(full_text, limit)
+    t_elements[0].text = new_text
+    for t in t_elements[1:]:
+        t.text = ""
+
+
 def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
     """
     대형 XML을 **구조 기반**으로 축소합니다.
@@ -1057,11 +1080,9 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
             # 점진적으로 중간 문단 텍스트를 축약 (20→15→10→5)
             final_limit = None
             for limit in (20, 15, 10, 5):
-                # middle_paras의 모든 <t> 텍스트를 limit 이하로
+                # 문단 단위로 축약 (여러 <hp:t>로 쪼개진 경우 경계 공백 보존)
                 for p in middle_paras:
-                    for t_elem in p.iter(f"{NS_HP}t"):
-                        if t_elem.text and len(t_elem.text) > limit:
-                            t_elem.text = _smart_truncate(t_elem.text, limit)
+                    _truncate_paragraph_text(p, limit)
                 result = etree.tostring(root4, encoding="unicode", pretty_print=True)
                 final_limit = limit
                 if len(result) <= max_chars:
