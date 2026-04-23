@@ -1045,64 +1045,10 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
         if collapsed_count > 0:
             result = etree.tostring(root2, encoding="unicode", pretty_print=True)
 
-    # ── 5단계: 여전히 초과 시 셀 텍스트를 더 짧게 ──
-    if len(result) > max_chars:
-        root3 = etree.fromstring(result.encode("utf-8"))
-
-        # 점진적으로 텍스트 길이를 줄여감
-        for limit in [30, 20, 10]:
-            for t_elem in root3.iter(f"{NS_HP}t"):
-                if t_elem.text and len(t_elem.text) > limit:
-                    t_elem.text = _smart_truncate(t_elem.text, limit)
-            result = etree.tostring(root3, encoding="unicode", pretty_print=True)
-            if len(result) <= max_chars:
-                break
-
-    # ── 6단계: 그래도 초과 시 — 중간 본문 문단 "뼈대만 남기기" (텍스트 축약) ──
-    # 삭제하지 않음. 문단 구조·마커는 모두 유지하고 텍스트만 공격적으로 축약.
-    # 이유: AI가 시퀀스 전체를 봐야 variant (같은 부모의 서로 다른 자식 조합) 감지 가능.
-    if len(result) > max_chars:
-        root4 = etree.fromstring(result.encode("utf-8"))
-        table_elements4 = _collect_table_elements(root4)
-        body_paras = [
-            p for p in root4.findall(f".//{NS_HP}p")
-            if p not in table_elements4 and p.find(f".//{NS_HP}tbl") is None
-        ]
-
-        KEEP_FRONT = 30  # 앞쪽 보존 영역 — role 학습용 정상 길이
-        KEEP_BACK = 15   # 뒤쪽 보존 영역
-
-        if len(body_paras) > KEEP_FRONT + KEEP_BACK + 10:
-            middle_paras = (
-                body_paras[KEEP_FRONT:-KEEP_BACK] if KEEP_BACK > 0 else body_paras[KEEP_FRONT:]
-            )
-
-            # 점진적으로 중간 문단 텍스트를 축약 (20→15→10→5)
-            final_limit = None
-            for limit in (20, 15, 10, 5):
-                # 문단 단위로 축약 (여러 <hp:t>로 쪼개진 경우 경계 공백 보존)
-                for p in middle_paras:
-                    _truncate_paragraph_text(p, limit)
-                result = etree.tostring(root4, encoding="unicode", pretty_print=True)
-                final_limit = limit
-                if len(result) <= max_chars:
-                    break
-
-            # 축약 완료 주석
-            if body_paras[KEEP_FRONT - 1].getparent() is not None:
-                anchor = body_paras[KEEP_FRONT - 1]
-                parent = anchor.getparent()
-                idx = list(parent).index(anchor) + 1
-                parent.insert(idx, etree.Comment(
-                    f" 중간 본문 문단 {len(middle_paras)}개 텍스트를 {final_limit}자 이하로 축약 "
-                    f"(앞 {KEEP_FRONT}개, 뒤 {KEEP_BACK}개는 정상 길이) "
-                ))
-            log.info(
-                f"Stage 6: middle {len(middle_paras)}개 문단 텍스트를 {final_limit}자로 축약 "
-                f"(문단 구조·마커 모두 보존)"
-            )
-
-        result = etree.tostring(root4, encoding="unicode", pretty_print=True)
+    # ── Stage 5/6 (텍스트 축약) 제거됨 ──
+    # gpt-5.4 컨텍스트 500K+라 축약 불필요.
+    # 마커와 본문 경계가 텍스트 축약 과정에서 사라지면 1차 AI가 혼란.
+    # 현재는 blank 제거 + 동일 표 묶기까지만 하고 텍스트는 원본 그대로 전달.
 
     # ── 살아남은 _idx 수집 및 재번호 부여 ──
     root_final = etree.fromstring(result.encode("utf-8"))
