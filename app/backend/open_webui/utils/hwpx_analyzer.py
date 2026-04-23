@@ -817,6 +817,24 @@ def _collect_table_elements(root) -> set:
     return table_elems
 
 
+def _smart_truncate(text: str, limit: int) -> str:
+    """
+    텍스트를 limit 자 이하로 축약하되, 마커와 내용 사이 공백을 보존.
+
+    예: "① 국내 시장 현황..." → "① …"  (공백 유지)
+        "본문123..." → "본문1…"            (공백 없으면 그냥 잘림)
+    """
+    if len(text) <= limit:
+        return text
+    # 첫 공백 찾기 (마커 경계)
+    first_space = text.find(" ", 0, limit + 1)
+    if 0 < first_space <= limit:
+        # 마커 + 공백까지 보존, 그 뒤는 …로 축약
+        return text[: first_space + 1] + "…"
+    # 공백 없으면 단순 축약
+    return text[:limit] + "…"
+
+
 def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
     """
     대형 XML을 **구조 기반**으로 축소합니다.
@@ -1012,7 +1030,7 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
         for limit in [30, 20, 10]:
             for t_elem in root3.iter(f"{NS_HP}t"):
                 if t_elem.text and len(t_elem.text) > limit:
-                    t_elem.text = t_elem.text[:limit] + "…"
+                    t_elem.text = _smart_truncate(t_elem.text, limit)
             result = etree.tostring(root3, encoding="unicode", pretty_print=True)
             if len(result) <= max_chars:
                 break
@@ -1043,7 +1061,7 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
                 for p in middle_paras:
                     for t_elem in p.iter(f"{NS_HP}t"):
                         if t_elem.text and len(t_elem.text) > limit:
-                            t_elem.text = t_elem.text[:limit] + "…"
+                            t_elem.text = _smart_truncate(t_elem.text, limit)
                 result = etree.tostring(root4, encoding="unicode", pretty_print=True)
                 final_limit = limit
                 if len(result) <= max_chars:
