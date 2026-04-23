@@ -2134,6 +2134,365 @@ def compute_parent_instance_children(structure: dict) -> dict:
     return result
 
 
+def _extract_indent_and_marker_data(para_elem) -> dict:
+    """
+    HWPX paragraph element에서 indent/marker 관련 원시 데이터 추출.
+
+    Returns:
+        {
+          "indent_parts": [{"type": "tab"}, {"type": "space", "count": 2}, ...],
+          "first_text_after_indent": "ㅇ 내용",  # 첫 비공백부터의 텍스트
+          "is_blank": bool,  # 공백만 있으면 True
+          "paraPrIDRef": str,
+        }
+    """
+    result = {
+        "indent_parts": [],
+        "first_text_after_indent": "",
+        "is_blank": True,
+        "paraPrIDRef": para_elem.get("paraPrIDRef", "0"),
+    }
+
+    found_visible = False
+    first_text = ""
+
+    # run들을 문서 순서대로 순회하며 tab/text 수집
+    for run in para_elem.findall(f"{NS_HP}run"):
+        for child in run:
+            tag = etree.QName(child).localname
+            if tag == "tab":
+                if not found_visible:
+                    result["indent_parts"].append({"type": "tab"})
+            elif tag == "t":
+                text = child.text or ""
+                if not found_visible:
+                    stripped = text.lstrip(" ")
+                    leading_spaces = len(text) - len(stripped)
+                    if leading_spaces > 0:
+                        result["indent_parts"].append({
+                            "type": "space", "count": leading_spaces
+                        })
+                    if stripped:
+                        found_visible = True
+                        result["is_blank"] = False
+                        first_text += stripped
+                else:
+                    first_text += text
+        if found_visible:
+            # 첫 run에서 text 찾았으면 더 이상 indent 수집 안 함
+            pass
+
+    result["first_text_after_indent"] = first_text
+    return result
+
+
+def compute_format_observations(structure: dict, light_xml: str) -> dict:
+    """
+    light_xml을 직접 파싱해서 1.5c 입력용 원시 관측 데이터를 만듦.
+
+    - 각 role의 indent/marker/separator 샘플
+    - 연속 문단 쌍의 blank 존재 여부 + paraPrIDRef
+      (light_xml의 빈 문단을 "전환 사이의 blank"로 해석)
+
+    Returns:
+        {
+          "role_formats": {role: {indent_parts_samples, marker_samples,
+                                  separator_samples, first_text_samples}},
+          "transitions": [
+            {from, to, relation, has_blank, blank_paraPrIDRef},
+            ...
+          ]
+        }
+    """
+    paragraphs = structure.get("paragraphs", [])
+    if not paragraphs or not light_xml:
+        return {"role_formats": {}, "transitions": []}
+
+    # idx → structure paragraph
+    struct_by_idx = {p["idx"]: p for p in paragraphs if "idx" in p}
+
+    # XML에서 hp:p들을 document order로 수집
+    try:
+        root = etree.fromstring(light_xml.encode("utf-8"))
+    except Exception as e:
+        log.warning(f"format 관측: XML 파싱 실패 {e}")
+        return {"role_formats": {}, "transitions": []}
+
+    xml_paras = root.findall(f".//{NS_HP}p")
+    # 각 hp:p의 document 순번 (0부터)
+    xml_paras_list = []
+    for i, p in enumerate(xml_paras):
+        xml_paras_list.append({
+            "xml_idx": i,  # light_xml의 순번
+            "elem": p,
+            "paraPrIDRef": p.get("paraPrIDRef", "0"),
+        })
+
+    # structure의 idx가 light_xml의 xml_idx와 일치한다고 가정
+    # (parse_structure_from_llm이 같은 순서로 idx 부여)
+
+    # role별 format 샘플 수집
+    role_formats = {}
+    for xml_p in xml_paras_list:
+        idx = xml_p["xml_idx"]
+        struct_p = struct_by_idx.get(idx)
+        if not struct_p:
+            continue
+        role = struct_p.get("role", "")
+        if not role:
+            continue
+
+        data = _extract_indent_and_marker_data(xml_p["elem"])
+        if data["is_blank"]:
+            continue
+
+        if role not in role_formats:
+            role_formats[role] = {
+                "indent_parts_samples": [],
+                "first_text_samples": [],
+                "marker_samples_from_ai": [],  # 1차 AI가 찾은 marker
+            }
+        rf = role_formats[role]
+        if len(rf["indent_parts_samples"]) < 6:
+            rf["indent_parts_samples"].append(data["indent_parts"])
+        if len(rf["first_text_samples"]) < 6:
+            rf["first_text_samples"].append(data["first_text_after_indent"][:50])
+        raw_marker = struct_p.get("marker", "")
+        if raw_marker and raw_marker not in rf["marker_samples_from_ai"]:
+            rf["marker_samples_from_ai"].append(raw_marker)
+
+    # 전환(transition) 관측: structure paragraph들을 level 순서로 순회
+    # 두 structure paragraph 사이에 xml의 blank 문단이 있으면 has_blank=True
+    transitions = []
+    struct_idx_sorted = sorted(struct_by_idx.keys())
+    for i in range(len(struct_idx_sorted) - 1):
+        a_idx = struct_idx_sorted[i]
+        b_idx = struct_idx_sorted[i + 1]
+        a = struct_by_idx[a_idx]
+        b = struct_by_idx[b_idx]
+        from_role = a.get("role", "")
+        to_role = b.get("role", "")
+        a_level = a.get("level")
+        b_level = b.get("level")
+        if not from_role or not to_role or a_level is None or b_level is None:
+            continue
+
+        # relation 판정
+        if b_level == a_level:
+            relation = "sibling"
+        elif b_level > a_level:
+            relation = "descent"
+        else:
+            relation = "ascent"
+
+        # a_idx와 b_idx 사이의 xml 문단 중 blank인 것 확인
+        has_blank = False
+        blank_paraPrIDRef = None
+        for k in range(a_idx + 1, b_idx):
+            if k >= len(xml_paras_list):
+                break
+            xml_p = xml_paras_list[k]
+            data = _extract_indent_and_marker_data(xml_p["elem"])
+            if data["is_blank"]:
+                has_blank = True
+                blank_paraPrIDRef = data["paraPrIDRef"]
+                break
+
+        transitions.append({
+            "from": from_role,
+            "to": to_role,
+            "relation": relation,
+            "has_blank": has_blank,
+            "blank_paraPrIDRef": blank_paraPrIDRef,
+        })
+
+    return {
+        "role_formats": role_formats,
+        "transitions": transitions,
+    }
+
+
+FORMAT_ANALYSIS_PROMPT = """당신은 양식의 빈 줄·들여쓰기·마커 규칙을 추출하는 전문가입니다.
+
+코드가 양식을 파싱해 **원시 관측 데이터**를 제공합니다. 이 데이터를 보고 규칙을 판정하세요.
+
+## 임무 1: format_rules (role별 포맷 규칙)
+
+각 role에 대해:
+- **indent_parts**: 들여쓰기 구성 (탭·공백 순서). 여러 샘플 중 **가장 흔한 패턴** 선택.
+  - 예: 모든 샘플이 `[{type:"tab"}]`이면 그걸 채택
+  - 예: 공백 2개가 일관되면 `[{type:"space", count:2}]`
+- **marker_style**: `fixed` 또는 `enumerate`
+  - `fixed`: 모든 샘플이 동일 마커 (`ㅇ` 반복, `□` 반복 등)
+  - `enumerate`: 마커가 순차 변화 (`➊➋➌`, `*/**/***`, `1)/2)/3)`, `①②③`, `가./나.` 등)
+- **markers_sample**: 관측된 마커들을 **등장 순서대로** 배열 (2b가 순번 확장에 사용)
+- **separator**: 마커와 내용 사이 공백 (`" "`, `""`, `"  "` 등)
+
+## 임무 2: blank_rules (전환별 빈 줄 규칙)
+
+각 `(from_role, to_role, relation)` 전환에 대해:
+- 관측 데이터의 `has_blank`를 그대로 반영 (OX)
+- 빈 줄이 있으면 `paraPrIDRef` 포함 (빈 줄의 글자 크기 결정)
+
+## 핵심 원칙
+
+- **관측을 그대로 믿기** — 샘플이 2개뿐이고 둘 다 같으면 그게 규칙
+- outlier 1건 무시 — 4건 동일·1건 다르면 다수 쪽 채택
+- enumerate 판정: 샘플이 codepoint+1이든(➊➋), 문자 반복이든(*/**), 숫자+기호든(1)/2)) 모두 enumerate
+
+## 출력 형식 (JSON만)
+
+```json
+{
+  "format_rules": {
+    "detail_item": {
+      "indent_parts": [{"type": "space", "count": 2}],
+      "marker_style": "fixed",
+      "markers_sample": ["ㅇ"],
+      "separator": " "
+    },
+    "note": {
+      "indent_parts": [{"type": "tab"}],
+      "marker_style": "enumerate",
+      "markers_sample": ["*", "**", "***"],
+      "separator": " "
+    },
+    "body_text": {
+      "indent_parts": [{"type": "space", "count": 8}],
+      "marker_style": "fixed",
+      "markers_sample": [""],
+      "separator": ""
+    }
+  },
+  "blank_rules": [
+    {
+      "from": "section_header",
+      "to": "section_header",
+      "relation": "sibling",
+      "has_blank": true,
+      "paraPrIDRef": "140"
+    },
+    {
+      "from": "section_header",
+      "to": "detail_item",
+      "relation": "descent",
+      "has_blank": false
+    }
+  ]
+}
+```
+
+## 중요
+- role 이름은 입력 데이터에 있는 그대로 사용 (절대 수정 금지)
+- `markers_sample`은 빈 문자열 `[""]`도 허용 (마커 없는 role)
+- 판단 여지 없음 — 관측 카운트대로
+- 반드시 JSON만 출력. 다른 설명 금지
+"""
+
+
+def build_format_analysis_prompt(observations: dict) -> list[dict]:
+    """
+    1.5c 호출: compute_format_observations 결과 → format_rules + blank_rules
+    """
+    role_formats = observations.get("role_formats", {})
+    transitions = observations.get("transitions", [])
+
+    lines = ["## role별 포맷 관측 샘플\n"]
+    for role, info in role_formats.items():
+        lines.append(f"\n### `{role}`")
+        samples_indent = info.get("indent_parts_samples", [])
+        samples_text = info.get("first_text_samples", [])
+        markers_ai = info.get("marker_samples_from_ai", [])
+        lines.append(f"- 관측된 indent_parts 샘플 ({len(samples_indent)}개):")
+        for s in samples_indent:
+            lines.append(f"  - {s}")
+        lines.append(f"- 관측된 마커 (1차 AI 추출): {markers_ai}")
+        lines.append(f"- 첫 텍스트 샘플 (indent 제외):")
+        for s in samples_text:
+            lines.append(f"  - {repr(s)}")
+
+    lines.append("\n## 전환(transition) 관측 데이터\n")
+    for t in transitions:
+        paraPr = t.get("blank_paraPrIDRef") or "-"
+        lines.append(
+            f"- `{t['from']}` → `{t['to']}` ({t['relation']}): "
+            f"has_blank={t['has_blank']}, blank_paraPrIDRef={paraPr}"
+        )
+
+    lines.append(
+        "\n위 관측 데이터로 format_rules + blank_rules를 JSON 출력하세요.\n"
+        "반드시 JSON만 출력."
+    )
+
+    return [
+        {"role": "system", "content": FORMAT_ANALYSIS_PROMPT},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+
+def parse_format_rules_from_llm(llm_response: str) -> dict:
+    """
+    1.5c LLM 응답에서 format_rules + blank_rules 파싱.
+
+    Returns:
+        {
+          "format_rules": {role: {...}},
+          "blank_rules": [{from, to, relation, has_blank, paraPrIDRef}, ...]
+        }
+    """
+    json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
+    if json_match:
+        raw = json_match.group(1)
+    else:
+        brace_match = re.search(r'\{[\s\S]*\}', llm_response)
+        if brace_match:
+            raw = brace_match.group(0)
+        else:
+            raise ValueError("format 응답에서 JSON을 찾을 수 없습니다")
+
+    try:
+        data = json.loads(raw, strict=False)
+    except json.JSONDecodeError:
+        repaired = _repair_json(raw)
+        try:
+            data = json.loads(repaired, strict=False)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"format JSON 파싱 실패: {e}")
+
+    result = {"format_rules": {}, "blank_rules": []}
+
+    fr_raw = data.get("format_rules", {}) if isinstance(data, dict) else {}
+    if isinstance(fr_raw, dict):
+        for role, info in fr_raw.items():
+            if not isinstance(info, dict):
+                continue
+            result["format_rules"][role] = {
+                "indent_parts": info.get("indent_parts", []),
+                "marker_style": info.get("marker_style", "fixed"),
+                "markers_sample": info.get("markers_sample", []),
+                "separator": info.get("separator", ""),
+            }
+
+    br_raw = data.get("blank_rules", []) if isinstance(data, dict) else []
+    if isinstance(br_raw, list):
+        for r in br_raw:
+            if not isinstance(r, dict):
+                continue
+            result["blank_rules"].append({
+                "from": r.get("from", ""),
+                "to": r.get("to", ""),
+                "relation": r.get("relation", ""),
+                "has_blank": bool(r.get("has_blank", False)),
+                "paraPrIDRef": r.get("paraPrIDRef") or r.get("blank_paraPrIDRef"),
+            })
+
+    log.info(
+        f"format 파싱: format_rules {len(result['format_rules'])}개, "
+        f"blank_rules {len(result['blank_rules'])}개"
+    )
+    return result
+
+
 EXCLUSIVITY_ANALYSIS_PROMPT = """당신은 계층 구조의 형제 배타 관계를 판정하는 전문가입니다.
 
 아래 **각 부모 role의 인스턴스별 직계 자식 집합**을 보고, 같은 부모 아래에서
@@ -3830,16 +4189,29 @@ section_header
 소스에서 ※로 시작하더라도 내용이 주제 설명이면 detail_item일 수 있고,
 소스에서 ㅇ로 시작하더라도 내용이 보충 설명이면 note일 수 있습니다.
 
-## 마커 규칙
-- **양식 마커를 사용하세요** — 소스 원문의 마커(◇, ◆, ⇒, ※, □ 등)는 제거하고 해당 role의 양식 마커로 교체
-- 각 role의 양식 마커가 제공됩니다. 해당 마커로 시작하세요
-- 마커가 없는 role은 마커 없이 내용만 작성
-- **마커 순번은 시스템이 자동 처리합니다** — 첫 번째 마커만 사용하세요 (예: 󰊱만 사용, 시스템이 󰊱→󰊲→󰊳 순서로 교체)
+## 마커 규칙 (format_rules 참조)
+
+프롬프트에 주어진 **"포맷 규칙"** 섹션을 확인하고 role별 marker_style에 따라:
+
+- `marker_style: fixed` — 항상 같은 마커 사용 (예: `ㅇ`, `□`)
+- `marker_style: enumerate` — markers_sample의 **순서**를 유지하고, 샘플을 넘어가면 **자연스럽게 확장**:
+  - `["➊","➋","➌"]` 4번째는 `➍`, 5번째는 `➎` (유니코드 +1)
+  - `["*","**","***"]` 4번째는 `****` (반복 확장)
+  - `["1)","2)"]` 3번째는 `3)`, 4번째는 `4)` (번호 증가)
+  - **절대 다시 ➊, *, 1)로 돌아가지 마세요**
+
+## 들여쓰기 — 신경 쓰지 마세요
+
+출력 text에 **앞 공백/탭 넣지 마세요**. 조립 단계에서 자동 부착됩니다.
+마커 + separator + 내용으로 시작하세요:
+- 예: `"ㅇ 세부 내용"` (ㅇ + 공백 + 내용)
+- 예: `"➊ 첫번째"` (➊ + 공백 + 내용)
+- 예: `"순수 본문 내용"` (마커 없는 role)
 
 ## 텍스트 작성 규칙
 - **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요** — description은 role 선택의 참고용이며 출력 텍스트에 포함하면 안 됩니다
 - 소스의 실제 내용만 작성하세요
-- 소스의 원래 마커는 제거하고 양식 마커로 교체하세요
+- 소스의 원래 마커(◇, ◆, ⇒, ※, □ 등)는 제거하고 양식 마커로 교체하세요
 
 ## 출력 형식
 
@@ -3917,6 +4289,7 @@ def build_section_fill_prompt(
     content_images: list[str] = None,
     pdf_text: str = "",
     exclusive_rules: list = None,
+    format_rules: dict = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -3929,7 +4302,8 @@ def build_section_fill_prompt(
         content_text: 직접 입력 텍스트
         content_images: PDF 페이지 base64 JPEG 이미지 리스트
         pdf_text: PDF에서 추출한 텍스트
-        exclusive_rules: 1.5차에서 추출한 형제 배타 규칙 (선택)
+        exclusive_rules: 1.5b의 형제 배타 규칙 (선택)
+        format_rules: 1.5c의 role별 포맷 규칙 (선택)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
@@ -3952,6 +4326,38 @@ def build_section_fill_prompt(
 
     pattern_roles = set()
     _collect_roles(pattern, pattern_roles)
+
+    # format_rules 섹션 — 현재 chapter 패턴에 등장하는 role만
+    format_text = ""
+    if format_rules:
+        lines_f = ["## 포맷 규칙 (marker 사용법)\n"]
+        for role in pattern_roles:
+            rule = format_rules.get(role)
+            if not rule:
+                continue
+            style = rule.get("marker_style", "fixed")
+            samples = rule.get("markers_sample", [])
+            sep = rule.get("separator", "")
+            if style == "enumerate" and samples:
+                lines_f.append(
+                    f"- `{role}`: marker_style=**enumerate**. "
+                    f"샘플 순서 `{samples}`. 샘플을 넘어가면 이어서 확장."
+                )
+            elif samples and any(s for s in samples):
+                mk = samples[0] if samples else ""
+                lines_f.append(
+                    f"- `{role}`: marker_style=**fixed**, 마커 `{mk}` 고정."
+                )
+            else:
+                lines_f.append(f"- `{role}`: 마커 없음.")
+            if sep:
+                lines_f.append(f"  (마커 뒤 구분자: `{repr(sep)}`)")
+        if len(lines_f) > 1:
+            lines_f.append(
+                "\n**출력 규칙**: text는 `마커 + separator + 내용`으로 시작. "
+                "앞 공백/탭 절대 넣지 마세요 (조립에서 자동 부착)."
+            )
+            format_text = "\n".join(lines_f) + "\n\n"
 
     exclusive_text = ""
     if exclusive_rules:
@@ -4018,6 +4424,7 @@ def build_section_fill_prompt(
         f"**{chapter_title}** (타입: {chapter_type_name})\n\n"
         f"## 이 섹션의 role 패턴\n"
         f"아래 패턴에 따라 내용을 배치하세요:\n{pattern_text}\n\n"
+        f"{format_text}"
         f"{exclusive_text}"
         f"## 사용 가능한 role 상세\n"
         f"{catalog_text}\n\n"

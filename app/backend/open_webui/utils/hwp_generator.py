@@ -802,58 +802,59 @@ def assemble_hwpx_hybrid(
         f"table_box: {sum(role_is_table_box.values())}개"
     )
 
-    # ── 2단계: exemplar 요소 저장 (deepcopy + prefix 추출 + ctrl/linesegarray 제거) ──
+    # ── 2단계: exemplar 요소 저장 (deepcopy + ctrl/linesegarray 제거) ──
     exemplars = {}  # role → deepcopy된 XML element
-    role_text_prefix = {}  # role → 원본 텍스트의 앞 공백 (들여쓰기 보존용)
     for role, idx in role_exemplar_idx.items():
         if 0 <= idx < len(doc.paragraphs):
             elem = deepcopy(doc.paragraphs[idx].element)
-            # 원본 텍스트에서 앞 공백(prefix) 추출
-            role_text_prefix[role] = _extract_text_prefix(elem, NS)
             _strip_document_ctrls(elem, NS)
             _strip_linesegarray(elem, NS)
             exemplars[role] = elem
-            log.debug(f"exemplar 저장: {role} (idx={idx}, prefix={repr(role_text_prefix[role])})")
 
-    # spacer exemplar 별도 저장 (빈 줄 자동 삽입용)
-    # 판별: level 0 + 실제 텍스트 없음 (이름 매칭 대신 속성 기반)
-    spacer_exemplar = None
-    for p in paragraphs_info:
-        if p.get("level", 0) != 0:
+    # blank exemplars by paraPrIDRef — 1.5c의 blank_rules에서 paraPrIDRef로 선택
+    blank_exemplars = {}  # paraPrIDRef → element
+    for i, para in enumerate(doc.paragraphs):
+        if (para.text or "").strip():
             continue
-        real_idx = _to_real_idx(p.get("idx", -1))
-        if 0 <= real_idx < len(doc.paragraphs):
-            para = doc.paragraphs[real_idx]
-            if not (para.text or "").strip():
-                spacer_exemplar = deepcopy(para.element)
-                _strip_linesegarray(spacer_exemplar, NS)
-                _strip_secpr(spacer_exemplar, NS)
-                break
-    # spacer exemplar 못 찾으면 빈 문단 생성
-    if spacer_exemplar is None and len(doc.paragraphs) > 0:
-        spacer_exemplar = deepcopy(doc.paragraphs[0].element)
-        _strip_linesegarray(spacer_exemplar, NS)
-        _strip_document_ctrls(spacer_exemplar, NS)
-        _strip_secpr(spacer_exemplar, NS)
-        # 모든 run의 텍스트 비우기
-        for run in spacer_exemplar.findall(f"{NS}run"):
+        pp = para.element.get("paraPrIDRef", "0")
+        if pp not in blank_exemplars:
+            blank_el = deepcopy(para.element)
+            _strip_linesegarray(blank_el, NS)
+            _strip_secpr(blank_el, NS)
+            blank_exemplars[pp] = blank_el
+
+    # fallback: 어떤 blank도 못 찾으면 첫 문단을 비워 사용
+    if not blank_exemplars and len(doc.paragraphs) > 0:
+        fb = deepcopy(doc.paragraphs[0].element)
+        _strip_linesegarray(fb, NS)
+        _strip_document_ctrls(fb, NS)
+        _strip_secpr(fb, NS)
+        for run in fb.findall(f"{NS}run"):
             t = run.find(f"{NS}t")
             if t is not None:
                 t.text = ""
                 for child in list(t):
                     t.remove(child)
-            # 표/container 제거
             for tbl in run.findall(f"{NS}tbl"):
                 run.remove(tbl)
             for cont in run.findall(f"{NS}container"):
                 run.remove(cont)
+        blank_exemplars["0"] = fb
 
-    # role → level 매핑 (spacer 삽입 판단용)
+    # role → level 매핑 (전환 관계 판단용)
     role_level = {}
     for p in paragraphs_info:
         role = p.get("role", "")
         if role and role not in role_level:
             role_level[role] = p.get("level", 0)
+
+    # 1.5c 규칙 로드
+    format_rules = structure.get("format_rules", {})
+    blank_rules = structure.get("blank_rules", [])
+    blank_lookup = {}
+    for r in blank_rules:
+        key = (r.get("from", ""), r.get("to", ""), r.get("relation", ""))
+        blank_lookup[key] = r
 
     # ── 3단계: header 영역 처리 ──
     # header는 {role_name: text} 형태 — role 이름을 AI가 자유롭게 지정
@@ -906,9 +907,10 @@ def assemble_hwpx_hybrid(
         f"header {len(header_indices)}개 보존"
     )
 
-    # ── 5단계: body 항목으로 문서 재조립 (prefix 보존 + spacer 자동 삽입) ──
+    # ── 5단계: body 항목으로 문서 재조립 (format_rules 기반 indent + blank_rules 기반 blank) ──
     body_items = content.get("body", [])
-    prev_level = -1
+    prev_role = None
+    prev_level = None
 
     for item in body_items:
         role = item.get("role", "")
@@ -920,29 +922,67 @@ def assemble_hwpx_hybrid(
 
         cur_level = role_level.get(role, 0)
 
-        # spacer 자동 삽입: level이 올라가거나 같은 level의 heading이면 빈 줄 추가
-        if spacer_exemplar is not None and prev_level >= 0:
-            if cur_level <= prev_level and cur_level <= 2:
-                section_elem.append(deepcopy(spacer_exemplar))
+        # ── blank_rules 적용: 전환 관계에 따라 빈 줄 삽입 ──
+        if prev_role is not None and prev_level is not None:
+            if cur_level == prev_level:
+                relation = "sibling"
+            elif cur_level > prev_level:
+                relation = "descent"
+            else:
+                relation = "ascent"
+            rule = blank_lookup.get((prev_role, role, relation))
+            if rule and rule.get("has_blank"):
+                paraPr = rule.get("paraPrIDRef") or "0"
+                blank_el = (
+                    blank_exemplars.get(paraPr)
+                    or blank_exemplars.get("0")
+                    or (next(iter(blank_exemplars.values())) if blank_exemplars else None)
+                )
+                if blank_el is not None:
+                    section_elem.append(deepcopy(blank_el))
 
-        # 텍스트에 exemplar의 앞 공백(들여쓰기) 적용
-        prefix = role_text_prefix.get(role, "")
-        if prefix and not text.startswith(prefix):
-            # AI 텍스트가 마커로 시작하면 마커 앞에 prefix 삽입
-            text = prefix + text
+        # ── format_rules 적용: AI 앞공백 제거 후 indent_parts로 재구성 ──
+        fmt = format_rules.get(role, {})
+        indent_parts = fmt.get("indent_parts", [])
+        clean_text = text.lstrip(" \t")
+
+        # 공백은 t.text에 prepend, tab은 <hp:tab/> 요소로 삽입
+        space_prefix = ""
+        num_tabs = 0
+        for part in indent_parts:
+            ptype = part.get("type") if isinstance(part, dict) else None
+            if ptype == "tab":
+                num_tabs += 1
+            elif ptype == "space":
+                space_prefix += " " * int(part.get("count", 0) or 0)
 
         # exemplar 복제
         new_elem = deepcopy(exemplars[role])
 
-        # 텍스트 교체
+        # 텍스트 교체 (공백 prefix 포함)
         try:
             is_tbl_box = role_is_table_box.get(role, False)
-            _set_cloned_element_text(new_elem, text, NS, is_tbl_box)
+            _set_cloned_element_text(new_elem, space_prefix + clean_text, NS, is_tbl_box)
+
+            # 탭 삽입 (table_box가 아닐 때만)
+            if num_tabs > 0 and not is_tbl_box:
+                runs = new_elem.findall(f"{NS}run")
+                if runs:
+                    first_run = runs[0]
+                    t_elem = first_run.find(f"{NS}t")
+                    if t_elem is not None:
+                        t_index = list(first_run).index(t_elem)
+                        for _ in range(num_tabs):
+                            tab_elem = etree.Element(f"{NS}tab")
+                            first_run.insert(t_index, tab_elem)
+                            t_index += 1
+
             section_elem.append(new_elem)
             success_count += 1
         except Exception as e:
             errors.append(f"assemble({role}): {e}")
 
+        prev_role = role
         prev_level = cur_level
 
     log.info(
@@ -956,23 +996,6 @@ def assemble_hwpx_hybrid(
         fail_count=len(errors),
         errors=errors,
     )
-
-
-def _extract_text_prefix(elem, NS: str) -> str:
-    """
-    XML 요소에서 첫 번째 텍스트의 앞 공백(들여쓰기)을 추출합니다.
-    예: " ㅇ 레미콘..." → " " (앞 공백 1칸)
-    예: "      * 차량..." → "      " (앞 공백 6칸)
-    표/container 내부도 탐색합니다.
-    """
-    for t in elem.iter(f"{NS}t"):
-        if t.text:
-            # 앞 공백만 추출
-            stripped = t.text.lstrip()
-            if stripped:
-                leading = t.text[:len(t.text) - len(stripped)]
-                return leading
-    return ""
 
 
 def _strip_secpr(elem, NS: str):

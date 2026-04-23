@@ -1146,6 +1146,9 @@ async def generate_hwpx_dynamic_endpoint(
             compute_parent_instance_children,
             build_exclusivity_analysis_prompt,
             parse_exclusivity_from_llm,
+            compute_format_observations,
+            build_format_analysis_prompt,
+            parse_format_rules_from_llm,
         )
         messages_level = build_level_analysis_prompt(structure)
         log.info(f"[HWP-DEBUG] 1.5a 요청: {len(structure.get('paragraphs', []))}개 문단 level 판단")
@@ -1179,6 +1182,27 @@ async def generate_hwpx_dynamic_endpoint(
                 exclusive_rules = []
             if exclusive_rules:
                 structure["exclusive_rules"] = exclusive_rules
+
+        # 1.5c: 양식 XML 관측 → format/blank 규칙 AI 판정
+        format_obs = compute_format_observations(structure, light_xml)
+        if format_obs.get("role_formats") or format_obs.get("transitions"):
+            messages_format = build_format_analysis_prompt(format_obs)
+            try:
+                llm_content_format = await _call_llm(messages_format, "hwpx_format_analysis")
+                log.info(f"[HWP-DEBUG] 1.5c LLM 응답 ({len(llm_content_format)}자)")
+                parsed_format = parse_format_rules_from_llm(llm_content_format)
+                fmt_rules = parsed_format.get("format_rules", {})
+                blnk_rules = parsed_format.get("blank_rules", [])
+                log.info(
+                    f"[HWP-DEBUG] 1.5c 파싱: format_rules {len(fmt_rules)}개, "
+                    f"blank_rules {len(blnk_rules)}개"
+                )
+                if fmt_rules:
+                    structure["format_rules"] = fmt_rules
+                if blnk_rules:
+                    structure["blank_rules"] = blnk_rules
+            except Exception as e:
+                log.warning(f"[HWP-DEBUG] 1.5c 판정 실패: {e}")
 
         # chapter_types 생성 (level 기반 트리 + variant 분리)
         structure = build_chapter_types_from_structure(structure)
@@ -1317,6 +1341,7 @@ async def generate_hwpx_dynamic_endpoint(
                 content_images=content_images,
                 pdf_text=section_pdf_text,
                 exclusive_rules=structure.get("exclusive_rules", []),
+                format_rules=structure.get("format_rules", {}),
             )
 
             log.info(f"[HWP-DEBUG] 2b[{ch_idx}] 요청: type={ch_type}, title={ch_title}, roles={list(section_catalog.keys())}")
