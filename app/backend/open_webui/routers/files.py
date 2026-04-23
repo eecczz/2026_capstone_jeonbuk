@@ -1150,11 +1150,18 @@ async def generate_hwpx_dynamic_endpoint(
         llm_content_level = await _call_llm(messages_level, "hwpx_level_analysis")
         log.info(f"[HWP-DEBUG] 1.5차 LLM 응답 ({len(llm_content_level)}자):\n{llm_content_level}")
 
-        level_map = parse_level_from_llm(llm_content_level)
-        log.info(f"[HWP-DEBUG] 1.5차 파싱: {len(level_map)}개 level 결정")
+        level_parsed = parse_level_from_llm(llm_content_level)
+        level_map = level_parsed["level_map"]
+        exclusive_rules = level_parsed.get("exclusive_rules", [])
+        log.info(
+            f"[HWP-DEBUG] 1.5차 파싱: {len(level_map)}개 level 결정, "
+            f"배타 규칙 {len(exclusive_rules)}개"
+        )
 
-        # level을 structure에 병합
-        structure = merge_levels_into_structure(structure, level_map)
+        # level + exclusive_rules을 structure에 병합
+        structure = merge_levels_into_structure(
+            structure, level_map, exclusive_rules=exclusive_rules
+        )
 
         # chapter_types 생성 (level 기반 트리 + variant 분리)
         structure = build_chapter_types_from_structure(structure)
@@ -1292,6 +1299,7 @@ async def generate_hwpx_dynamic_endpoint(
                 content_text=content_text,
                 content_images=content_images,
                 pdf_text=section_pdf_text,
+                exclusive_rules=structure.get("exclusive_rules", []),
             )
 
             log.info(f"[HWP-DEBUG] 2b[{ch_idx}] 요청: type={ch_type}, title={ch_title}, roles={list(section_catalog.keys())}")

@@ -1578,6 +1578,26 @@ LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 계층 구조(level) 분석 
 - level은 **양식 내 상대적 깊이**입니다. 절대값이 아닙니다.
 - 같은 role이면 대부분 같은 level (예외: 문맥에 따라 다를 수 있음)
 
+## 형제 배타 규칙 (exclusive_rules) — level과 함께 출력
+
+level 배정으로 트리를 만들고 나면, 각 부모 role 아래 **형제 자식들 간의 배타 관계**도 함께 출력하세요.
+
+### 배타란?
+같은 부모 인스턴스 안에서 **절대 같이 나오지 않는 형제 role 그룹들**. 예를 들어 section_header 아래:
+- 어떤 section_header 인스턴스는 `detail_item`(ㅇ)만 가지고
+- 다른 section_header 인스턴스는 `key_point`(➊➋➌) 만 가진다면
+- → `detail_item`과 `key_point`는 **배타**
+
+### 판단 기준
+1. 같은 부모 role의 **여러 인스턴스를 비교** — 자식 구성이 서로 다른 스타일로 갈리는가?
+2. 마커 스타일이 섞이지 않는가? (예: 한 부모 밑에서 `*`가 나오면 `1)`가 안 나오고, 반대도)
+3. 한 번이라도 같이 나타나면 배타 아님 — 확실한 경우에만 규칙화
+
+### 판단 원리 요약
+- 양식은 "틀"이라서 **모든 부모 인스턴스가 동일한 자식 조합을 가질 필요 없음**
+- 각 인스턴스는 사용할 자식 variant를 고를 수 있음 (예: 어떤 섹션은 ㅇ 스타일, 어떤 섹션은 ➊ 스타일)
+- 이걸 AI(2b)가 작성할 때 힌트로 사용하도록 명시해주는 것이 목적
+
 ## 출력 형식
 반드시 아래 JSON만 출력하세요. 다른 설명은 포함하지 마세요.
 
@@ -1585,16 +1605,35 @@ LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 계층 구조(level) 분석 
 {
   "levels": [
     {"idx": 0, "level": 0},
-    {"idx": 1, "level": 0},
-    {"idx": 2, "level": 0},
-    {"idx": 3, "level": 0},
     {"idx": 4, "level": 1},
     {"idx": 5, "level": 2},
-    {"idx": 6, "level": 3},
-    {"idx": 7, "level": 4}
+    {"idx": 6, "level": 3}
+  ],
+  "exclusive_rules": [
+    {
+      "parent": "section_header",
+      "variants": [
+        ["detail_item"],
+        ["key_point"]
+      ],
+      "reason": "같은 section_header 밑에서 ㅇ(detail_item)과 ➊(key_point)이 섞이지 않음"
+    },
+    {
+      "parent": "key_point",
+      "variants": [
+        ["note", "action_item"],
+        ["sub_detail", "body_text"]
+      ],
+      "reason": "*▪ 스타일과 1)본문 스타일이 서로 섞이지 않음"
+    }
   ]
 }
 ```
+
+### exclusive_rules 주의사항
+- **확실한 경우에만** 규칙화. 증거가 약하면 빈 배열 `"exclusive_rules": []`
+- variants는 2개 이상이어야 의미 있음
+- variants 간 공통 자식(core)은 각 variant에 모두 포함시켜도 되고, 아예 빼도 됨 — 안전하게 포함시키는 것 권장
 
 ## 중요
 - **모든 idx의 level을 출력하세요** — 하나도 빠뜨리지 마세요
@@ -2001,10 +2040,16 @@ def build_level_analysis_prompt(structure_json: dict, signals: dict = None) -> l
 
 def parse_level_from_llm(llm_response: str) -> dict:
     """
-    1.5차 LLM 응답에서 levels를 파싱합니다.
+    1.5차 LLM 응답에서 levels + exclusive_rules를 파싱합니다.
 
     Returns:
-        {idx: level} dict
+        {
+            "level_map": {idx: level},
+            "exclusive_rules": [
+                {"parent": str, "variants": [[role,...], ...], "reason": str},
+                ...
+            ],
+        }
     """
     json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
     if json_match:
@@ -2029,29 +2074,59 @@ def parse_level_from_llm(llm_response: str) -> dict:
     if not isinstance(levels_list, list):
         raise ValueError(f"levels가 배열이 아닙니다: {type(levels_list)}")
 
-    result = {}
+    level_map = {}
     for entry in levels_list:
         if not isinstance(entry, dict):
             continue
         idx = entry.get("idx")
         level = entry.get("level")
         if idx is not None and level is not None:
-            result[int(idx)] = int(level)
+            level_map[int(idx)] = int(level)
 
-    log.info(f"level 파싱: {len(result)}개 문단")
-    return result
+    # exclusive_rules 파싱 (선택적 — 없으면 빈 리스트)
+    exclusive_rules = []
+    if isinstance(data, dict):
+        raw_rules = data.get("exclusive_rules", [])
+        if isinstance(raw_rules, list):
+            for r in raw_rules:
+                if not isinstance(r, dict):
+                    continue
+                parent = r.get("parent", "")
+                variants = r.get("variants", [])
+                if not parent or not isinstance(variants, list) or len(variants) < 2:
+                    continue
+                norm_variants = []
+                for v in variants:
+                    if isinstance(v, list):
+                        roles = [str(x) for x in v if isinstance(x, str)]
+                        if roles:
+                            norm_variants.append(roles)
+                if len(norm_variants) >= 2:
+                    exclusive_rules.append({
+                        "parent": parent,
+                        "variants": norm_variants,
+                        "reason": r.get("reason", ""),
+                    })
+
+    log.info(
+        f"level 파싱: {len(level_map)}개 문단, 배타 규칙 {len(exclusive_rules)}개"
+    )
+    return {"level_map": level_map, "exclusive_rules": exclusive_rules}
 
 
-def merge_levels_into_structure(structure: dict, level_map: dict) -> dict:
+def merge_levels_into_structure(
+    structure: dict, level_map: dict, exclusive_rules: list = None
+) -> dict:
     """
-    parse_structure_from_llm 결과에 level_map을 병합합니다.
+    parse_structure_from_llm 결과에 level_map + exclusive_rules를 병합합니다.
 
     Args:
         structure: paragraphs/tables를 포함하는 dict (level 없음)
         level_map: {idx: level}
+        exclusive_rules: 1.5차 AI가 출력한 형제 배타 규칙 리스트 (선택)
 
     Returns:
-        paragraphs에 level이 추가된 dict
+        paragraphs에 level이 추가되고, exclusive_rules 키가 붙은 dict
     """
     paragraphs = structure.get("paragraphs", [])
     for p in paragraphs:
@@ -2061,6 +2136,8 @@ def merge_levels_into_structure(structure: dict, level_map: dict) -> dict:
         else:
             # level 없으면 기본값 (보수적으로 가장 깊은 레벨)
             p.setdefault("level", 0)
+    if exclusive_rules:
+        structure["exclusive_rules"] = exclusive_rules
     return structure
 
 
@@ -3523,6 +3600,7 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
    - `필수(최소 1개)`: 반드시 1개 이상 포함
    - `선택(생략 가능)`: 해당 내용이 소스에 없으면 생략
 4. **children 관계를 지키세요** — 부모 role 뒤에 자식 role이 와야 합니다
+5. **형제 배타 규칙이 주어지면 반드시 지키세요** — 프롬프트에 "형제 배타 규칙" 섹션이 있으면, 각 부모 인스턴스마다 제시된 variant 중 **하나만** 사용. 한 인스턴스 안에서 variant를 섞지 마세요. (인스턴스마다 다른 variant를 쓰는 것은 OK)
 
 ## ⚠️ 소스와 양식의 주제가 완전히 다를 수 있음
 
@@ -3663,6 +3741,7 @@ def build_section_fill_prompt(
     content_text: str = "",
     content_images: list[str] = None,
     pdf_text: str = "",
+    exclusive_rules: list = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -3675,6 +3754,7 @@ def build_section_fill_prompt(
         content_text: 직접 입력 텍스트
         content_images: PDF 페이지 base64 JPEG 이미지 리스트
         pdf_text: PDF에서 추출한 텍스트
+        exclusive_rules: 1.5차에서 추출한 형제 배타 규칙 (선택)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
@@ -3686,6 +3766,65 @@ def build_section_fill_prompt(
 
     # 패턴 트리 텍스트
     pattern_text = _format_pattern_tree(pattern, role_markers)
+
+    # 이번 패턴에 등장하는 role들만 수집 → 관련된 배타 규칙만 추림
+    def _collect_roles(pat: dict, acc: set):
+        for r, info in pat.items():
+            acc.add(r)
+            ch = info.get("children", {})
+            if ch:
+                _collect_roles(ch, acc)
+
+    pattern_roles = set()
+    _collect_roles(pattern, pattern_roles)
+
+    exclusive_text = ""
+    if exclusive_rules:
+        relevant = []
+        for rule in exclusive_rules:
+            parent = rule.get("parent", "")
+            variants = rule.get("variants", [])
+            if parent not in pattern_roles:
+                continue
+            # variant 내 role도 패턴에 존재하는 것만 유지
+            filtered_variants = [
+                [r for r in v if r in pattern_roles] for v in variants
+            ]
+            filtered_variants = [v for v in filtered_variants if v]
+            if len(filtered_variants) < 2:
+                continue
+            relevant.append({
+                "parent": parent,
+                "variants": filtered_variants,
+                "reason": rule.get("reason", ""),
+            })
+        if relevant:
+            lines = ["## ⚠️ 형제 배타 규칙 (인스턴스 단위)\n"]
+            lines.append(
+                "각 부모 role의 **인스턴스마다** 아래 variant 중 하나를 선택해서 "
+                "자식을 배치하세요. 한 인스턴스 안에서 서로 다른 variant의 role을 섞지 마세요.\n"
+            )
+            lines.append("**인스턴스마다 다른 variant를 쓸 수 있습니다.** "
+                         "예: 첫 번째 section_header는 variant A, 두 번째는 variant B.\n")
+            for rule in relevant:
+                parent = rule["parent"]
+                parent_marker = role_markers.get(parent, "")
+                marker_str = f" (마커: \"{parent_marker}\")" if parent_marker else ""
+                lines.append(f"\n### 부모: `{parent}`{marker_str}")
+                for i, variant in enumerate(rule["variants"]):
+                    marker_strs = []
+                    for r in variant:
+                        m = role_markers.get(r, "")
+                        marker_strs.append(
+                            f"`{r}`" + (f' ("{m}")' if m else "")
+                        )
+                    lines.append(
+                        f"- variant {chr(ord('A')+i)}: " + ", ".join(marker_strs)
+                    )
+                reason = rule.get("reason", "")
+                if reason:
+                    lines.append(f"  이유: {reason}")
+            exclusive_text = "\n".join(lines) + "\n\n"
 
     # role 카탈로그 텍스트
     catalog_lines = []
@@ -3704,6 +3843,7 @@ def build_section_fill_prompt(
         f"**{chapter_title}** (타입: {chapter_type_name})\n\n"
         f"## 이 섹션의 role 패턴\n"
         f"아래 패턴에 따라 내용을 배치하세요:\n{pattern_text}\n\n"
+        f"{exclusive_text}"
         f"## 사용 가능한 role 상세\n"
         f"{catalog_text}\n\n"
         f"## 소스 자료\n"
