@@ -906,45 +906,9 @@ def assemble_hwpx_hybrid(
         f"header {len(header_indices)}개 보존"
     )
 
-    # ── 4.5단계: role별 마커 시퀀스 수집 (순번 자동 교체용) ──
-    # 같은 role의 마커가 변하는 패턴을 수집: {"task_detail": ["󰊱","󰊲","󰊳"], ...}
-    # 단, 연속 유니코드 순번(codepoint가 1씩 증가)인 경우에만 순번 교체 대상
-    role_marker_seq = {}
-    for p in paragraphs_info:
-        role = p.get("role", "")
-        marker = p.get("marker", "")
-        if role and marker:
-            if role not in role_marker_seq:
-                role_marker_seq[role] = []
-            if marker not in role_marker_seq[role]:
-                role_marker_seq[role].append(marker)
-
-    def _is_sequential_markers(markers: list[str]) -> bool:
-        """마커가 연속 유니코드 순번인지 확인 (예: 󰊱→󰊲→󰊳, ➊→➋→➌)"""
-        if len(markers) < 2:
-            return False
-        # 각 마커의 첫 글자 codepoint가 1씩 증가하는지 확인
-        codepoints = [ord(m[0]) for m in markers if m]
-        if len(codepoints) < 2:
-            return False
-        for i in range(1, len(codepoints)):
-            if codepoints[i] != codepoints[i - 1] + 1:
-                return False
-        return True
-
-    # 연속 순번 마커이고 2개 이상인 role만 순번 교체 대상
-    role_marker_seq = {
-        r: ms for r, ms in role_marker_seq.items()
-        if len(ms) >= 2 and _is_sequential_markers(ms)
-    }
-    if role_marker_seq:
-        log.info(f"마커 시퀀스: {role_marker_seq}")
-
     # ── 5단계: body 항목으로 문서 재조립 (prefix 보존 + spacer 자동 삽입) ──
     body_items = content.get("body", [])
     prev_level = -1
-    prev_role = ""
-    role_marker_counter = {}  # role → 현재 순번 인덱스
 
     for item in body_items:
         role = item.get("role", "")
@@ -960,20 +924,6 @@ def assemble_hwpx_hybrid(
         if spacer_exemplar is not None and prev_level >= 0:
             if cur_level <= prev_level and cur_level <= 2:
                 section_elem.append(deepcopy(spacer_exemplar))
-
-        # 마커 순번 자동 교체
-        if role in role_marker_seq:
-            markers = role_marker_seq[role]
-            if role != prev_role:
-                # 새 role 시작 → 카운터 리셋
-                role_marker_counter[role] = 0
-            idx = role_marker_counter.get(role, 0)
-            if idx < len(markers):
-                old_marker = markers[0]  # AI가 항상 첫 번째 마커를 사용
-                new_marker = markers[idx]
-                if old_marker and old_marker != new_marker and old_marker in text:
-                    text = text.replace(old_marker, new_marker, 1)
-            role_marker_counter[role] = idx + 1
 
         # 텍스트에 exemplar의 앞 공백(들여쓰기) 적용
         prefix = role_text_prefix.get(role, "")
@@ -994,7 +944,6 @@ def assemble_hwpx_hybrid(
             errors.append(f"assemble({role}): {e}")
 
         prev_level = cur_level
-        prev_role = role
 
     log.info(
         f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
