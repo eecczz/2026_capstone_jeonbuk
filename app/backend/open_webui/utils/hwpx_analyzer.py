@@ -1448,12 +1448,34 @@ _idx가 있는 모든 문단에 대해:
 - **charPrIDRef**: 첫 번째 <hp:run>의 charPrIDRef 속성값 (참고용)
 
 ### role 부여 규칙
-role은 **마커 종류 + 의미적 역할**이 기준입니다. 서식 속성(paraPrIDRef, charPrIDRef)은 role 분류에 사용하지 마세요.
+role은 **마커 계열(family) + 의미적 역할**이 기준입니다. 서식 속성(paraPrIDRef, charPrIDRef)은 role 분류에 사용하지 마세요.
 
-1. **같은 마커 종류 → 반드시 같은 role** (예: 모든 "□" 문단 → section_header)
-2. **paraPrIDRef/charPrIDRef가 달라도 마커가 같으면 같은 role을 사용하세요** — 서식 미세 차이로 role을 나누지 마세요
-3. **다른 마커 종류이면 다른 role** (예: ㅇ와 ➊는 다른 role)
-4. **🚫 alt1, alt2, _sub, _1, _2 같은 숫자/접미사로 role 세분화 금지** — 같은 의미면 하나의 role 이름만 사용
+#### "같은 마커 계열"의 정의 (중요)
+
+**enumeration(순번) 관계에 있는 마커들은 같은 계열 → 같은 role**:
+- `*`, `**`, `***`, `****` → 모두 같은 role (별표 반복 순번)
+- `1)`, `2)`, `3)`, `4)` → 모두 같은 role (숫자+괄호 순번)
+- `①`, `②`, `③`, `④` → 모두 같은 role (원문자 순번)
+- `➊`, `➋`, `➌`, `➍` → 모두 같은 role (네거 원문자 순번)
+- `가.`, `나.`, `다.`, `라.` → 모두 같은 role (한글 순서)
+- `Ⅰ.`, `Ⅱ.`, `Ⅲ.` → 모두 같은 role (로마 순서)
+
+즉 **시퀀스를 형성하는 변형은 하나의 role**. 깊이·순번 차이로 role 나누지 마세요.
+(2b에서 marker_style=enumerate로 확장 — 관측 패턴 넘어가는 순번도 자동 처리)
+
+#### role 분리가 맞는 경우
+
+**base 문자 자체가 다를 때만 다른 role**:
+- `ㅇ` vs `➊` → 다른 role (동그라미 vs 네거 원문자, 계열이 다름)
+- `*` vs `□` → 다른 role (별표 vs 박스)
+- `ㅇ` vs `*` → 다른 role (동그라미 vs 별표)
+
+#### 규칙 요약
+
+1. **같은 계열(시퀀스 관계) → 반드시 같은 role** — `*, **, ***`도 한 role, `1), 2), 3)`도 한 role
+2. **paraPrIDRef/charPrIDRef 달라도 같은 계열이면 같은 role** — 서식 미세 차이로 나누지 마세요
+3. **base 문자 family가 다를 때만 다른 role** (예: ㅇ와 ➊는 다른 role)
+4. **🚫 note/subnote/deep_note, note_1/note_2 같은 깊이·순번 접미사로 role 세분화 금지**
 5. 마커가 없는 문단은 **위치와 의미**로 판단: cover_title, cover_date, cover_org, toc, chapter_title, strategy_header 등
 6. role 이름은 자유롭게 지정하되, 의미있는 이름을 사용하세요
    예: "chapter_title", "section_header", "detail_item", "note", "summary_box", "task_header", "task_detail"
