@@ -2218,25 +2218,39 @@ def build_exclusivity_analysis_prompt(
     if role_markers is None:
         role_markers = {}
 
-    def _mk(role):
-        m = role_markers.get(role, "")
-        return f"{role}({m})" if m else role
+    # role 이름과 마커를 섞지 않기 — AI가 role 이름에 마커를 포함시키는 버그 방지
+    used_roles = set()
+    for parent_role, instances in parent_instances.items():
+        used_roles.add(parent_role)
+        for inst in instances:
+            used_roles.update(inst)
 
-    lines = ["## 각 부모 role의 직계 자식 인스턴스\n"]
+    lines = []
+    if role_markers:
+        lines.append("## role 목록 (참고용 마커)")
+        lines.append("role 이름과 마커는 **별개**입니다. 출력에는 role 이름만 쓰고 마커는 쓰지 마세요.\n")
+        for r in sorted(used_roles):
+            m = role_markers.get(r, "")
+            lines.append(f"- `{r}`: 마커 \"{m}\"" if m else f"- `{r}`: (마커 없음)")
+        lines.append("")
+
+    lines.append("## 각 부모 role의 직계 자식 인스턴스")
+    lines.append("(아래 표의 role 이름을 그대로 출력에 사용하세요 — 마커 붙이지 말 것)\n")
     for parent_role, instances in parent_instances.items():
         non_empty_count = sum(1 for inst in instances if inst)
         lines.append(
-            f"\n### {_mk(parent_role)} — 총 {len(instances)}개 인스턴스 "
+            f"\n### 부모: `{parent_role}` — 총 {len(instances)}개 인스턴스 "
             f"({non_empty_count}개는 자식 있음)"
         )
         for i, inst in enumerate(instances):
             if inst:
-                children_str = ", ".join(_mk(r) for r in sorted(inst))
+                children_str = ", ".join(f"`{r}`" for r in sorted(inst))
                 lines.append(f"- inst {i}: {{{children_str}}}")
             else:
                 lines.append(f"- inst {i}: {{}}")
     lines.append(
         "\n위 데이터를 기반으로 exclusive_rules를 JSON으로 출력하세요.\n"
+        "**role 이름에 마커(괄호 포함) 붙이지 말고 위 표의 이름 그대로 사용.**\n"
         "반드시 JSON만 출력."
     )
     user_msg = "\n".join(lines)
@@ -2277,25 +2291,42 @@ def parse_exclusivity_from_llm(llm_response: str) -> list:
     if not isinstance(raw_rules, list):
         return []
 
+    def _strip_marker_suffix(name: str) -> str:
+        """AI가 'role(marker)' 형태로 출력한 경우 괄호 이후 제거 (방어적 파싱)"""
+        if not isinstance(name, str):
+            return ""
+        # 'role_name(anything)' → 'role_name'
+        return re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+
     result = []
     for r in raw_rules:
         if not isinstance(r, dict):
             continue
-        parent = r.get("parent", "")
+        parent = _strip_marker_suffix(r.get("parent", ""))
         variants = r.get("variants", [])
         if not parent or not isinstance(variants, list) or len(variants) < 2:
             continue
         norm_variants = []
         for v in variants:
             if isinstance(v, list):
-                roles = [str(x) for x in v if isinstance(x, str)]
+                roles = [_strip_marker_suffix(x) for x in v if isinstance(x, str)]
+                roles = [r for r in roles if r]
                 if roles:
                     norm_variants.append(roles)
         if len(norm_variants) >= 2:
+            raw_pairs = r.get("pairs_never_cooccurred", [])
+            norm_pairs = []
+            if isinstance(raw_pairs, list):
+                for pair in raw_pairs:
+                    if isinstance(pair, list) and len(pair) == 2:
+                        a = _strip_marker_suffix(pair[0])
+                        b = _strip_marker_suffix(pair[1])
+                        if a and b:
+                            norm_pairs.append([a, b])
             result.append({
                 "parent": parent,
                 "variants": norm_variants,
-                "pairs_never_cooccurred": r.get("pairs_never_cooccurred", []),
+                "pairs_never_cooccurred": norm_pairs,
             })
 
     log.info(f"배타 규칙 파싱: {len(result)}개")
