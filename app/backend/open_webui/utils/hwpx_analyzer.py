@@ -2291,42 +2291,25 @@ def parse_exclusivity_from_llm(llm_response: str) -> list:
     if not isinstance(raw_rules, list):
         return []
 
-    def _strip_marker_suffix(name: str) -> str:
-        """AI가 'role(marker)' 형태로 출력한 경우 괄호 이후 제거 (방어적 파싱)"""
-        if not isinstance(name, str):
-            return ""
-        # 'role_name(anything)' → 'role_name'
-        return re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
-
     result = []
     for r in raw_rules:
         if not isinstance(r, dict):
             continue
-        parent = _strip_marker_suffix(r.get("parent", ""))
+        parent = r.get("parent", "")
         variants = r.get("variants", [])
         if not parent or not isinstance(variants, list) or len(variants) < 2:
             continue
         norm_variants = []
         for v in variants:
             if isinstance(v, list):
-                roles = [_strip_marker_suffix(x) for x in v if isinstance(x, str)]
-                roles = [r for r in roles if r]
+                roles = [str(x) for x in v if isinstance(x, str)]
                 if roles:
                     norm_variants.append(roles)
         if len(norm_variants) >= 2:
-            raw_pairs = r.get("pairs_never_cooccurred", [])
-            norm_pairs = []
-            if isinstance(raw_pairs, list):
-                for pair in raw_pairs:
-                    if isinstance(pair, list) and len(pair) == 2:
-                        a = _strip_marker_suffix(pair[0])
-                        b = _strip_marker_suffix(pair[1])
-                        if a and b:
-                            norm_pairs.append([a, b])
             result.append({
                 "parent": parent,
                 "variants": norm_variants,
-                "pairs_never_cooccurred": norm_pairs,
+                "pairs_never_cooccurred": r.get("pairs_never_cooccurred", []),
             })
 
     log.info(f"배타 규칙 파싱: {len(result)}개")
