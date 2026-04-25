@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import zipfile
-from itertools import combinations, product
+from itertools import combinations
 from lxml import etree
 from typing import Optional
 
@@ -3612,72 +3612,22 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         if not role_info:
             continue
 
-        exclusive = _detect_exclusive_children(body_paras, role_info)
+        # 챕터 단위 variant 분리는 하지 않음 — 모든 variant를 한 type 안에 optional로 포함.
+        # 인스턴스 단위 variant 선택은 1d 배타규칙(structure["exclusive_rules"])을 보고
+        # 2b가 인스턴스마다 결정함. 같은 chapter 안에서 다른 variant 공존 가능.
+        # (chapter간 구조 차이는 _pattern_signature dedup으로 자동 type_1 / type_2 분리됨)
+        pattern = _build_pattern(role_info)
+        sig = _pattern_signature(pattern)
 
-        if exclusive:
-            # 배타적 자식 → 변형별로 타입 분리
-            exclusive_items = list(exclusive.items())
-            variant_combos = list(product(
-                *[variants for _, variants in exclusive_items]
-            ))
-            variant_combos = variant_combos[:8]  # 변형 수 제한
-
+        if sig not in sig_to_type:
             type_counter += 1
-            base_num = type_counter
-
-            log.info(
-                f"배타적 자식 감지 → {len(variant_combos)}개 변형 분리: "
-                + ", ".join(
-                    f"{pr}={[set(v) for v in vs]}"
-                    for pr, vs in exclusive_items
-                )
-            )
-
-            for i, combo in enumerate(variant_combos):
-                children_filter = {}
-                marker_descs = []
-                for (parent_role, _), variant in zip(exclusive_items, combo):
-                    children_filter[parent_role] = variant
-                    md = _get_variant_marker_desc(
-                        body_paras, parent_role, variant
-                    )
-                    if md:
-                        marker_descs.append(md)
-
-                variant_pattern = _build_pattern(role_info, children_filter)
-                sig = _pattern_signature(variant_pattern)
-
-                if sig in sig_to_type:
-                    continue
-
-                suffix = chr(ord('a') + i)
-                type_name = f"type_{base_num}{suffix}"
-                marker_info = " / ".join(marker_descs)
-                pattern_summary = _pattern_summary(variant_pattern)
-                variant_desc = (
-                    f"{pattern_summary} · {marker_info}"
-                    if marker_info else pattern_summary
-                )
-                sig_to_type[sig] = type_name
-                chapter_types[type_name] = {
-                    "title_role": title_role,
-                    "description": variant_desc,
-                    "pattern": variant_pattern,
-                }
-        else:
-            # 일반 케이스: 배타적 자식 없음
-            pattern = _build_pattern(role_info)
-            sig = _pattern_signature(pattern)
-
-            if sig not in sig_to_type:
-                type_counter += 1
-                type_name = f"type_{type_counter}"
-                sig_to_type[sig] = type_name
-                chapter_types[type_name] = {
-                    "title_role": title_role,
-                    "description": _pattern_summary(pattern),
-                    "pattern": pattern,
-                }
+            type_name = f"type_{type_counter}"
+            sig_to_type[sig] = type_name
+            chapter_types[type_name] = {
+                "title_role": title_role,
+                "description": _pattern_summary(pattern),
+                "pattern": pattern,
+            }
 
     log.info(
         f"chapter_types 코드 생성: {len(chapters)}개 챕터 → "
@@ -4343,7 +4293,9 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
    - `필수(최소 1개)`: 반드시 1개 이상 포함
    - `선택(생략 가능)`: 해당 내용이 소스에 없으면 생략
 4. **children 관계를 지키세요** — 부모 role 뒤에 자식 role이 와야 합니다
-5. **형제 배타 규칙이 주어지면 반드시 지키세요** — 프롬프트에 "형제 배타 규칙" 섹션이 있으면, 각 부모 인스턴스마다 제시된 variant 중 **하나만** 사용. 한 인스턴스 안에서 variant를 섞지 마세요. (인스턴스마다 다른 variant를 쓰는 것은 OK)
+5. **형제 배타 규칙이 주어지면 반드시 지키세요** — 프롬프트에 "형제 배타 규칙" 섹션이 있으면, 각 부모 인스턴스마다 제시된 variant 중 **하나만** 사용. 한 인스턴스 안에서 variant를 섞지 마세요.
+   - **인스턴스마다 다른 variant 적극 활용**: 양식이 여러 variant를 제공하는 이유는 인스턴스마다 다른 표현이 가능하다는 뜻. 모든 인스턴스에 같은 variant만 쓰지 말고, **소스 내용의 성격(나열·각주·세부 단계·요약 등)에 맞는 variant를 인스턴스마다 적합하게 선택**하세요.
+   - 예: 한 부모의 인스턴스 1번에는 보충 설명 variant, 인스턴스 2번에는 각주 variant, 인스턴스 3번에는 세부 단계 variant 등 — 소스 내용이 그렇게 갈리면 그대로 다양하게 사용.
 
 ## ⚠️ 소스와 양식의 주제가 완전히 다를 수 있음
 
@@ -4594,8 +4546,13 @@ def build_section_fill_prompt(
                 "각 부모 role의 **인스턴스마다** 아래 variant 중 하나를 선택해서 "
                 "자식을 배치하세요. 한 인스턴스 안에서 서로 다른 variant의 role을 섞지 마세요.\n"
             )
-            lines.append("**인스턴스마다 다른 variant를 쓸 수 있습니다.** "
-                         "예: 첫 번째 section_header는 variant A, 두 번째는 variant B.\n")
+            lines.append(
+                "**인스턴스마다 소스 내용 성격에 맞는 variant를 적극 다양하게 선택하세요.** "
+                "양식이 여러 variant를 제공하는 이유는 인스턴스마다 다른 표현이 가능하다는 뜻입니다. "
+                "모든 인스턴스에 같은 variant만 쓰지 말고, 소스 내용이 갈리면 그대로 다양하게 사용. "
+                "예: 첫 인스턴스는 variant A (예: 보충 설명), 두 번째는 variant B (예: 각주), "
+                "세 번째는 variant C (예: 세부 단계).\n"
+            )
             for rule in relevant:
                 parent = rule["parent"]
                 parent_marker = role_markers.get(parent, "")
