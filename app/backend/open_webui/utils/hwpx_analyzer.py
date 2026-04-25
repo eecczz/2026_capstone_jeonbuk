@@ -4243,17 +4243,14 @@ def compute_exclusivity_rules_code(parent_instances: dict) -> list[dict]:
             continue
 
         # variants = co-occurrence 그래프의 maximal cliques
-        # 그래프: 같이 등장한 적 있는 두 자식 사이에 edge
+        # 그래프: 같이 등장한 적 있는 두 자식 사이에 edge (self-loop 금지)
         adj = {c: set() for c in all_children}
         for (a, b), cnt in pair_cooc.items():
             if cnt > 0:
                 adj[a].add(b)
                 adj[b].add(a)
-        # 자기 자신은 항상 가능 (singleton variant)
-        for c in all_children:
-            adj[c].add(c)
 
-        # Bron-Kerbosch maximal clique (작은 그래프)
+        # Bron-Kerbosch maximal clique (singleton도 자동으로 잡힘)
         cliques = []
         def _bk(R, P, X):
             if not P and not X:
