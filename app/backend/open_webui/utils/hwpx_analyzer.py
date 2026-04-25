@@ -4197,6 +4197,206 @@ def _normalize_marker_type(marker: str) -> str:
     return f"char_{first}"
 
 
+def compute_exclusivity_rules_code(parent_instances: dict) -> list[dict]:
+    """
+    1d 코드 구현 — 자식 쌍 공존 카운트 → 배타 variant 묶음.
+
+    AI 호출 대체. 결정적·고속·무토큰.
+
+    Args:
+        parent_instances: {parent_role: [{children_set}, ...]}
+                          compute_parent_instance_children() 결과
+
+    Returns:
+        [{"parent": str, "variants": [[role, ...], ...],
+          "pairs_never_cooccurred": [[a, b], ...]}, ...]
+    """
+    from itertools import combinations
+
+    rules = []
+    for parent, instances in parent_instances.items():
+        if not instances or len(instances) < 2:
+            continue
+
+        # 모든 자식 role 수집
+        all_children = set()
+        for inst in instances:
+            all_children |= set(inst)
+        if len(all_children) < 2:
+            continue
+
+        # 쌍별 co-occurrence count
+        pair_cooc = {}
+        for inst in instances:
+            inst_set = set(inst)
+            for a, b in combinations(sorted(inst_set), 2):
+                pair_cooc[(a, b)] = pair_cooc.get((a, b), 0) + 1
+
+        # 한 번도 공존 안 한 쌍
+        never_pairs = []
+        for a, b in combinations(sorted(all_children), 2):
+            if pair_cooc.get((a, b), 0) == 0:
+                never_pairs.append([a, b])
+
+        if not never_pairs:
+            # 모든 쌍이 한 번 이상 공존 → 배타 없음
+            continue
+
+        # variants = co-occurrence 그래프의 maximal cliques
+        # 그래프: 같이 등장한 적 있는 두 자식 사이에 edge
+        adj = {c: set() for c in all_children}
+        for (a, b), cnt in pair_cooc.items():
+            if cnt > 0:
+                adj[a].add(b)
+                adj[b].add(a)
+        # 자기 자신은 항상 가능 (singleton variant)
+        for c in all_children:
+            adj[c].add(c)
+
+        # Bron-Kerbosch maximal clique (작은 그래프)
+        cliques = []
+        def _bk(R, P, X):
+            if not P and not X:
+                if R:
+                    cliques.append(frozenset(R))
+                return
+            for v in list(P):
+                _bk(R | {v}, P & adj[v], X & adj[v])
+                P = P - {v}
+                X = X | {v}
+        _bk(set(), set(all_children), set())
+        # 부분집합 제거 (maximal만)
+        maximal = []
+        for c in cliques:
+            if not any(c < other for other in cliques):
+                maximal.append(c)
+        # 중복 제거
+        unique_maximal = []
+        seen = set()
+        for c in maximal:
+            if c not in seen:
+                seen.add(c)
+                unique_maximal.append(c)
+
+        rules.append({
+            "parent": parent,
+            "variants": [sorted(list(v)) for v in unique_maximal],
+            "pairs_never_cooccurred": never_pairs,
+        })
+
+    return rules
+
+
+def compute_format_rules_code(observations: dict) -> dict:
+    """
+    1e 코드 구현 — 관측 카운트 기반 format_rules + blank_rules.
+
+    AI 호출 대체. 결정적·고속·무토큰.
+
+    Args:
+        observations: compute_format_observations() 결과
+                      {role_formats: {role: {indent_parts_samples, first_text_samples,
+                                              marker_samples_from_ai}},
+                       transitions: [...]}
+
+    Returns:
+        {format_rules: {role: {indent_parts, marker_style, markers_sample, separator}},
+         blank_rules: [{from, to, relation, has_blank, paraPrIDRef?}]}
+    """
+    from collections import Counter
+
+    role_formats_obs = observations.get("role_formats", {})
+    transitions = observations.get("transitions", [])
+
+    format_rules = {}
+    for role, samples in role_formats_obs.items():
+        # indent_parts: 가장 흔한 패턴
+        indent_samples = samples.get("indent_parts_samples", [])
+        if indent_samples:
+            tup_samples = []
+            for s in indent_samples:
+                if isinstance(s, list):
+                    tup_samples.append(tuple(
+                        (d.get("type"), d.get("count")) for d in s if isinstance(d, dict)
+                    ))
+                else:
+                    tup_samples.append(())
+            most_common_tup = Counter(tup_samples).most_common(1)[0][0]
+            indent_parts = []
+            for t, c in most_common_tup:
+                d = {"type": t}
+                if c is not None:
+                    d["count"] = c
+                indent_parts.append(d)
+        else:
+            indent_parts = []
+
+        # markers
+        marker_samples = samples.get("marker_samples_from_ai", []) or []
+        markers_clean = [m for m in marker_samples if m]
+        unique_markers = list(dict.fromkeys(markers_clean))  # preserve order, dedupe
+
+        if not unique_markers:
+            marker_style = "fixed"
+            markers_sample = [""]
+        elif len(unique_markers) == 1:
+            marker_style = "fixed"
+            markers_sample = unique_markers
+        else:
+            # 같은 family면 enumerate, 다르면 fixed (fallback)
+            families = set(_normalize_marker_type(m) for m in unique_markers)
+            if len(families) <= 1:
+                marker_style = "enumerate"
+            else:
+                marker_style = "fixed"
+            markers_sample = unique_markers
+
+        # separator: first_text_samples에서 marker 다음 공백 추출
+        first_texts = samples.get("first_text_samples", [])
+        sep_candidates = []
+        for ft in first_texts:
+            if not isinstance(ft, str) or not ft:
+                continue
+            for mk in unique_markers:
+                if mk and ft.startswith(mk):
+                    rest = ft[len(mk):]
+                    # 첫 비공백 전까지의 공백을 separator로
+                    sep = ""
+                    for ch in rest:
+                        if ch in (" ", "\t", " "):
+                            sep += ch
+                        else:
+                            break
+                    sep_candidates.append(sep)
+                    break
+        separator = " "
+        if sep_candidates:
+            separator = Counter(sep_candidates).most_common(1)[0][0]
+
+        format_rules[role] = {
+            "indent_parts": indent_parts,
+            "marker_style": marker_style,
+            "markers_sample": markers_sample,
+            "separator": separator,
+        }
+
+    # blank_rules
+    blank_rules = []
+    for t in transitions:
+        rule = {
+            "from": t.get("from"),
+            "to": t.get("to"),
+            "relation": t.get("relation"),
+            "has_blank": bool(t.get("has_blank")),
+        }
+        ppr = t.get("blank_paraPrIDRef") or t.get("paraPrIDRef")
+        if ppr:
+            rule["paraPrIDRef"] = ppr
+        blank_rules.append(rule)
+
+    return {"format_rules": format_rules, "blank_rules": blank_rules}
+
+
 def compute_paragraph_features(paragraphs: list[dict]) -> list[dict]:
     """
     각 문단에 local feature를 추가 (AI 1·AI 2 입력용).
