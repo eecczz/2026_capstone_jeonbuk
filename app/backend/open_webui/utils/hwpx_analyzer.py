@@ -1513,75 +1513,93 @@ rowCnt="1" colCnt="1"인 표는 **텍스트 상자/강조 박스**입니다.
 """
 
 
-LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 계층 구조(level) 분석 전문가입니다.
-1a에서 추출한 문단 목록(marker + description)을 받아, 각 문단의 **level(계층 깊이)**을 결정합니다.
+LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 **전체 구조** 분석 전문가입니다 (AI 2).
+AI 1이 제공한 role 후보 + 점수 + features와 전체 시퀀스를 보고 **최종 구조**를 결정합니다.
 
-## level이란?
-문서의 계층적 깊이를 나타내는 정수값입니다.
-- 0: 최상위 (표지, 날짜, 기관명, 목차 등)
-- 1: 대제목 (장)
-- 2: 중제목
-- 3: 소제목
-- 4, 5, 6...: 더 깊은 세부 항목
+## 역할 분담
+- AI 1 (이전 단계): 각 문단별 role 후보 + 점수
+- **AI 2 (이 단계)**: 전체 시퀀스 + 후보 → final_role + level + parent_idx + sibling_group_id
 
-## 판단 원리: 의미적 위계 (description 우선, 마커는 보조)
+## 입력
+각 문단마다:
+- role_candidates: AI 1의 후보 + 점수
+- marker, marker_family, description
+- features: paraPrIDRef, prev/next marker(family), same_paraPr_run
 
-각 문단의 **description**이 그 문단의 역할·의미를 알려준다. level은 description이 시사하는 의미적 위계로 결정한다.
+## 임무
+각 문단에 대해:
+1. **final_role**: AI 1 1순위 후보를 기본 채택. **위치/구조상 어색하면 다른 후보 선택 또는 새 role 부여 (override 권한)**
+2. **level**: 계층 깊이 (0=최상위, 1=대제목, 2,3,...)
+3. **parent_idx**: 직접 부모 문단의 idx (최상위면 null)
+4. **sibling_group_id**: 같은 부모 아래 형제 그룹 식별자 (예: "children_of_<parent_idx>" 또는 같은 부모 아래 배타 variant 있으면 "children_of_<parent_idx>_v1")
 
-### 원리 1: 의미 비교로 위계 판단
+## 결정 원칙
 
-연속된 두 문단(A → B)을 비교할 때 다음 질문을 던진다:
+### A. 구조 신호 우선 (level 결정)
 
-- B의 description이 A와 **같은 종류의 정보를 같은 위계에서** 다루고 있다 → **같은 level**
-- B의 description이 A를 **부연·보충·세부화·예시화·주석화**하는 의미다 → **종속 (자식, level+1)**
-- B의 description이 A를 **포괄하는 더 큰 단위·상위 카테고리**다 → **상위로 이동 (직전 어느 부모와 같은 level로 복귀)**
+- **same_paraPr_run = true 연속**: 양식 작성자가 같은 위계로 묶었다는 강한 신호 → 같은 level
+- **marker_family 같은 연속**: enumeration siblings → 같은 level
+- **marker_family 다른 등장 (interleaved)**: 기존 family 사이에 끼어 있으면 → 자식 (level+1)
+- **marker_family 다른 등장 (replace)**: 기존 family 끝나고 통째 교체면 → 같은 level 가능
+- **description**: 위 신호가 모호할 때 보조 ("부연/세부/보충" → 자식 / "평행 항목" → 같은 level)
 
-### 원리 2: 마커에 대한 태도
+### B. role override (final_role 결정)
 
-마커의 외형(글자 종류, 반복 횟수, 형태, 글리프)은 작성자가 시각적으로 구분하려고 붙인 표시일 뿐, **hierarchy를 정의하지 않는다**.
+기본은 AI 1 1순위 채택. 다음 경우 override:
+- **같은 role이 너무 다른 위치(level)에 등장**: AI 1이 동일 role 후보 줬는데 위치 보니 의미 다른 경우 → 위치별로 다른 role 부여 (예: chapter top의 ➊ → "chapter_numbered_item", sub-item의 ➊ → "sub_action_item")
+- **AI 1 1순위가 위치상 어색**: 후보 2~3순위 중 위치 맞는 것으로
+- **AI 1 후보가 모두 안 맞음**: 새 role 직접 부여 (드물게)
 
-- 같은 의미적 위계의 항목이 다른 마커로 표시되는 경우는 흔하다
-- 다른 의미적 위계가 같은/유사한 마커로 표시되기도 한다
+### C. parent_idx + sibling_group_id
 
-**마커가 다르다는 이유만으로 자동으로 level을 변경하지 마라.** description의 의미가 "같은 위계"를 시사하면 마커가 달라도 같은 level이다. 의미가 "종속"을 시사하면 마커가 같아도 자식이다.
+- parent_idx: 직전에 등장한 더 얕은 level의 문단 idx
+- sibling_group_id: `children_of_<parent_idx>`. 같은 부모 아래 자식이 배타 variant로 나뉘면 `_v1`, `_v2` 접미사
 
-마커는 description의 의미가 모호하거나 동률일 때만 보조 단서로 참고한다.
+### D. 주의
 
-### 원리 3: 마커 없는 문단
+- 마커 외형(별 갯수, 숫자 증가, 글리프 시리즈)은 enumeration 표시 — 같은 level
+- 마커 family 전환이 항상 자식을 뜻하진 않음 — 위치·description 종합
 
-description만 가지고 판단한다. 표지·목차·날짜 성격이면 0, 대제목이면 1, 그 아래 위계로 내려갈수록 숫자 증가.
-
-### 원리 4: 들여쓰기/indent (참고용)
-
-XML에 indent 정보가 있으면 참고하되, **원리 1의 의미적 판단을 우선**한다. indent는 작성자의 시각적 결정이라 의미와 다를 수 있다.
-
-## 주의사항
-- 특정 마커 종류·외형을 외워서 적용하지 마라. 양식마다 마커가 다르다.
-- description이 모호하거나 잘못 추정된 경우에만 마커·indent로 보조 판단하라.
-- level은 **양식 내 상대적 깊이**다. 절대값이 아니다.
-
-## 출력 형식
-반드시 아래 JSON만 출력하세요. 다른 설명은 포함하지 마세요.
+## 출력 형식 (JSON만)
 
 ```json
 {
-  "levels": [
-    {"idx": 0, "level": 0},
-    {"idx": 1, "level": 0},
-    {"idx": 2, "level": 0},
-    {"idx": 3, "level": 0},
-    {"idx": 4, "level": 1},
-    {"idx": 5, "level": 2},
-    {"idx": 6, "level": 3},
-    {"idx": 7, "level": 4}
+  "paragraphs": [
+    {
+      "idx": 0,
+      "final_role": "cover_title_box",
+      "level": 0,
+      "parent_idx": null,
+      "sibling_group_id": "roots",
+      "role_overridden": false
+    },
+    {
+      "idx": 4,
+      "final_role": "chapter_title_box",
+      "level": 1,
+      "parent_idx": null,
+      "sibling_group_id": "roots",
+      "role_overridden": false
+    },
+    {
+      "idx": 5,
+      "final_role": "section_header",
+      "level": 2,
+      "parent_idx": 4,
+      "sibling_group_id": "children_of_4",
+      "role_overridden": false
+    }
   ]
 }
 ```
 
+`role_overridden`: AI 1의 1순위와 다른 role을 선택했을 때 true. 디버그용.
+
 ## 중요
-- **모든 idx의 level을 출력하세요** — 하나도 빠뜨리지 마세요
-- level은 정수. 최상위는 0
-- 반드시 JSON만 출력. 다른 설명 포함 금지
+- **모든 idx 출력** (빠뜨리지 마세요)
+- final_role / level / parent_idx / sibling_group_id 4개 필드 필수
+- parent_idx는 null 또는 정수 (string 금지)
+- 반드시 JSON만 출력
 """
 
 CONTENT_MAPPING_PROMPT = """당신은 HWPX 문서 작성 전문가입니다.
@@ -1864,114 +1882,78 @@ def build_structure_analysis_prompt(
 
 def build_level_analysis_prompt(structure_json: dict, signals: dict = None) -> list[dict]:
     """
-    1.5차 호출: 구조 분석 결과 → 각 문단의 level 결정
+    1b 호출 (AI 2, global): role 후보 + features → final_role + level + parent_idx + sibling_group_id
 
     Args:
-        structure_json: build_structure_analysis_prompt/parse_structure_from_llm의 결과
-                        paragraphs에 idx/role/marker/description이 있어야 함
-        signals: compute_role_context_signals() 결과 (선택, 있으면 프롬프트에 포함)
+        structure_json: paragraphs에 role_candidates + features (compute_paragraph_features 적용)
+                        가 있어야 함
+        signals: 옵션 (text preview 용)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
     """
     paragraphs = structure_json.get("paragraphs", [])
 
-    # signals에서 paragraph 텍스트 맵
     text_by_idx = {}
     if signals:
         for pt in signals.get("paragraph_texts", []):
             text_by_idx[pt.get("idx")] = pt.get("text", "")
 
-    # 문단 입력: idx, marker, text(있으면), description (1a는 role 제공 안 함)
     para_lines = []
     for p in paragraphs:
         idx = p.get("idx", -1)
         marker = p.get("marker", "")
+        marker_family = p.get("marker_family", "")
         desc = p.get("description", "")
-        marker_str = f'"{marker}"' if marker else '""'
+        prev_marker = p.get("prev_marker", "")
+        next_marker = p.get("next_marker", "")
+        prev_family = p.get("prev_marker_family", "")
+        next_family = p.get("next_marker_family", "")
+        same_paraPr = p.get("same_paraPr_run", False)
+        para_pr = p.get("paraPrIDRef", "")
+        cands = p.get("role_candidates", [])
+
         text_preview = text_by_idx.get(idx, "")[:80] if text_by_idx else ""
+
+        # 후보 압축 표시: [(role, score), ...]
+        cands_str = json.dumps(
+            [{"role": c.get("role"), "score": c.get("score")} for c in cands],
+            ensure_ascii=False
+        )
+
+        marker_str = f'"{marker}"' if marker else '""'
+        feature_parts = [
+            f'"idx": {idx}',
+            f'"marker": {marker_str}',
+            f'"marker_family": "{marker_family}"',
+            f'"description": {json.dumps(desc, ensure_ascii=False)}',
+            f'"paraPrIDRef": "{para_pr}"',
+            f'"prev_marker_family": "{prev_family}"',
+            f'"next_marker_family": "{next_family}"',
+            f'"same_paraPr_run": {str(same_paraPr).lower()}',
+            f'"role_candidates": {cands_str}',
+        ]
         if text_preview:
-            text_esc = (
-                text_preview.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
-            )
-            para_lines.append(
-                f'{{"idx": {idx}, "marker": {marker_str}, '
-                f'"text": "{text_esc}", "description": "{desc}"}}'
-            )
-        else:
-            para_lines.append(
-                f'{{"idx": {idx}, "marker": {marker_str}, "description": "{desc}"}}'
-            )
+            feature_parts.append(f'"text": {json.dumps(text_preview, ensure_ascii=False)}')
+        para_lines.append("{" + ", ".join(feature_parts) + "}")
+
     para_text = "[\n  " + ",\n  ".join(para_lines) + "\n]"
 
-    # signals 섹션 (선택적)
-    signals_section = ""
-    if signals:
-        compressed = signals.get("compressed_sequence", "")
-        role_to_letter = signals.get("role_to_letter", {})
-        role_stats = signals.get("role_stats", {})
-        adjacency = signals.get("adjacency", {})
-
-        signals_section += "\n## 구조 시그널 (코드 추출)\n\n"
-        if compressed:
-            signals_section += f"### 압축 시퀀스\n`{compressed}`\n\n"
-            if role_to_letter:
-                signals_section += "### role → letter 매핑\n"
-                for r, l in role_to_letter.items():
-                    signals_section += f"- {l} = {r}\n"
-                signals_section += "\n"
-        if role_stats:
-            signals_section += "### Role별 등장 통계\n"
-            for role, stats in role_stats.items():
-                cnt = stats.get("count", 0)
-                markers = stats.get("markers", [])
-                mk_preview = markers[:3]
-                if len(markers) > 3:
-                    mk_preview.append(f"...외 {len(markers) - 3}개")
-                signals_section += f"- {role}: {cnt}회, markers={mk_preview}\n"
-            signals_section += "\n"
-        if adjacency.get("prev"):
-            signals_section += "### 인접 role 통계 (각 role 직전에 무엇이 왔나)\n"
-            for r, prevs in adjacency["prev"].items():
-                signals_section += f"- {r} ← {prevs}\n"
-            signals_section += "\n"
-
     user_msg = (
-        "아래는 양식의 문단 목록 + 구조 분석 시그널입니다. "
-        "각 문단에 대해 **level(계층 깊이)**을 결정하세요.\n"
-        + signals_section
-        + "## ⚠️ level 값이 어떻게 쓰이는지 (반드시 숙지)\n"
-        "당신이 주는 level 숫자는 **스택 알고리즘**으로 parent-child 트리를 만드는 데 쓰입니다:\n"
-        "- **같은 level 값** = 서로 **형제** 관계 (공통 부모의 자식들)\n"
-        "- **직전 문단 level + 1** = 그 직전 문단의 **자식**\n"
-        "- **이전 level로 복귀** = 공통 부모의 또 다른 자식 블록 시작\n\n"
-        "예를 들어 `chapter_title(1) → summary_box(2) → section_header(3)` 이렇게 주면\n"
-        "코드는 **section_header가 summary_box의 자식**이라고 해석합니다.\n"
-        "반면 `chapter_title(1) → summary_box(2) → section_header(2)`로 주면\n"
-        "둘 다 chapter_title의 자식(형제 관계)으로 해석됩니다.\n\n"
-        "## ⚠️ 자주 틀리는 케이스 — 서두/결어 박스 오인\n"
-        "양식 첫머리나 끝에 나오는 **요약/서두/결어성 박스**는 뒤의 본문과 **형제**입니다.\n"
-        "- 서두 박스(summary, intro, abstract 등): 챕터/섹션 시작 직후 등장, 자식 없음, 1개만 등장\n"
-        "- 결어 박스(transition, conclusion 등): 챕터/섹션 끝에 등장, 자식 없음, 1개만 등장\n"
-        "- 이런 박스는 **자신과 형제인 실 본문 role과 같은 level**이어야 합니다.\n\n"
-        "### 잘못된 예 ❌\n"
-        "```\nchapter_title (1)\n  summary_box (2)  ← 서두\n    section_header (3) ← summary 자식으로 잘못 해석됨!\n      detail_item (4)\n  transition_box (2) ← 결어\n```\n"
-        "### 올바른 예 ✓\n"
-        "```\nchapter_title (1)\n  summary_box (2)  ← chapter의 자식\n  section_header (2) ← chapter의 자식 (summary와 형제)\n    detail_item (3)\n  transition_box (2) ← chapter의 자식\n```\n\n"
-        "### 서두/결어 박스 판별 팁\n"
-        "1. 바로 뒤에 여러 role이 반복 등장하는가? → 뒤의 것들이 본문, 박스는 서두\n"
-        "2. 챕터 내에서 1회만 등장하는가? (role_stats count가 작음) → 서두/결어 후보\n"
-        "3. 자신의 '자식'으로 보이는 role들이 다른 챕터에서는 박스 없이도 등장하는가? → 형제 관계\n\n"
-        "## 기타 판단 원리\n"
-        "- **실제 텍스트 내용(text 필드)을 보고 의미적 계층 파악** — 제일 중요\n"
-        "- 압축 시퀀스와 인접 role 통계로 자식 관계 추정\n"
-        "- 같은 role이라도 맥락 다르면 인스턴스별로 다른 level 가능\n"
-        "- 같은 마커 시퀀스의 연속은 같은 level\n"
-        "- 마커 없는 cover_title/date/org/toc은 level 0\n"
-        "- 마커 없는 chapter_title은 level 1\n"
-        "- 문단 순서대로 시퀀스 흐름을 추적해서 판단\n\n"
+        "아래는 AI 1이 분석한 문단 목록 + role 후보 + features입니다.\n"
+        "전체 시퀀스를 보고 각 문단의 final_role + level + parent_idx + sibling_group_id를 결정하세요.\n\n"
+        "## 결정 단계\n"
+        "1. 시퀀스 흐름 + features로 parent-child 관계 파악 (parent_idx)\n"
+        "2. parent_idx에서 level 도출 (parent의 level + 1, 최상위는 0)\n"
+        "3. AI 1 후보 1순위 채택. 위치/구조상 어색하면 다른 후보 또는 새 role (override)\n"
+        "4. 같은 부모 아래 자식들의 sibling_group_id 부여\n\n"
+        "## features 활용\n"
+        "- same_paraPr_run = true: 직전과 같은 paraPr → 같은 위계의 형제 가능성 높음\n"
+        "- marker_family 같은 연속 → enumeration siblings (같은 level)\n"
+        "- marker_family 다른 등장 (interleaved 패턴) → 자식 가능성\n"
+        "- marker_family 다른 등장 (replace 패턴) → 같은 level 가능\n\n"
         f"## 문단 목록\n```json\n{para_text}\n```\n\n"
-        "반드시 JSON만 출력하세요 (levels 배열).\n"
+        "반드시 JSON만 출력 (paragraphs 배열, 각 문단의 final_role/level/parent_idx/sibling_group_id)."
     )
 
     return [
@@ -1982,10 +1964,13 @@ def build_level_analysis_prompt(structure_json: dict, signals: dict = None) -> l
 
 def parse_level_from_llm(llm_response: str) -> dict:
     """
-    1.5a LLM 응답에서 levels를 파싱합니다.
+    1b (AI 2) LLM 응답 파싱.
 
     Returns:
-        {idx: level} dict
+        {
+          "decisions": {idx: {final_role, level, parent_idx, sibling_group_id, role_overridden}},
+          "level_map": {idx: level},  # 하위 호환
+        }
     """
     json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
     if json_match:
@@ -2006,45 +1991,120 @@ def parse_level_from_llm(llm_response: str) -> dict:
         except json.JSONDecodeError as e:
             raise ValueError(f"level JSON 파싱 실패: {e}")
 
-    levels_list = data.get("levels", []) if isinstance(data, dict) else data
-    if not isinstance(levels_list, list):
-        raise ValueError(f"levels가 배열이 아닙니다: {type(levels_list)}")
+    paras_list = data.get("paragraphs", []) if isinstance(data, dict) else data
 
+    # 하위 호환 — 옛 levels 형식
+    if not paras_list and isinstance(data, dict) and "levels" in data:
+        legacy = data.get("levels", [])
+        decisions, level_map = {}, {}
+        for e in legacy:
+            if isinstance(e, dict) and e.get("idx") is not None and e.get("level") is not None:
+                idx = int(e["idx"]); lv = int(e["level"])
+                decisions[idx] = {"level": lv}
+                level_map[idx] = lv
+        log.info(f"level 파싱 (legacy): {len(level_map)}개 문단")
+        return {"decisions": decisions, "level_map": level_map}
+
+    if not isinstance(paras_list, list):
+        raise ValueError(f"paragraphs가 배열이 아닙니다: {type(paras_list)}")
+
+    decisions = {}
     level_map = {}
-    for entry in levels_list:
+    overridden = 0
+    for entry in paras_list:
         if not isinstance(entry, dict):
             continue
         idx = entry.get("idx")
+        if idx is None:
+            continue
+        idx = int(idx)
+        final_role = entry.get("final_role")
         level = entry.get("level")
-        if idx is not None and level is not None:
-            level_map[int(idx)] = int(level)
+        parent_idx = entry.get("parent_idx")
+        sib_group = entry.get("sibling_group_id")
+        is_override = bool(entry.get("role_overridden", False))
 
-    log.info(f"level 파싱: {len(level_map)}개 문단")
-    return level_map
+        if level is not None:
+            try:
+                level = int(level)
+                level_map[idx] = level
+            except Exception:
+                level = None
+
+        if parent_idx is not None and parent_idx != "null":
+            try:
+                parent_idx = int(parent_idx)
+            except Exception:
+                parent_idx = None
+        else:
+            parent_idx = None
+
+        decisions[idx] = {
+            "final_role": str(final_role) if final_role else None,
+            "level": level,
+            "parent_idx": parent_idx,
+            "sibling_group_id": str(sib_group) if sib_group else None,
+            "role_overridden": is_override,
+        }
+        if is_override:
+            overridden += 1
+
+    log.info(
+        f"AI 2 파싱: {len(decisions)}개 문단, role override {overridden}개"
+    )
+    return {"decisions": decisions, "level_map": level_map}
 
 
 def merge_levels_into_structure(
-    structure: dict, level_map: dict, exclusive_rules: list = None
+    structure: dict, parsed: dict, exclusive_rules: list = None
 ) -> dict:
     """
-    parse_structure_from_llm 결과에 level_map + exclusive_rules를 병합합니다.
+    AI 2 결과를 structure에 병합 (level + final_role + parent_idx + sibling_group_id).
 
     Args:
-        structure: paragraphs/tables를 포함하는 dict (level 없음)
-        level_map: {idx: level}
-        exclusive_rules: 1d AI가 출력한 형제 배타 규칙 리스트 (선택)
+        structure: paragraphs를 포함 (이전 단계에서 role_candidates 등 포함)
+        parsed: parse_level_from_llm 결과 {decisions, level_map} 또는 옛 {idx: level} dict
+        exclusive_rules: 1d 결과 (선택)
 
     Returns:
-        paragraphs에 level이 추가되고, exclusive_rules 키가 붙은 dict
+        paragraphs에 level/role/parent_idx/sibling_group_id 추가된 structure
     """
-    paragraphs = structure.get("paragraphs", [])
-    for p in paragraphs:
+    # 하위 호환 — 옛 호출 (level_map만 dict)
+    if isinstance(parsed, dict) and "decisions" not in parsed and "level_map" not in parsed:
+        # 옛 형식: {idx: level} 직접
+        legacy_map = parsed
+        for p in structure.get("paragraphs", []):
+            idx = p.get("idx", -1)
+            if idx in legacy_map:
+                p["level"] = legacy_map[idx]
+            else:
+                p.setdefault("level", 0)
+        if exclusive_rules:
+            structure["exclusive_rules"] = exclusive_rules
+        return structure
+
+    decisions = parsed.get("decisions", {})
+    level_map = parsed.get("level_map", {})
+
+    for p in structure.get("paragraphs", []):
         idx = p.get("idx", -1)
-        if idx in level_map:
+        d = decisions.get(idx) or decisions.get(str(idx))
+        if d:
+            if d.get("level") is not None:
+                p["level"] = d["level"]
+            if d.get("final_role"):
+                p["role"] = d["final_role"]  # AI 1의 임시 role을 final로 덮어씀
+            if d.get("parent_idx") is not None:
+                p["parent_idx"] = d["parent_idx"]
+            if d.get("sibling_group_id"):
+                p["sibling_group_id"] = d["sibling_group_id"]
+            if d.get("role_overridden"):
+                p["role_overridden"] = True
+        elif idx in level_map:
             p["level"] = level_map[idx]
         else:
-            # level 없으면 기본값 (보수적으로 가장 깊은 레벨)
             p.setdefault("level", 0)
+
     if exclusive_rules:
         structure["exclusive_rules"] = exclusive_rules
     return structure
@@ -2054,84 +2114,71 @@ def merge_levels_into_structure(
 # 1c: Role 분류 (level·marker·description 기반)
 # ──────────────────────────────────────────────────────────────────────
 
-ROLE_CLASSIFICATION_PROMPT = """당신은 양식 문단들의 role 분류 전문가입니다.
-1a(구조 추출) + 1b(level 판정) 결과를 바탕으로, 각 문단에 **role 이름**을 부여하세요.
+ROLE_CLASSIFICATION_PROMPT = """당신은 양식 문단의 **local 분석** 전문가입니다 (AI 1).
+각 문단을 독립적으로 보고 가능한 role 후보들을 점수화합니다.
 
-## role의 정의
-role은 **같은 구조적 의미를 가진 문단들을 묶는 이름**입니다.
-- 양식 내에서 **같은 역할·위치·마커 계열**을 공유하는 문단은 같은 role
-- 역할이나 위치가 다르면 다른 role
+## 역할 분담
+- **AI 1 (이 단계)**: 각 문단의 후보 role + 점수 (level·hierarchy 결정 안 함)
+- AI 2 (다음 단계): 전체 시퀀스 보고 최종 role + level + parent 결정
 
-## 판정 원칙 (description 우선, marker는 보조)
+⚠️ **hard role 결정 안 함**. 후보 + 점수만 출력. 위계는 다음 단계.
 
-같은 role 여부는 description의 의미적 위계를 우선하고, marker 계열로 보조 판단한다.
+## 입력
+각 문단마다:
+- marker, marker_family, description
+- features: paraPrIDRef, prev/next marker (family 포함), same_paraPr_run
 
-### 기준 1: marker 계열 판별 (추상 기준 — 특정 마커 외우지 말 것)
+## 임무
+각 문단에 대해 1~3개의 role 후보를 점수화 (0.0~1.0):
 
-두 marker가 다음 중 하나에 해당하면 **같은 계열**:
-- 같은 base 글자의 반복 횟수만 다름
-- 같은 형태·wrapper 안에 counter(숫자/글자)만 변함
-- 명백한 enumeration 시리즈에 속한 글리프
-- 마커가 완전히 동일
+판단 기준 (조합):
+- **description**: 그 자리의 의미·기능 (제목/요약/세부/보충/주석/결어 등)
+- **marker_family**: enumeration 시리즈인지, 고정 마커인지, 무마커인지
+- **features**:
+  - 같은 paraPrIDRef 연속(same_paraPr_run) → 같은 위계의 항목 가능성
+  - prev/next marker family → 시퀀스 흐름 단서
 
-위 어느 패턴에도 해당하지 않으면 다른 계열.
-
-유니코드 블록·base 문자·wrapper·시리즈 중 어느 하나라도 명백히 다르면 다른 계열로 간주.
-
-### 기준 2: 같은 계열인데 level이 다른 경우 — 1b 오류 가능성 점검
-
-**같은 marker 계열인데 level이 다르면 두 가지 가능성**:
-
-A) **진짜 다른 위계**: 동일한 marker 계열을 양식이 의도적으로 다른 위계에서 재사용 — 다른 role로 분리
-B) **1b 오류**: enumeration 변형(반복 횟수, counter 증가)을 1b가 깊이로 오인해서 다른 level 부여 — **같은 role로 묶어 1b 오류 보정**
-
-판단은 description으로:
-- 인스턴스들의 description이 **명확히 다른 위계의 의미**를 시사 → A (다른 role 유지)
-- 인스턴스들의 description이 **같은 종류의 정보**를 다룸 → B (같은 role로 통합)
-
-### 기준 3: 같은 계열 + 같은 level = 같은 role
-
-기본적으로 통합. description이 명확히 다른 역할을 시사하는 경우에만 분리.
-
-같은 계열의 enumeration 변형은 마커 외형 차이가 있어도 하나의 role로 묶음. 깊이·번호 접미사로 role 이름 세분화 금지.
-
-### 기준 4: marker 없는 문단 — description·level 기반
-
-description이 유사하고 level도 같으면 같은 role. 구조적 위치가 고유하면(표지·날짜·목차 등) 고유 role.
+⚠️ **금지**:
+- level/depth 추정 금지 (단지 후보만)
+- "level5" "sub" 같은 위계 접미사 금지
+- 같은 의미 항목엔 같은 role 이름 부여
 
 ## role 이름 규칙
-- **의미있는 snake_case**로 작성: `chapter_title_box`, `section_header`, `detail_item`, `note` 등
-- 🚫 **접미사로 세분화 금지**: `note_1`, `note_sub`, `detail_A`, `alt1`
-- 같은 역할에는 동일 이름 재사용
+- **의미있는 snake_case**: `chapter_title_box`, `section_header`, `detail_item`, `note`, `numbered_item`, `summary_box`
+- 🚫 **위계 접미사 금지**: `note_l5`, `detail_sub` 등
+- 같은 역할이면 동일 이름 재사용 (AI 2가 위치별로 보정 가능)
 
-## 특수 role
-- `spacer`: 빈 문단 (구분용)
-- `fixed`: 페이지 번호·머리글·바닥글 등 레이아웃
+## 점수 의미
+- **0.8~1.0**: 매우 확신 (description + features 모두 일치)
+- **0.5~0.8**: 가능성 높음 (보조 신호 일부 일치)
+- **0.2~0.5**: 후보로 가능 (모호함)
+- 점수 낮은 후보(< 0.2)는 출력 안 함
 
 ## 출력 형식 (JSON만)
 
 ```json
 {
-  "roles": [
-    {"idx": 0, "role": "cover_title_box"},
-    {"idx": 1, "role": "cover_date"},
-    {"idx": 2, "role": "cover_org"},
-    {"idx": 3, "role": "toc"},
-    {"idx": 4, "role": "chapter_title_box"},
-    {"idx": 5, "role": "section_header"},
-    {"idx": 6, "role": "detail_item"},
-    {"idx": 7, "role": "note"},
-    {"idx": 8, "role": "numbered_strategy_item"},
-    {"idx": 9, "role": "numbered_task_item"}
+  "paragraphs": [
+    {
+      "idx": 0,
+      "candidates": [
+        {"role": "cover_title_box", "score": 0.95, "reason": "최상위 단독 박스, 표지 description"},
+        {"role": "section_header", "score": 0.10, "reason": "큰 글자지만 위치상 표지"}
+      ]
+    },
+    {
+      "idx": 1,
+      "candidates": [
+        {"role": "cover_date", "score": 0.92, "reason": "날짜 description, 단독 단문"}
+      ]
+    }
   ]
 }
 ```
 
 ## 중요
-- **모든 idx의 role을 출력**하세요 (빠뜨리지 마세요)
-- **description 우선**: 의미적 위계가 같으면 같은 role (마커가 달라도, level이 살짝 달라도)
-- **기준 2 적용**: 같은 marker 계열인데 level이 다르면 1b 오류 가능성 점검 후 통합 여부 결정
-- **세분화 금지**: 깊이·번호 접미사로 role 이름 나누지 말 것
+- **모든 idx의 후보를 출력** (빠뜨리지 마세요)
+- 각 문단 1~3개 후보. 1순위 점수가 0.6+ 이상이면 1개만 줘도 OK
 - 반드시 JSON만 출력. 다른 설명 금지
 """
 
@@ -2140,11 +2187,12 @@ def build_role_classification_prompt(
     structure: dict, signals: dict = None
 ) -> list[dict]:
     """
-    1c 호출: 1a(marker·description) + 1b(level) → role 부여
+    1c 호출 (AI 1, local): 각 문단에 role 후보 + 점수 부여.
 
     Args:
-        structure: paragraphs에 idx, marker, description, level 포함된 dict
-        signals: compute_role_context_signals 결과 (선택, 있으면 힌트로 포함)
+        structure: paragraphs는 compute_paragraph_features로 enrichment 권장
+                   (marker_family, prev/next marker, same_paraPr_run 등)
+        signals: compute_role_context_signals 결과 (선택, text preview 용도)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
@@ -2161,28 +2209,42 @@ def build_role_classification_prompt(
         idx = p.get("idx", -1)
         marker = p.get("marker", "")
         desc = p.get("description", "")
-        level = p.get("level", 0)
+        marker_family = p.get("marker_family", "")
+        prev_marker = p.get("prev_marker", "")
+        next_marker = p.get("next_marker", "")
+        prev_family = p.get("prev_marker_family", "")
+        next_family = p.get("next_marker_family", "")
+        same_paraPr = p.get("same_paraPr_run", False)
+        para_pr = p.get("paraPrIDRef", "")
+
         marker_str = f'"{marker}"' if marker else '""'
         text_preview = text_by_idx.get(idx, "")[:60]
+
+        feature_parts = [
+            f'"idx": {idx}',
+            f'"marker": {marker_str}',
+            f'"marker_family": "{marker_family}"',
+            f'"description": {json.dumps(desc, ensure_ascii=False)}',
+            f'"paraPrIDRef": "{para_pr}"',
+            f'"prev_marker": "{prev_marker}"',
+            f'"prev_marker_family": "{prev_family}"',
+            f'"next_marker": "{next_marker}"',
+            f'"next_marker_family": "{next_family}"',
+            f'"same_paraPr_run": {str(same_paraPr).lower()}',
+        ]
         if text_preview:
-            text_esc = (
-                text_preview.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+            feature_parts.append(
+                f'"text": {json.dumps(text_preview, ensure_ascii=False)}'
             )
-            para_lines.append(
-                f'{{"idx": {idx}, "marker": {marker_str}, "level": {level}, '
-                f'"text": "{text_esc}", "description": "{desc}"}}'
-            )
-        else:
-            para_lines.append(
-                f'{{"idx": {idx}, "marker": {marker_str}, "level": {level}, '
-                f'"description": "{desc}"}}'
-            )
+        para_lines.append("{" + ", ".join(feature_parts) + "}")
+
     para_text = "[\n  " + ",\n  ".join(para_lines) + "\n]"
 
     user_msg = (
-        "아래 문단 목록에 각각 role을 부여하세요.\n"
-        "- marker 계열 + level을 함께 보고 판정\n"
-        "- 같은 계열이라도 level 차이가 확연하면 다른 role\n\n"
+        "아래 문단 목록 각각에 대해 role 후보 + 점수를 출력하세요.\n"
+        "- description의 의미 + marker_family + features 조합으로 판단\n"
+        "- 위계(level) 결정 금지 — AI 2가 처리\n"
+        "- 1~3개 후보, 점수 낮은 것(< 0.2) 제외\n\n"
         f"## 문단 목록\n```json\n{para_text}\n```\n\n"
         "반드시 JSON만 출력하세요."
     )
@@ -2195,10 +2257,10 @@ def build_role_classification_prompt(
 
 def parse_role_classification_from_llm(llm_response: str) -> dict:
     """
-    1c LLM 응답에서 role 부여 결과를 파싱.
+    1c (AI 1) LLM 응답에서 role 후보를 파싱.
 
     Returns:
-        {idx: role} dict
+        {idx: [{role, score, reason}, ...]} dict — 점수 내림차순 정렬
     """
     json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
     if json_match:
@@ -2219,30 +2281,70 @@ def parse_role_classification_from_llm(llm_response: str) -> dict:
         except json.JSONDecodeError as e:
             raise ValueError(f"role JSON 파싱 실패: {e}")
 
-    roles_list = data.get("roles", []) if isinstance(data, dict) else data
-    if not isinstance(roles_list, list):
-        raise ValueError(f"roles가 배열이 아닙니다: {type(roles_list)}")
+    paras_list = data.get("paragraphs", []) if isinstance(data, dict) else data
+    # 하위 호환: 옛 "roles" 키도 처리 (단일 role per idx)
+    if not paras_list and isinstance(data, dict) and "roles" in data:
+        legacy = data.get("roles", [])
+        result = {}
+        for e in legacy:
+            if isinstance(e, dict) and e.get("idx") is not None and e.get("role"):
+                result[int(e["idx"])] = [{"role": str(e["role"]), "score": 1.0, "reason": "legacy"}]
+        log.info(f"role 후보 파싱 (legacy 형식): {len(result)}개 문단")
+        return result
+
+    if not isinstance(paras_list, list):
+        raise ValueError(f"paragraphs가 배열이 아닙니다: {type(paras_list)}")
 
     result = {}
-    for entry in roles_list:
+    for entry in paras_list:
         if not isinstance(entry, dict):
             continue
         idx = entry.get("idx")
-        role = entry.get("role")
-        if idx is not None and role:
-            result[int(idx)] = str(role)
+        candidates = entry.get("candidates", [])
+        if idx is None or not isinstance(candidates, list):
+            continue
+        norm_cands = []
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            role = c.get("role")
+            score = c.get("score", 0.0)
+            reason = c.get("reason", "")
+            if role:
+                try:
+                    score = float(score)
+                except Exception:
+                    score = 0.0
+                norm_cands.append({"role": str(role), "score": score, "reason": str(reason)})
+        # 점수 내림차순
+        norm_cands.sort(key=lambda x: -x["score"])
+        if norm_cands:
+            result[int(idx)] = norm_cands
 
-    log.info(f"role 파싱: {len(result)}개 문단")
+    log.info(f"role 후보 파싱: {len(result)}개 문단, 평균 후보 {sum(len(v) for v in result.values())/max(len(result),1):.1f}개")
     return result
 
 
-def merge_roles_into_structure(structure: dict, role_map: dict) -> dict:
-    """structure.paragraphs에 role 필드 병합 (1c 결과 반영)."""
+def merge_roles_into_structure(structure: dict, role_candidates: dict) -> dict:
+    """
+    structure.paragraphs에 role 후보 필드 병합.
+
+    Args:
+        role_candidates: parse_role_classification_from_llm 결과
+                        {idx: [{role, score, reason}, ...]}
+
+    각 문단에 추가:
+    - role_candidates: 후보 리스트
+    - role: 1순위 후보 (placeholder, AI 2가 final_role로 확정)
+    """
     paragraphs = structure.get("paragraphs", [])
     for p in paragraphs:
         idx = p.get("idx", -1)
-        if idx in role_map:
-            p["role"] = role_map[idx]
+        cands = role_candidates.get(idx, [])
+        if cands:
+            p["role_candidates"] = cands
+            # 1순위를 임시 role로 (AI 2가 final_role 결정)
+            p["role"] = cands[0]["role"]
         else:
             p.setdefault("role", "")
     return structure
@@ -3672,6 +3774,41 @@ def _normalize_marker_type(marker: str) -> str:
         return "hangul_dot"
     # 단일 문자 마커 (□, ㅇ, *, ※, ◈, ◇, ◆, ⇒, →, ▪, -)
     return f"char_{first}"
+
+
+def compute_paragraph_features(paragraphs: list[dict]) -> list[dict]:
+    """
+    각 문단에 local feature를 추가 (AI 1·AI 2 입력용).
+
+    추가되는 필드:
+    - marker_family: _normalize_marker_type 결과
+    - prev_marker, prev_marker_family
+    - next_marker, next_marker_family
+    - same_paraPr_run: 직전 문단과 같은 paraPrIDRef를 공유하는지 (양식 작성자가 같은 위계로 묶었다는 신호)
+
+    원본 paragraphs는 변경하지 않고 새 list 반환.
+    """
+    n = len(paragraphs)
+    enriched = []
+    for i, p in enumerate(paragraphs):
+        new_p = dict(p)
+        marker = p.get("marker", "")
+        new_p["marker_family"] = _normalize_marker_type(marker)
+
+        prev_marker = paragraphs[i-1].get("marker", "") if i > 0 else ""
+        next_marker = paragraphs[i+1].get("marker", "") if i < n - 1 else ""
+        new_p["prev_marker"] = prev_marker
+        new_p["next_marker"] = next_marker
+        new_p["prev_marker_family"] = _normalize_marker_type(prev_marker)
+        new_p["next_marker_family"] = _normalize_marker_type(next_marker)
+
+        prev_para_pr = paragraphs[i-1].get("paraPrIDRef", "") if i > 0 else ""
+        new_p["same_paraPr_run"] = bool(
+            prev_para_pr and prev_para_pr == p.get("paraPrIDRef", "")
+        )
+
+        enriched.append(new_p)
+    return enriched
 
 
 def _split_roles_by_marker(paragraphs: list[dict]) -> list[dict]:
