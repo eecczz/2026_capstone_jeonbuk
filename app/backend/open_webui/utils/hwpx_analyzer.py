@@ -3993,15 +3993,61 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     # 3단계: 각 챕터의 트리를 비교해서 같은 구조면 같은 타입으로 묶기
     #        배타적 자식이 있으면 변형별로 타입 분리 (type_Na, type_Nb)
 
-    def _pattern_signature(pattern: dict) -> str:
-        """패턴의 구조적 시그니처 (role 이름 + 계층)"""
+    # chapter type 분리 기준은 골격(top-level shape)만. deep optional variant 차이는
+    # chapter 분리 트리거가 아님 (2b가 1d 배타규칙으로 인스턴스마다 선택).
+    SIGNATURE_MAX_DEPTH = 3
+
+    def _pattern_signature(pattern: dict, max_depth: int = SIGNATURE_MAX_DEPTH,
+                          current_depth: int = 0) -> str:
+        """
+        패턴의 truncated signature — chapter dedup용.
+        max_depth 이상은 무시 (deep optional variant들은 type 분리 기준 아님).
+        """
+        if current_depth >= max_depth:
+            return ""
         parts = []
         for role, info in sorted(pattern.items()):
             children_sig = ""
             if "children" in info:
-                children_sig = _pattern_signature(info["children"])
+                children_sig = _pattern_signature(
+                    info["children"], max_depth, current_depth + 1
+                )
             parts.append(f"{role}({children_sig})")
         return "|".join(parts)
+
+    def _merge_patterns(existing: dict, new_pattern: dict) -> None:
+        """
+        new_pattern을 existing pattern에 union 병합. in-place 수정.
+
+        병합 규칙:
+        - 새 role: 그대로 추가, optional=True (다른 chapter엔 없었으므로)
+        - 기존 role: optional 플래그 OR (한 chapter라도 optional이면 optional),
+          per_parent 'multiple' 우세, observed_counts 누적, children 재귀 union
+        """
+        for role, new_info in new_pattern.items():
+            if role not in existing:
+                # 다른 chapter엔 없던 새 role → optional로 추가
+                merged_info = dict(new_info)
+                merged_info["optional"] = True
+                existing[role] = merged_info
+            else:
+                ex = existing[role]
+                if new_info.get("optional"):
+                    ex["optional"] = True
+                if new_info.get("per_parent") == "multiple":
+                    ex["per_parent"] = "multiple"
+                ex["observed_counts"] = (
+                    ex.get("observed_counts", []) + new_info.get("observed_counts", [])
+                )
+                # children 재귀
+                new_children = new_info.get("children", {})
+                if new_children:
+                    ex_children = ex.setdefault("children", {})
+                    _merge_patterns(ex_children, new_children)
+        # 새 pattern에 없는 기존 role은 optional로 표시 (이번 chapter엔 없었으므로)
+        for role, ex in existing.items():
+            if role not in new_pattern:
+                ex["optional"] = True
 
     def _pattern_depth(pattern: dict) -> int:
         """패턴 트리의 최대 깊이"""
@@ -4055,14 +4101,18 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         if not role_info:
             continue
 
-        # 챕터 단위 variant 분리는 하지 않음 — 모든 variant를 한 type 안에 optional로 포함.
-        # 인스턴스 단위 variant 선택은 1d 배타규칙(structure["exclusive_rules"])을 보고
-        # 2b가 인스턴스마다 결정함. 같은 chapter 안에서 다른 variant 공존 가능.
-        # (chapter간 구조 차이는 _pattern_signature dedup으로 자동 type_1 / type_2 분리됨)
+        # 챕터 단위 variant 분리는 하지 않음.
+        # truncated signature(top SIGNATURE_MAX_DEPTH)로 chapter 묶음 결정.
+        # 같은 sig 챕터들은 pattern union → 모든 variant가 한 type 안에 optional로 포함.
+        # 인스턴스 단위 variant 선택은 1d 배타규칙 + 2b가 처리.
         pattern = _build_pattern(role_info)
         sig = _pattern_signature(pattern)
 
-        if sig not in sig_to_type:
+        if sig in sig_to_type:
+            # 같은 골격의 chapter — 기존 type pattern에 union 병합
+            existing_type_name = sig_to_type[sig]
+            _merge_patterns(chapter_types[existing_type_name]["pattern"], pattern)
+        else:
             type_counter += 1
             type_name = f"type_{type_counter}"
             sig_to_type[sig] = type_name
@@ -4071,6 +4121,10 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                 "description": _pattern_summary(pattern),
                 "pattern": pattern,
             }
+
+    # 모든 chapter 처리 후 description 재생성 (병합 반영)
+    for type_name, info in chapter_types.items():
+        info["description"] = _pattern_summary(info["pattern"])
 
     log.info(
         f"chapter_types 코드 생성: {len(chapters)}개 챕터 → "
