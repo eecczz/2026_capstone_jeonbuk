@@ -3993,27 +3993,45 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     # 3단계: 각 챕터의 트리를 비교해서 같은 구조면 같은 타입으로 묶기
     #        배타적 자식이 있으면 변형별로 타입 분리 (type_Na, type_Nb)
 
-    # chapter type 분리 기준은 골격(top-level shape)만. deep optional variant 차이는
-    # chapter 분리 트리거가 아님 (2b가 1d 배타규칙으로 인스턴스마다 선택).
-    SIGNATURE_MAX_DEPTH = 3
+    # ── chapter type 그룹화 전략 ────────────────────────────────────
+    # 고정 depth는 양식 종속적이라 폐기. 대신 coarse grouping + path presence_ratio.
+    #
+    # 1. coarse_key = (title_role, sorted top-level children roles)
+    #    → 같은 coarse_key 챕터들은 같은 chapter_type
+    # 2. 그룹 내 union으로 pattern 병합 (모든 variant가 한 type 안에 optional로 보존)
+    # 3. path presence_ratio 계산 → variant 마킹 (info 용도, dedup 영향 없음)
+    #
+    # 이러면 양식별로 chapter type 깊이가 달라도 자동 적응:
+    # - 본 사업: 같은 strategy_header + (summary_box, task_title) → 한 type, 깊은
+    #   variant들(▪/*/1)/① 등)은 union으로 모두 포함
+    # - 진단형: 다른 top-level children → 별도 type
+    #
+    # pathological case (같은 top-level이지만 deep이 완전 다른 두 챕터) 발견되면
+    # presence_ratio 기반 sub-dedup 추가 검토.
 
-    def _pattern_signature(pattern: dict, max_depth: int = SIGNATURE_MAX_DEPTH,
-                          current_depth: int = 0) -> str:
-        """
-        패턴의 truncated signature — chapter dedup용.
-        max_depth 이상은 무시 (deep optional variant들은 type 분리 기준 아님).
-        """
-        if current_depth >= max_depth:
-            return ""
-        parts = []
-        for role, info in sorted(pattern.items()):
-            children_sig = ""
-            if "children" in info:
-                children_sig = _pattern_signature(
-                    info["children"], max_depth, current_depth + 1
-                )
-            parts.append(f"{role}({children_sig})")
-        return "|".join(parts)
+    def _collect_paths(pattern: dict, prefix: tuple = ()) -> set:
+        """Pattern 트리의 root-to-node 모든 path를 tuple로 수집."""
+        paths = set()
+        for role, info in pattern.items():
+            path = prefix + (role,)
+            paths.add(path)
+            children = info.get("children", {})
+            if children:
+                paths |= _collect_paths(children, path)
+        return paths
+
+    def _annotate_presence_ratio(pattern: dict, path_counts: dict, total: int,
+                                 prefix: tuple = (), threshold: float = 0.7) -> None:
+        """각 노드에 presence_ratio + is_variant 플래그 추가 (info 용도)."""
+        for role, info in pattern.items():
+            path = prefix + (role,)
+            count = path_counts.get(path, 0)
+            ratio = count / total if total else 0.0
+            info["presence_ratio"] = round(ratio, 2)
+            info["is_variant"] = ratio < threshold
+            children = info.get("children", {})
+            if children:
+                _annotate_presence_ratio(children, path_counts, total, path, threshold)
 
     def _merge_patterns(existing: dict, new_pattern: dict) -> None:
         """
@@ -4089,51 +4107,59 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
             f"{depth}단 깊이, {total}개 role, 최상위: {top_str}"
         )
 
-    chapter_types = {}
-    sig_to_type = {}  # signature → type_name
-    type_counter = 0
-
+    # ── 1단계: 모든 chapter의 (title_role, pattern) 수집 ──────────
+    chapters_data = []  # [(title_role, pattern)]
     for title_para, body_paras in chapters:
         title_role = title_para.get("role", "chapter_title")
-        title_desc = title_para.get("description", "")
-
         role_info = _build_role_info(body_paras)
         if not role_info:
             continue
-
-        # 챕터 단위 variant 분리는 하지 않음.
-        # truncated signature(top SIGNATURE_MAX_DEPTH)로 chapter 묶음 결정.
-        # 같은 sig 챕터들은 pattern union → 모든 variant가 한 type 안에 optional로 포함.
-        # 인스턴스 단위 variant 선택은 1d 배타규칙 + 2b가 처리.
         pattern = _build_pattern(role_info)
-        sig = _pattern_signature(pattern)
+        chapters_data.append((title_role, pattern))
 
-        if sig in sig_to_type:
-            # 같은 골격의 chapter — 기존 type pattern에 union 병합
-            existing_type_name = sig_to_type[sig]
-            _merge_patterns(chapter_types[existing_type_name]["pattern"], pattern)
-        else:
-            type_counter += 1
-            type_name = f"type_{type_counter}"
-            sig_to_type[sig] = type_name
-            chapter_types[type_name] = {
-                "title_role": title_role,
-                "description": _pattern_summary(pattern),
-                "pattern": pattern,
-            }
+    # ── 2단계: coarse_key로 그룹화 ────────────────────────────────
+    # coarse_key = (title_role, sorted top-level children roles)
+    coarse_groups = {}  # key → [chapter index list]
+    for i, (tr, pat) in enumerate(chapters_data):
+        key = (tr, tuple(sorted(pat.keys())))
+        coarse_groups.setdefault(key, []).append(i)
 
-    # 모든 chapter 처리 후 description 재생성 (병합 반영)
-    for type_name, info in chapter_types.items():
-        info["description"] = _pattern_summary(info["pattern"])
+    # ── 3단계: 그룹별로 union pattern 만들고 type 부여 ────────────
+    chapter_types = {}
+    type_counter = 0
+    for coarse_key, indices in coarse_groups.items():
+        type_counter += 1
+        type_name = f"type_{type_counter}"
+        title_role = chapters_data[indices[0]][0]
+
+        # union 병합 (단일 챕터면 그 패턴 그대로)
+        merged = {}
+        for i in indices:
+            _merge_patterns(merged, chapters_data[i][1])
+
+        # presence_ratio 계산 (info 용도, dedup엔 영향 없음)
+        n = len(indices)
+        path_counts = {}
+        for i in indices:
+            for path in _collect_paths(chapters_data[i][1]):
+                path_counts[path] = path_counts.get(path, 0) + 1
+        _annotate_presence_ratio(merged, path_counts, n)
+
+        chapter_types[type_name] = {
+            "title_role": title_role,
+            "description": _pattern_summary(merged),
+            "pattern": merged,
+            "merged_chapter_count": n,
+        }
 
     log.info(
-        f"chapter_types 코드 생성: {len(chapters)}개 챕터 → "
-        f"{len(chapter_types)}개 타입 ({list(chapter_types.keys())})"
+        f"chapter_types coarse 그룹화: {len(chapters_data)}개 챕터 → "
+        f"{len(chapter_types)}개 type ({list(chapter_types.keys())})"
     )
     for type_name, info in chapter_types.items():
         log.info(
             f"  {type_name}: title_role={info['title_role']}, "
-            f"pattern={json.dumps(info['pattern'], ensure_ascii=False)}"
+            f"merged={info.get('merged_chapter_count', 1)} chapters"
         )
 
     return chapter_types
