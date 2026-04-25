@@ -2255,30 +2255,57 @@ def canonicalize_role(marker_family: str, semantic_role: str) -> str:
     return default
 
 
-# non-container roles — 부모가 될 수 없음 (요약·보충·결과 박스류는 leaf)
-# parent stack 검색에서 skip하여 다음 title 계열이 잘못 자식으로 들어가는 거 방지.
-_NON_CONTAINER_CANONICAL = {
-    "summary_box",
-    "supplement_item",
-    "summary_arrow",
-    "enumerated_detail",  # 1)2) 각주성 — 보통 leaf
-}
+def _compute_container_roles(paragraphs: list[dict], threshold: float = 0.3) -> set:
+    """
+    양식 데이터 자체에서 role의 container 여부를 추론 (하드코딩 X).
 
+    각 role의 인스턴스 중 자식이 있는 비율이 threshold 이상이면 container.
+    - title/header/section 같은 묶음 role: 거의 모든 인스턴스가 자식 가짐 → container
+    - summary/supplement/note/leaf 같은 role: 자식 거의 없음 → non-container
 
-def _can_be_parent(p: dict) -> bool:
-    """문단이 다른 문단의 부모가 될 수 있는지 판단."""
-    canonical = p.get("canonical_role", "")
-    sem = p.get("semantic_role", "")
-    if canonical in _NON_CONTAINER_CANONICAL:
-        return False
-    # canonical_role이 아직 없으면 (compute_parent가 canonical 합성보다 먼저 호출되는 경우)
-    # semantic_role 또는 'role'에서 키워드 매칭
-    role = p.get("role", "")
-    blob = f"{sem} {role}".lower()
-    for keyword in ("summary_box", "supplement", "summary_arrow"):
-        if keyword in blob:
-            return False
-    return True
+    threshold=0.3 의미: 인스턴스의 30% 이상이 자식 가져야 container.
+    예: summary_box 6 인스턴스 중 1번만 자식 가짐 (17%) → non-container 유지.
+
+    Args:
+        paragraphs: level이 배정된 paragraph list
+
+    Returns:
+        container로 인정된 role 이름 집합
+    """
+    from collections import defaultdict
+
+    role_inst_total = defaultdict(int)
+    role_inst_with_kids = defaultdict(int)
+    marked_inst = set()
+
+    stack = []  # [(level, role, paragraph_index_i)]
+
+    for i, p in enumerate(paragraphs):
+        level = p.get("level")
+        role = p.get("role", "")
+        if level is None or not role:
+            continue
+
+        role_inst_total[role] += 1
+
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        if stack:
+            parent_level, parent_role, parent_i = stack[-1]
+            if parent_i not in marked_inst:
+                marked_inst.add(parent_i)
+                role_inst_with_kids[parent_role] += 1
+
+        stack.append((level, role, i))
+
+    container_roles = set()
+    for role, total in role_inst_total.items():
+        if total == 0:
+            continue
+        with_kids = role_inst_with_kids.get(role, 0)
+        if with_kids / total >= threshold:
+            container_roles.add(role)
+    return container_roles
 
 
 def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]:
@@ -2293,7 +2320,10 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
 
     원본 paragraphs를 in-place 수정.
     """
-    # level → 가장 최근에 그 level로 등장한 문단 (스택)
+    # 1단계: 양식 자체에서 container roles 데이터 기반 추론 (하드코딩 X)
+    container_roles = _compute_container_roles(paragraphs)
+
+    # 2단계: stack 기반 parent 계산 (container만 stack에 push)
     level_stack = {}
 
     for p in paragraphs:
@@ -2309,16 +2339,12 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
             p["sibling_group_id"] = "roots"
             continue
 
-        # 부모 찾기: level-1, level-2, ... 0 까지 _can_be_parent 인 가장 가까운 것
-        # non-container 만나면 skip하고 더 위로
+        # 부모 찾기: stack엔 container만 있으니 가장 가까운 것
         parent = None
         for l in range(level - 1, -1, -1):
             if l in level_stack:
-                candidate = level_stack[l]
-                if _can_be_parent(candidate):
-                    parent = candidate
-                    break
-                # non-container면 계속 위로 탐색
+                parent = level_stack[l]
+                break
 
         p["parent_idx"] = parent.get("idx") if parent else None
         if p["parent_idx"] is None:
@@ -2326,12 +2352,16 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
         else:
             p["sibling_group_id"] = f"children_of_{p['parent_idx']}"
 
-        # 현재 문단을 그 level의 최신으로 등록
-        level_stack[level] = p
-
-        # 현재 level보다 깊은 stack은 scope 종료 (자식들 끝남)
+        # 현재 level보다 깊은 stack 정리
         for deeper in [k for k in level_stack if k > level]:
             del level_stack[deeper]
+
+        # container role만 stack에 push.
+        # non-container는 stack에 안 들어가서, 같은 level의 이전 container가 살아남음.
+        # → 그 다음 자식이 잘못 non-container 밑에 들어가는 것 방지.
+        role = p.get("role", "")
+        if role in container_roles:
+            level_stack[level] = p
 
     return paragraphs
 
