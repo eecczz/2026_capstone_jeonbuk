@@ -1615,6 +1615,62 @@ parent = 현재 문단보다 앞에 나온 문단 중,
 - 반드시 JSON만 출력
 """
 
+LEVEL_ANALYSIS_HYBRID_PROMPT = LEVEL_ANALYSIS_PROMPT + """
+
+## 추가 임무 (Hybrid 측정 모드)
+
+기존 level + selected_index 외에 다음을 추가로 출력:
+
+3. **parent_hint_idx** (nullable): 직접 부모로 확신하는 paragraph idx
+   - 항상 자기 idx보다 작은 정수
+   - 모르면 null. 강제로 채우지 마라
+   - self-loop 금지, forward reference 금지
+
+4. **confidence** (필수, 0~1): 자신의 level + parent_hint 신뢰도 종합
+   - 모든 paragraph 필수, null 금지
+   - 자신 없으면 0.3 같이 낮게. 매우 확실하면 0.9+
+
+5. **parent_hint_reason_code** (parent_hint_idx not null일 때 필수)
+   - `paraPr_match`: paraPrIDRef 일치 / 같은 paraPr series
+   - `marker_continue`: 같은 marker family 시리즈
+   - `marker_subordinate`: marker family 변환 (자식 신호)
+   - `chapter_boundary`: chapter root
+   - `semantic`: 텍스트 의미상 종속
+   - `other`
+
+## 출력 형식 (Hybrid)
+
+```json
+{
+  "paragraphs": [
+    {
+      "idx": 0,
+      "level": 0,
+      "selected_role_candidate_index": 0,
+      "parent_hint_idx": null,
+      "parent_hint_reason_code": null,
+      "confidence": 0.95
+    },
+    {
+      "idx": 195,
+      "level": 5,
+      "selected_role_candidate_index": 0,
+      "parent_hint_idx": 194,
+      "parent_hint_reason_code": "marker_subordinate",
+      "confidence": 0.82
+    }
+  ]
+}
+```
+
+## Hybrid 모드 중요
+- 모든 idx 출력. 필수: level, selected_role_candidate_index, confidence
+- nullable: parent_hint_idx, parent_hint_reason_code
+- parent_hint_idx not null이면 parent_hint_reason_code 필수
+- self-loop, forward reference 절대 금지
+"""
+
+
 CONTENT_MAPPING_PROMPT = """당신은 HWPX 문서 작성 전문가입니다.
 양식의 구조를 먼저 이해한 뒤, 소스 자료의 내용을 양식 구조에 맞게 배치합니다.
 
@@ -1893,7 +1949,7 @@ def build_structure_analysis_prompt(
     ]
 
 
-def build_level_analysis_prompt(structure_json: dict, signals: dict = None) -> list[dict]:
+def build_level_analysis_prompt(structure_json: dict, signals: dict = None, hybrid: bool = False) -> list[dict]:
     """
     1b 호출 (AI 2, global): role 후보 + features → final_role + level + parent_idx + sibling_group_id
 
@@ -1969,13 +2025,14 @@ def build_level_analysis_prompt(structure_json: dict, signals: dict = None) -> l
         "반드시 JSON만 출력 (paragraphs 배열, 각 문단의 final_role/level/parent_idx/sibling_group_id)."
     )
 
+    system_prompt = LEVEL_ANALYSIS_HYBRID_PROMPT if hybrid else LEVEL_ANALYSIS_PROMPT
     return [
-        {"role": "system", "content": LEVEL_ANALYSIS_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
     ]
 
 
-def parse_level_from_llm(llm_response: str) -> dict:
+def parse_level_from_llm(llm_response: str, hybrid: bool = False) -> dict:
     """
     1c (AI 2) LLM 응답 파싱 — selected_role_candidate_index 방식.
 
@@ -2068,6 +2125,26 @@ def parse_level_from_llm(llm_response: str) -> dict:
             "selection_reason_code": str(reason_code) if reason_code else "",
             "legacy_final_role": str(legacy_final_role) if legacy_final_role else None,
         }
+        if hybrid:
+            parent_hint = entry.get("parent_hint_idx")
+            if parent_hint is None or parent_hint == "null":
+                parent_hint = None
+            else:
+                try:
+                    parent_hint = int(parent_hint)
+                except Exception:
+                    parent_hint = None
+            confidence = entry.get("confidence")
+            try:
+                confidence = float(confidence) if confidence is not None else None
+            except Exception:
+                confidence = None
+            hint_reason = entry.get("parent_hint_reason_code")
+            decisions[idx]["parent_hint_idx"] = parent_hint
+            decisions[idx]["confidence"] = confidence
+            decisions[idx]["parent_hint_reason_code"] = (
+                str(hint_reason) if hint_reason and hint_reason != "null" else None
+            )
         if selected_idx != 0:
             non_default_index += 1
 
@@ -2434,6 +2511,127 @@ def reattach_arrow_markers(paragraphs: list[dict]) -> tuple:
         p["level"] = (prev_enum.get("level", 0) or 0) + 1
         p["sibling_group_id"] = f"children_of_{prev_enum.get('idx')}"
     return paragraphs, log
+
+
+def validate_parent_hints(decisions: dict, paragraphs: list[dict]) -> dict:
+    """
+    parent_hint_idx 검증. 각 idx별로 다음 분류:
+      - "valid": hint < idx + paragraph에 존재
+      - "self_loop": hint == idx
+      - "forward_ref": hint > idx
+      - "out_of_range": paragraph에 없는 idx
+      - "no_hint": parent_hint_idx is None
+
+    Returns:
+        {"per_idx": {idx: status}, "counts": {valid, self_loop, forward_ref, out_of_range, no_hint}}
+    """
+    valid_idx_set = {p.get("idx") for p in paragraphs}
+    per_idx = {}
+    counts = {"valid": 0, "self_loop": 0, "forward_ref": 0,
+              "out_of_range": 0, "no_hint": 0}
+    for idx, d in decisions.items():
+        try:
+            idx = int(idx)
+        except Exception:
+            continue
+        hint = d.get("parent_hint_idx")
+        if hint is None:
+            per_idx[idx] = "no_hint"
+            counts["no_hint"] += 1
+            continue
+        if hint == idx:
+            per_idx[idx] = "self_loop"
+            counts["self_loop"] += 1
+            continue
+        if hint > idx:
+            per_idx[idx] = "forward_ref"
+            counts["forward_ref"] += 1
+            continue
+        if hint not in valid_idx_set:
+            per_idx[idx] = "out_of_range"
+            counts["out_of_range"] += 1
+            continue
+        per_idx[idx] = "valid"
+        counts["valid"] += 1
+    return {"per_idx": per_idx, "counts": counts}
+
+
+def classify_hint_conflicts(paragraphs: list[dict], decisions: dict,
+                             hint_validation: dict) -> dict:
+    """
+    Stack tree의 parent_idx vs hint의 parent_idx 비교. 충돌 방향성 분류.
+    Hint가 valid인 paragraph에 대해서만:
+      - "match": hint == stack
+      - "hint_is_ancestor": hint가 stack parent의 ancestor (nesting up — hint가 더 얕음)
+      - "hint_is_descendant": stack parent가 hint의 ancestor (hint가 더 깊음)
+      - "unrelated": 둘이 ancestor 관계 X (형제 관계 등)
+
+    Returns:
+        {"per_idx": {idx: {hint, stack, kind}}, "counts": {match, ancestor, descendant, unrelated}}
+    """
+    para_by_idx = {p.get("idx"): p for p in paragraphs}
+
+    def ancestors_of(idx):
+        result = []
+        cur = para_by_idx.get(idx, {}).get("parent_idx")
+        seen = set()
+        while cur is not None and cur not in seen:
+            seen.add(cur)
+            result.append(cur)
+            cur = para_by_idx.get(cur, {}).get("parent_idx")
+        return result
+
+    per_idx = {}
+    counts = {"match": 0, "hint_is_ancestor": 0,
+              "hint_is_descendant": 0, "unrelated": 0}
+    for idx, status in hint_validation["per_idx"].items():
+        if status != "valid":
+            continue
+        d = decisions.get(idx) or decisions.get(str(idx))
+        if not d:
+            continue
+        hint = d["parent_hint_idx"]
+        stack = para_by_idx.get(idx, {}).get("parent_idx")
+        if hint == stack:
+            kind = "match"
+        else:
+            stack_ancestors = ancestors_of(idx)
+            hint_ancestors = ancestors_of(hint)
+            if hint in stack_ancestors:
+                kind = "hint_is_ancestor"
+            elif stack is not None and stack in hint_ancestors:
+                kind = "hint_is_descendant"
+            else:
+                kind = "unrelated"
+        per_idx[idx] = {"hint": hint, "stack": stack, "kind": kind}
+        counts[kind] += 1
+    return {"per_idx": per_idx, "counts": counts}
+
+
+def build_hint_override_tree(paragraphs: list[dict], decisions: dict,
+                              hint_validation: dict) -> list[dict]:
+    """
+    단순 (a) override: valid hint paragraph의 parent_idx만 hint로 변경.
+    propagation 없음. sibling_group_id 재계산.
+
+    Returns:
+        paragraphs 복사본 (parent_idx, sibling_group_id 변경됨)
+    """
+    import copy
+    para_copy = copy.deepcopy(paragraphs)
+    for p in para_copy:
+        idx = p.get("idx")
+        status = hint_validation["per_idx"].get(idx)
+        if status != "valid":
+            continue
+        d = decisions.get(idx) or decisions.get(str(idx))
+        if not d:
+            continue
+        p["parent_idx"] = d["parent_hint_idx"]
+    for p in para_copy:
+        pi = p.get("parent_idx")
+        p["sibling_group_id"] = "roots" if pi is None else f"children_of_{pi}"
+    return para_copy
 
 
 def reparent_leaf_prone_children(paragraphs: list[dict], container_scores: dict) -> tuple:
@@ -3774,55 +3972,63 @@ def compute_template_hash(template_path: str) -> str:
     return h.hexdigest()[:16]
 
 
-def get_template_cache_path(cache_key: str) -> str:
-    """템플릿 분석 결과 캐시 파일 경로 (cache_key는 보통 content hash)"""
+def get_template_cache_path(cache_key: str, namespace: str = 'full') -> str:
+    """템플릿 분석 캐시 경로.
+
+    namespace:
+      - 'full': 1a~1e+chapter_types 통째 (기존 호환, suffix 없음)
+      - 'step1ab': 1a/1b 결과만 (1c 격리 실험용)
+      - 그 외: <key>_<namespace>.json
+    """
     import os
     safe_key = cache_key.replace("/", "_").replace("..", "_")
-    return os.path.join(TEMPLATE_CACHE_DIR, f"{safe_key}.json")
+    if namespace == 'full':
+        return os.path.join(TEMPLATE_CACHE_DIR, f"{safe_key}.json")
+    return os.path.join(TEMPLATE_CACHE_DIR, f"{safe_key}_{namespace}.json")
 
 
-def save_template_cache(cache_key: str, data: dict) -> bool:
+def save_template_cache(cache_key: str, data: dict, namespace: str = 'full') -> bool:
     """양식 분석 결과를 캐시에 저장."""
     import os
-    path = get_template_cache_path(cache_key)
+    path = get_template_cache_path(cache_key, namespace)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-        log.info(f"[CACHE] 템플릿 캐시 저장: {path} ({os.path.getsize(path):,}B)")
+        log.info(f"[CACHE/{namespace}] 저장: {path} ({os.path.getsize(path):,}B)")
         return True
     except Exception as e:
-        log.warning(f"[CACHE] 저장 실패: {e}")
+        log.warning(f"[CACHE/{namespace}] 저장 실패: {e}")
         return False
 
 
-def load_template_cache(cache_key: str) -> dict | None:
+def load_template_cache(cache_key: str, namespace: str = 'full') -> dict | None:
     """캐시에서 양식 분석 결과 로드. 없거나 실패시 None."""
     import os
-    path = get_template_cache_path(cache_key)
+    path = get_template_cache_path(cache_key, namespace)
     if not os.path.exists(path):
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        log.info(f"[CACHE] 템플릿 캐시 로드: {path} ({os.path.getsize(path):,}B)")
+        log.info(f"[CACHE/{namespace}] 로드: {path} ({os.path.getsize(path):,}B)")
         return data
     except Exception as e:
-        log.warning(f"[CACHE] 로드 실패 ({path}): {e}")
+        log.warning(f"[CACHE/{namespace}] 로드 실패 ({path}): {e}")
         return None
 
 
-def clear_template_cache(cache_key: str) -> bool:
+def clear_template_cache(cache_key: str, namespace: str = 'full') -> bool:
     """캐시 파일 삭제"""
     import os
-    path = get_template_cache_path(cache_key)
+    path = get_template_cache_path(cache_key, namespace)
     try:
         if os.path.exists(path):
             os.remove(path)
-            log.info(f"[CACHE] 삭제: {path}")
+            log.info(f"[CACHE/{namespace}] 삭제: {path}")
             return True
     except Exception as e:
-        log.warning(f"[CACHE] 삭제 실패: {e}")
+        log.warning(f"[CACHE/{namespace}] 삭제 실패: {e}")
     return False
 
 
