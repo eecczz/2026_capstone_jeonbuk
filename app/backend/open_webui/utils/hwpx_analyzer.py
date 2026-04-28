@@ -2255,57 +2255,225 @@ def canonicalize_role(marker_family: str, semantic_role: str) -> str:
     return default
 
 
-def _compute_container_roles(paragraphs: list[dict], threshold: float = 0.3) -> set:
+def _compute_container_scores(paragraphs: list[dict]) -> dict:
     """
-    양식 데이터 자체에서 role의 container 여부를 추론 (하드코딩 X).
+    양식 데이터 자체에서 role의 container 적합도를 multi-signal로 점수화 (하드코딩 X).
 
-    각 role의 인스턴스 중 자식이 있는 비율이 threshold 이상이면 container.
-    - title/header/section 같은 묶음 role: 거의 모든 인스턴스가 자식 가짐 → container
-    - summary/supplement/note/leaf 같은 role: 자식 거의 없음 → non-container
+    Signal (양식 무관):
+      - child_having_ratio: 인스턴스 중 자식 가진 비율
+      - avg_child_count: 인스턴스당 평균 자식 수 (전체 기준)
+      - avg_child_when_present: 자식 가진 인스턴스의 평균 자식 수
+      - dominant_signature_ratio: 가장 흔한 non-empty 자식 set 비율 (전체 기준)
+      - intro_pattern_ratio: 자식 1개인 인스턴스 비율 (intro/summary 의심)
 
-    threshold=0.3 의미: 인스턴스의 30% 이상이 자식 가져야 container.
-    예: summary_box 6 인스턴스 중 1번만 자식 가짐 (17%) → non-container 유지.
+    score = ratio*0.4 + min(avg_child/2, 1)*0.3 + dominant_ratio*0.3
 
     Args:
         paragraphs: level이 배정된 paragraph list
 
     Returns:
-        container로 인정된 role 이름 집합
+        {role: {score, instance_count, with_kids_count, child_having_ratio,
+                avg_child_count, avg_child_when_present, dominant_signature,
+                dominant_signature_ratio, intro_pattern_ratio}}
     """
-    from collections import defaultdict
+    from collections import defaultdict, Counter
 
-    role_inst_total = defaultdict(int)
-    role_inst_with_kids = defaultdict(int)
-    marked_inst = set()
+    role_instances = defaultdict(list)  # role → [list of child-role lists per inst]
+    stack = []  # [(level, role, kids_list_ref)]
 
-    stack = []  # [(level, role, paragraph_index_i)]
-
-    for i, p in enumerate(paragraphs):
+    for p in paragraphs:
         level = p.get("level")
         role = p.get("role", "")
         if level is None or not role:
             continue
-
-        role_inst_total[role] += 1
-
         while stack and stack[-1][0] >= level:
             stack.pop()
         if stack:
-            parent_level, parent_role, parent_i = stack[-1]
-            if parent_i not in marked_inst:
-                marked_inst.add(parent_i)
-                role_inst_with_kids[parent_role] += 1
+            parent_level, parent_role, parent_kids = stack[-1]
+            if level == parent_level + 1:
+                parent_kids.append(role)
+        my_kids = []
+        role_instances[role].append(my_kids)
+        stack.append((level, role, my_kids))
 
-        stack.append((level, role, i))
-
-    container_roles = set()
-    for role, total in role_inst_total.items():
+    scores = {}
+    for role, instances in role_instances.items():
+        total = len(instances)
         if total == 0:
             continue
-        with_kids = role_inst_with_kids.get(role, 0)
-        if with_kids / total >= threshold:
-            container_roles.add(role)
-    return container_roles
+        with_kids = sum(1 for inst in instances if inst)
+        ratio = with_kids / total
+        all_count = sum(len(inst) for inst in instances)
+        avg_count = all_count / total
+        avg_when_present = (all_count / with_kids) if with_kids else 0.0
+
+        non_empty_sigs = [tuple(sorted(set(inst))) for inst in instances if inst]
+        if non_empty_sigs:
+            sig_counter = Counter(non_empty_sigs)
+            top_sig, top_count = sig_counter.most_common(1)[0]
+            dominant_ratio = top_count / total
+        else:
+            top_sig, dominant_ratio = (), 0.0
+
+        single_child_count = sum(1 for inst in instances if len(inst) == 1)
+        intro_ratio = single_child_count / total
+
+        score = (
+            ratio * 0.4
+            + min(avg_count / 2.0, 1.0) * 0.3
+            + dominant_ratio * 0.3
+        )
+
+        scores[role] = {
+            "score": round(score, 3),
+            "instance_count": total,
+            "with_kids_count": with_kids,
+            "child_having_ratio": round(ratio, 3),
+            "avg_child_count": round(avg_count, 3),
+            "avg_child_when_present": round(avg_when_present, 3),
+            "dominant_signature": list(top_sig),
+            "dominant_signature_ratio": round(dominant_ratio, 3),
+            "intro_pattern_ratio": round(intro_ratio, 3),
+        }
+    return scores
+
+
+def _is_strong_container(role: str, scores: dict) -> bool:
+    """
+    Strong container 조건 (둘 중 하나 만족):
+      A) score >= 0.55 (multi-signal 종합 강함)
+      B) with_kids_count >= 5 AND avg_child_when_present >= 1.0
+         (충분한 인스턴스 데이터로 일관된 자식 보유)
+
+    A가 borderline인 role도 데이터가 충분하면 B로 구제.
+    """
+    s = scores.get(role)
+    if not s:
+        return False
+    if s["score"] >= 0.55:
+        return True
+    if s["with_kids_count"] >= 5 and s["avg_child_when_present"] >= 1.0:
+        return True
+    return False
+
+
+def _compute_container_roles(paragraphs: list[dict], threshold: float = 0.3) -> set:
+    """
+    호환 wrapper. _compute_container_scores + _is_strong_container 사용.
+    threshold 인자는 더 이상 사용하지 않음 (multi-signal 분류로 대체).
+    """
+    scores = _compute_container_scores(paragraphs)
+    return {role for role in scores if _is_strong_container(role, scores)}
+
+
+# 화살표 marker family — 결과/요약/귀결 의미. 일반적으로 leaf, 직전 enumeration 그룹 결론.
+_ARROW_MARKER_FAMILIES = {"char_⇒", "char_→"}
+
+# Enumeration marker family — 번호 매기기 시리즈. 화살표 reattach 대상.
+_ENUMERATION_MARKER_FAMILIES = {
+    "dingbat_neg_circle", "dingbat_neg_circle2",
+    "circle_num", "circle_num_pua",
+    "num_paren", "hangul_dot",
+}
+
+
+def reattach_arrow_markers(paragraphs: list[dict]) -> tuple:
+    """
+    화살표 marker family (char_⇒/→) 문단이 같은 부모 아래 enumeration family
+    형제와 함께 있으면, 직전 enumeration 형제의 자식으로 parent_idx 재설정.
+
+    이유: 화살표는 결과/요약 의미라 직전 enumeration 그룹의 결론으로 귀속되는 게 일반적.
+    Stack 알고리즘만으로는 enumeration 형제로 잘못 잡히기 쉬움.
+
+    in-place 수정. log 반환.
+    """
+    from collections import defaultdict
+
+    siblings_map = defaultdict(list)
+    for p in paragraphs:
+        siblings_map[p.get("parent_idx")].append(p)
+    for k in siblings_map:
+        siblings_map[k].sort(key=lambda x: x.get("idx", 0))
+
+    log = []
+    for p in paragraphs:
+        family = p.get("marker_family", "")
+        if family not in _ARROW_MARKER_FAMILIES:
+            continue
+        parent_idx = p.get("parent_idx")
+        sibs = siblings_map.get(parent_idx, [])
+        my_pos = next((i for i, s in enumerate(sibs) if s.get("idx") == p.get("idx")), None)
+        if my_pos is None or my_pos == 0:
+            continue
+        prev_enum = None
+        for s in reversed(sibs[:my_pos]):
+            if s.get("marker_family") in _ENUMERATION_MARKER_FAMILIES:
+                prev_enum = s
+                break
+        if prev_enum is None:
+            continue
+        log.append({
+            "arrow_idx": p.get("idx"),
+            "arrow_marker": p.get("marker"),
+            "arrow_family": family,
+            "old_parent_idx": parent_idx,
+            "new_parent_idx": prev_enum.get("idx"),
+            "new_parent_role": prev_enum.get("role"),
+        })
+        p["parent_idx"] = prev_enum.get("idx")
+        p["level"] = (prev_enum.get("level", 0) or 0) + 1
+        p["sibling_group_id"] = f"children_of_{prev_enum.get('idx')}"
+    return paragraphs, log
+
+
+def reparent_leaf_prone_children(paragraphs: list[dict], container_scores: dict) -> tuple:
+    """
+    Weak parent (non-strong container)의 자식들을 strong container인 grandparent로 승격.
+
+    조건:
+      - parent role이 _is_strong_container False
+      - grandparent role이 _is_strong_container True
+
+    효과:
+      - 자식의 parent_idx를 grandparent로 변경
+      - level을 grandparent.level + 1로 조정
+      - sibling_group_id 재계산
+
+    한 단만 처리 (재귀 X). 입력 paragraphs in-place 수정. log 반환.
+    """
+    para_by_idx = {p.get("idx"): p for p in paragraphs}
+    log = []
+    for p in paragraphs:
+        parent_idx = p.get("parent_idx")
+        if parent_idx is None:
+            continue
+        parent = para_by_idx.get(parent_idx)
+        if not parent:
+            continue
+        parent_role = parent.get("role", "")
+        if _is_strong_container(parent_role, container_scores):
+            continue
+        gp_idx = parent.get("parent_idx")
+        if gp_idx is None:
+            continue
+        gp = para_by_idx.get(gp_idx)
+        if not gp:
+            continue
+        gp_role = gp.get("role", "")
+        if not _is_strong_container(gp_role, container_scores):
+            continue
+        log.append({
+            "child_idx": p.get("idx"),
+            "child_role": p.get("role"),
+            "old_parent_idx": parent_idx,
+            "old_parent_role": parent_role,
+            "new_parent_idx": gp_idx,
+            "new_parent_role": gp_role,
+        })
+        p["parent_idx"] = gp_idx
+        p["level"] = (gp.get("level", 0) or 0) + 1
+        p["sibling_group_id"] = f"children_of_{gp_idx}"
+    return paragraphs, log
 
 
 def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]:
