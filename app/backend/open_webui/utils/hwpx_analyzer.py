@@ -2340,19 +2340,29 @@ def _compute_container_scores(paragraphs: list[dict]) -> dict:
 
 def _is_strong_container(role: str, scores: dict) -> bool:
     """
-    Strong container 조건 (둘 중 하나 만족):
-      A) score >= 0.55 (multi-signal 종합 강함)
+    Strong container 조건 — 3-way OR (어느 하나 만족):
+      A) score >= 0.6 (multi-signal 종합 확실히 강함)
       B) with_kids_count >= 5 AND avg_child_when_present >= 1.0
-         (충분한 인스턴스 데이터로 일관된 자식 보유)
+         (충분한 인스턴스 + 일관된 자식 보유 — 데이터로 보강)
+      C) score >= 0.55 AND dominant_signature_ratio >= 0.4
+         (borderline score 도 자식 패턴 일관되면 살림 — 데이터 적은 role 구제)
 
-    A가 borderline인 role도 데이터가 충분하면 B로 구제.
+    M 같은 unstable parent는 score borderline + 자식 패턴 비일관 (dom 낮음) →
+    셋 다 fail → weak 분류.
     """
     s = scores.get(role)
     if not s:
         return False
-    if s["score"] >= 0.55:
+    score = s["score"]
+    with_kids = s["with_kids_count"]
+    awp = s["avg_child_when_present"]
+    dom = s["dominant_signature_ratio"]
+
+    if score >= 0.6:
         return True
-    if s["with_kids_count"] >= 5 and s["avg_child_when_present"] >= 1.0:
+    if with_kids >= 5 and awp >= 1.0:
+        return True
+    if score >= 0.55 and dom >= 0.4:
         return True
     return False
 
