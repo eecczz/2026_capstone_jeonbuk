@@ -2466,11 +2466,16 @@ _ENUMERATION_MARKER_FAMILIES = {
 
 def reattach_arrow_markers(paragraphs: list[dict]) -> tuple:
     """
-    화살표 marker family (char_⇒/→) 문단이 같은 부모 아래 enumeration family
-    형제와 함께 있으면, 직전 enumeration 형제의 자식으로 parent_idx 재설정.
+    화살표 marker family (char_⇒/→) 문단의 parent_idx를 직전 enumeration
+    형제의 parent로 재설정 (= enumeration sibling 위치).
 
-    이유: 화살표는 결과/요약 의미라 직전 enumeration 그룹의 결론으로 귀속되는 게 일반적.
-    Stack 알고리즘만으로는 enumeration 형제로 잘못 잡히기 쉬움.
+    marker-family 기반 기본 룰. arrow가 enumeration 시퀀스의 trailing
+    summary로 등장하는 양식이 일반적이라 채택. Stack 알고리즘이 arrow를
+    enum 자식으로 잘못 둘 때 보정.
+
+    한계: arrow가 직전 enum 하나의 세부 설명으로 쓰이는 양식도 가능 —
+    그 경우 예외/검증 필요. Phase 2 ordered sibling pattern 설계
+    이후 case-by-case 처리.
 
     in-place 수정. log 반환.
     """
@@ -2481,6 +2486,8 @@ def reattach_arrow_markers(paragraphs: list[dict]) -> tuple:
         siblings_map[p.get("parent_idx")].append(p)
     for k in siblings_map:
         siblings_map[k].sort(key=lambda x: x.get("idx", 0))
+
+    idx_to_para = {p.get("idx"): p for p in paragraphs}
 
     log = []
     for p in paragraphs:
@@ -2499,17 +2506,23 @@ def reattach_arrow_markers(paragraphs: list[dict]) -> tuple:
                 break
         if prev_enum is None:
             continue
+        new_parent_idx = prev_enum.get("parent_idx")
+        if new_parent_idx is None:
+            continue
+        new_parent = idx_to_para.get(new_parent_idx)
         log.append({
             "arrow_idx": p.get("idx"),
             "arrow_marker": p.get("marker"),
             "arrow_family": family,
             "old_parent_idx": parent_idx,
-            "new_parent_idx": prev_enum.get("idx"),
-            "new_parent_role": prev_enum.get("role"),
+            "new_parent_idx": new_parent_idx,
+            "new_parent_role": new_parent.get("role") if new_parent else None,
+            "via_enum_idx": prev_enum.get("idx"),
+            "via_enum_role": prev_enum.get("role"),
         })
-        p["parent_idx"] = prev_enum.get("idx")
-        p["level"] = (prev_enum.get("level", 0) or 0) + 1
-        p["sibling_group_id"] = f"children_of_{prev_enum.get('idx')}"
+        p["parent_idx"] = new_parent_idx
+        p["level"] = prev_enum.get("level", 0) or 0
+        p["sibling_group_id"] = f"children_of_{new_parent_idx}"
     return paragraphs, log
 
 
