@@ -2779,6 +2779,68 @@ def compute_parent_instance_children_by_parent_idx(paragraphs: list[dict]) -> di
     return result
 
 
+def measure_tree_inconsistency(paragraphs: list[dict]) -> dict:
+    """
+    트리 내적 일관성 측정 — parent_idx와 level이 정합한가.
+
+    각 paragraph p에 대해 p.level == parent.level + 1 (root이면 level==0)이
+    성립하는지 검사. 어긋나면 inconsistency 1건.
+
+    stack tree에선 "container만 push" 정책 때문에 leaf-only 노드를 건너뛰고
+    더 위 ancestor와 parent_idx 연결됨 → level 갭 ≥ 2 발생 가능 (불일치).
+    parent_first tree는 BFS로 level 재계산이라 by construction 일관.
+
+    Returns:
+      {
+        "level_mismatch_count": int,
+        "root_level_mismatch_count": int,    # parent_idx None인데 level != 0
+        "details": [{idx, role, level, parent_idx, parent_level,
+                     expected_level, gap}, ...],
+      }
+    """
+    idx_to_p = {p.get("idx"): p for p in paragraphs}
+    details = []
+    root_mismatch = 0
+    for p in paragraphs:
+        parent_idx = p.get("parent_idx")
+        level = p.get("level")
+        if parent_idx is None:
+            if level not in (0, None):
+                root_mismatch += 1
+                details.append({
+                    "idx": p.get("idx"),
+                    "role": p.get("role"),
+                    "level": level,
+                    "parent_idx": None,
+                    "parent_level": None,
+                    "expected_level": 0,
+                    "gap": (level or 0) - 0,
+                })
+            continue
+        parent = idx_to_p.get(parent_idx)
+        if parent is None:
+            continue
+        plevel = parent.get("level")
+        if plevel is None or level is None:
+            continue
+        expected = plevel + 1
+        if level != expected:
+            details.append({
+                "idx": p.get("idx"),
+                "role": p.get("role"),
+                "level": level,
+                "parent_idx": parent_idx,
+                "parent_level": plevel,
+                "expected_level": expected,
+                "gap": level - expected,
+            })
+    return {
+        "level_mismatch_count": len(details),
+        "root_level_mismatch_count": root_mismatch,
+        "details": details,
+    }
+
+
 def compute_tree_diff(stack_paragraphs: list[dict],
                        hint_paragraphs: list[dict],
                        core_idxs: set = None) -> dict:
