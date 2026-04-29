@@ -2647,6 +2647,194 @@ def build_hint_override_tree(paragraphs: list[dict], decisions: dict,
     return para_copy
 
 
+def build_hint_tree(paragraphs: list[dict], decisions: dict,
+                     hint_validation: dict) -> list[dict]:
+    """
+    Hint-first 트리 구성. valid hint면 hint parent, 그 외(no_hint/self_loop/
+    forward_ref/out_of_range)는 stack parent fallback. BFS로 level 재계산.
+
+    입력:
+      - paragraphs: stack tree 상태 (parent_idx, level 이미 계산된 결과)
+      - decisions: 1c decisions (parent_hint_idx 포함)
+      - hint_validation: validate_parent_hints 결과 (per_idx status)
+
+    출력:
+      - paragraphs deepcopy. parent_idx (hint or stack fallback),
+        level (BFS 재계산), sibling_group_id 일관됨.
+
+    Cycle 보장: validate_parent_hints가 forward_ref/self_loop를 invalid
+    분류하므로 hint는 backward only. stack도 backward only.
+    → 모든 parent_idx < idx → DAG.
+
+    read-only 측정용. 1d/2a/2b/조립 파이프라인엔 사용하지 말 것.
+    """
+    import copy
+    from collections import defaultdict, deque
+
+    para_copy = copy.deepcopy(paragraphs)
+    idx_to_p = {p.get("idx"): p for p in para_copy}
+
+    # 1) parent_idx 결정 (valid hint면 hint, 아니면 stack 유지)
+    for p in para_copy:
+        idx = p.get("idx")
+        status = hint_validation.get("per_idx", {}).get(idx)
+        if status == "valid":
+            d = decisions.get(idx) or decisions.get(str(idx)) or {}
+            hint = d.get("parent_hint_idx")
+            if hint is not None and hint in idx_to_p:
+                p["parent_idx"] = hint
+
+    # 2) BFS level 재계산
+    children_of = defaultdict(list)
+    roots = []
+    for p in para_copy:
+        pi = p.get("parent_idx")
+        if pi is None:
+            roots.append(p.get("idx"))
+        else:
+            children_of[pi].append(p.get("idx"))
+
+    for p in para_copy:
+        p["level"] = None
+    queue = deque()
+    for r in roots:
+        rp = idx_to_p.get(r)
+        if rp is not None:
+            rp["level"] = 0
+            queue.append(r)
+    visited = set(roots)
+    while queue:
+        pi = queue.popleft()
+        plevel = idx_to_p[pi].get("level", 0) or 0
+        for ci in children_of.get(pi, []):
+            if ci in visited:
+                continue
+            cp = idx_to_p.get(ci)
+            if cp is None:
+                continue
+            cp["level"] = plevel + 1
+            visited.add(ci)
+            queue.append(ci)
+
+    # 3) sibling_group_id
+    for p in para_copy:
+        pi = p.get("parent_idx")
+        p["sibling_group_id"] = "roots" if pi is None else f"children_of_{pi}"
+
+    return para_copy
+
+
+def compute_parent_instance_children_by_parent_idx(paragraphs: list[dict]) -> dict:
+    """
+    parent_idx 기반 parent_instance_children 계산. 출력 형식은
+    compute_parent_instance_children(level 기반)과 동일.
+
+    hint_tree처럼 parent_idx와 level이 일관된 트리 비교용.
+    compute_parent_instance_children은 level 기반 stack 재구성이라
+    parent_idx 변화를 반영 못 함 — 그래서 별도 함수 필요.
+
+    Returns:
+        {parent_role: [frozenset(children)×N]}
+        - 인스턴스 < 2 인 role 제외
+        - 자식 종류 < 2 인 role 제외
+    """
+    from collections import defaultdict
+
+    role_instance_ids = defaultdict(list)
+    instance_children = defaultdict(set)
+    idx_to_inst = {}
+
+    for i, p in enumerate(paragraphs):
+        role = p.get("role", "")
+        if not role:
+            continue
+        role_instance_ids[role].append(i)
+        idx_to_inst[p.get("idx")] = (role, i)
+        instance_children[(role, i)] = set()
+
+    for p in paragraphs:
+        role = p.get("role", "")
+        parent_idx = p.get("parent_idx")
+        if not role or parent_idx is None:
+            continue
+        parent_inst = idx_to_inst.get(parent_idx)
+        if parent_inst is None:
+            continue
+        instance_children[parent_inst].add(role)
+
+    result = {}
+    for role, inst_ids in role_instance_ids.items():
+        if len(inst_ids) < 2:
+            continue
+        instances = [frozenset(instance_children[(role, iid)]) for iid in inst_ids]
+        non_empty = [inst for inst in instances if inst]
+        if not non_empty:
+            continue
+        all_children = set()
+        for inst in non_empty:
+            all_children |= inst
+        if len(all_children) < 2:
+            continue
+        result[role] = instances
+    return result
+
+
+def compute_tree_diff(stack_paragraphs: list[dict],
+                       hint_paragraphs: list[dict],
+                       core_idxs: set = None) -> dict:
+    """
+    stack_tree vs hint_tree edge difference + 분포 비교.
+
+    Returns:
+      {
+        "total_paragraphs": int,
+        "edge_change_count": int,
+        "changed_edges": [{idx, role, stack_parent, hint_parent,
+                           stack_level, hint_level, is_core}, ...],
+        "stack_root_count": int,
+        "hint_root_count": int,
+        "level_dist_stack": {level: count},
+        "level_dist_hint": {level: count},
+      }
+    """
+    from collections import Counter
+
+    stack_by_idx = {p.get("idx"): p for p in stack_paragraphs}
+    hint_by_idx = {p.get("idx"): p for p in hint_paragraphs}
+    core_set = core_idxs or set()
+
+    changed = []
+    for idx, sp in stack_by_idx.items():
+        hp = hint_by_idx.get(idx, {})
+        sparent = sp.get("parent_idx")
+        hparent = hp.get("parent_idx")
+        if sparent != hparent:
+            changed.append({
+                "idx": idx,
+                "role": sp.get("role"),
+                "stack_parent": sparent,
+                "hint_parent": hparent,
+                "stack_level": sp.get("level"),
+                "hint_level": hp.get("level"),
+                "is_core": idx in core_set,
+            })
+
+    stack_levels = Counter(p.get("level") for p in stack_paragraphs if p.get("level") is not None)
+    hint_levels = Counter(p.get("level") for p in hint_paragraphs if p.get("level") is not None)
+    stack_roots = sum(1 for p in stack_paragraphs if p.get("parent_idx") is None)
+    hint_roots = sum(1 for p in hint_paragraphs if p.get("parent_idx") is None)
+
+    return {
+        "total_paragraphs": len(stack_paragraphs),
+        "edge_change_count": len(changed),
+        "changed_edges": changed,
+        "stack_root_count": stack_roots,
+        "hint_root_count": hint_roots,
+        "level_dist_stack": dict(sorted(stack_levels.items())),
+        "level_dist_hint": dict(sorted(hint_levels.items())),
+    }
+
+
 def reparent_leaf_prone_children(paragraphs: list[dict], container_scores: dict) -> tuple:
     """
     Weak parent (non-strong container)의 자식들을 strong container인 grandparent로 승격.
