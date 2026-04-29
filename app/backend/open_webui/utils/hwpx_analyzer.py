@@ -3074,6 +3074,100 @@ def build_canonical_clustering_prompt(
     ]
 
 
+CANONICAL_CLUSTERING_REPAIR_PROMPT = """당신은 이전 1e structural clustering 결과의 validation 오류를 수정하는 전문가입니다.
+
+## 핵심 목적
+
+이전 분류에 누락 (missing) / 중복 (duplicate) / 범위 밖 (extra) idx 오류가 있어 수정이 필요합니다.
+**모든 input idx가 정확히 한 번씩** 한 cluster에 속해야 합니다 (95% 가 아니라 100%).
+
+## 요구사항 (validation 만족 필수)
+
+1. **모든 input paragraph idx 가 정확히 한 번씩** 등장
+2. **누락 idx**: 구조 패턴 (parent/child/sibling/repetition/position) 보고 **적절한 cluster 에 배정** — singleton 남발 금지
+3. **중복 idx**: 한 cluster 에만 남김 (가장 적절한 곳)
+4. **input 범위 밖 idx**: 제거
+5. **기존 cluster 구조는 가능한 한 유지** — 미수정 idx 들의 cluster 배정은 그대로
+
+## 판단 원칙 (1e 와 동일)
+
+- 같은 부모 + 같은 위치/순서/기능 = 같은 cluster
+- 의미 sub-genre 차이로 split 금지
+- 자식 유무만으로 단독 split 금지
+- marker 이름·1b/1c role 이름을 정답으로 보지 말 것
+- 데이터에서 추론, 외부 convention 가정 X
+
+## 입력
+
+- 전체 paragraph 데이터 (1e 와 동일 형식)
+- 이전 1e cluster 출력 (cluster_id 별 paragraph_idxs)
+- 발견된 issues (어떤 idx 가 missing/duplicate/extra 인지)
+
+## 출력 형식 (JSON 만)
+
+이전 1e 와 동일한 형식:
+
+```json
+{
+  "clusters": [
+    {
+      "cluster_id": 0,
+      "paragraph_idxs": [...],
+      "rationale": "..."
+    },
+    ...
+  ]
+}
+```
+
+- 수정 내용 별도 설명 금지 — corrected 결과 JSON 만 출력
+- 모든 cluster_id 와 paragraph_idxs 다시 작성 (변경 없는 cluster 도 포함)
+- 반드시 JSON 만
+"""
+
+
+def build_canonical_clustering_repair_prompt(
+    paragraphs: list[dict],
+    previous_clusters: list[dict],
+    issues: list,
+    role_candidates: dict = None,
+    decisions: dict = None,
+) -> list[dict]:
+    """
+    1e repair prompt — validation 오류 수정용.
+
+    이전 1e 결과에 누락/중복/extra idx 발생 시 LLM 재호출.
+    기존 cluster 구조 유지하면서 오류만 수정.
+    """
+    # 기본 1e prompt 의 paragraph table 재사용
+    base_prompt = build_canonical_clustering_prompt(paragraphs, role_candidates, decisions)
+    user_table_msg = base_prompt[1]["content"]
+
+    # 이전 cluster 결과
+    prev_clusters_text = "## 이전 1e cluster 출력\n\n```json\n"
+    import json as _json
+    prev_clusters_text += _json.dumps({"clusters": previous_clusters}, ensure_ascii=False, indent=2)
+    prev_clusters_text += "\n```\n"
+
+    # issues
+    issues_text = "## 발견된 validation 오류\n\n"
+    for issue in issues:
+        issues_text += f"- {issue}\n"
+
+    user_msg = (
+        f"{user_table_msg}\n\n"
+        f"{prev_clusters_text}\n\n"
+        f"{issues_text}\n\n"
+        "위 오류를 수정한 corrected cluster 출력을 JSON 으로 작성하라. "
+        "**모든 idx 가 정확히 한 번씩** 등장해야 함."
+    )
+
+    return [
+        {"role": "system", "content": CANONICAL_CLUSTERING_REPAIR_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+
+
 def parse_canonical_clustering_from_llm(
     llm_response: str,
     expected_idxs: set[int],
