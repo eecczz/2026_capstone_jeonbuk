@@ -2812,14 +2812,16 @@ def compute_parent_instance_children_by_parent_idx(paragraphs: list[dict]) -> di
     return result
 
 
-def canonicalize_by_data(paragraphs: list[dict]) -> dict:
+def canonicalize_by_data(paragraphs: list[dict],
+                          ambiguous_threshold: float = 0.6) -> dict:
     """
     parent_first tree 위에서 signature 기반 클러스터링으로 structural_role 할당.
 
-    Signature: (marker_family, parent_marker_family, level, paraPrIDRef)
+    Signature: (marker_family, parent_marker_family, level)
+    - paraPrIDRef는 instance별 unique한 경우 많아 over-fragmentation 유발 → primary signature 제외
+    - 대신 각 cluster 안의 paraPrIDRef 분포는 debug stat으로 보존
     - 같은 signature 인스턴스 = 같은 structural_role_id (role_cluster_<n>)
     - 각 cluster의 display_role = 가장 빈번한 1b semantic_role
-    - tree/exclusive_rules/chapter_types는 cluster_id 기준 (key의 단일성 보장)
 
     in-place 수정:
         - paragraph["structural_role_id"] = "role_cluster_N"
@@ -2828,14 +2830,19 @@ def canonicalize_by_data(paragraphs: list[dict]) -> dict:
         - paragraph["structure_role"] = cluster_id
 
     Returns:
-        role_registry: {cluster_id: {signature, display_role, instance_count,
-                                     semantic_role_distribution, instance_idxs}}
+        role_registry: {cluster_id: {
+            signature, display_role, instance_count,
+            semantic_role_distribution,
+            paraPrIDRef_distribution,         # debug only — 분포 균형 점검용
+            ambiguous,                         # display_role 비율 < threshold 면 True
+            instance_idxs,
+        }}
     """
     from collections import Counter, defaultdict
 
     idx_to_p = {p.get("idx"): p for p in paragraphs}
 
-    # 1) signature 계산 + 클러스터링
+    # 1) signature 계산 + 클러스터링 (paraPrIDRef 제외)
     sig_to_paras: dict = defaultdict(list)
     for p in paragraphs:
         family = p.get("marker_family", "") or ""
@@ -2843,14 +2850,16 @@ def canonicalize_by_data(paragraphs: list[dict]) -> dict:
         parent = idx_to_p.get(parent_idx)
         parent_family = (parent.get("marker_family", "") if parent else "") or ""
         level = p.get("level")
-        para_pr = p.get("paraPrIDRef") or ""
 
-        sig = (family, parent_family, level, para_pr)
+        sig = (family, parent_family, level)
         sig_to_paras[sig].append(p)
 
     # 2) 안정적 cluster_id 할당 (signature 정렬 — 결정적)
     role_registry: dict = {}
-    sorted_sigs = sorted(sig_to_paras.keys(), key=lambda s: (str(s[0]), str(s[1]), s[2] or 0, str(s[3])))
+    sorted_sigs = sorted(
+        sig_to_paras.keys(),
+        key=lambda s: (str(s[0]), str(s[1]), s[2] or 0)
+    )
 
     for cluster_idx, sig in enumerate(sorted_sigs):
         paras_in_cluster = sig_to_paras[sig]
@@ -2859,18 +2868,33 @@ def canonicalize_by_data(paragraphs: list[dict]) -> dict:
         sem_roles = Counter(
             (p.get("semantic_role") or "unknown") for p in paras_in_cluster
         )
-        display = sem_roles.most_common(1)[0][0] if sem_roles else "unknown"
+        para_prs = Counter(
+            (p.get("paraPrIDRef") or "") for p in paras_in_cluster
+        )
+
+        if sem_roles:
+            top_role, top_count = sem_roles.most_common(1)[0]
+            display = top_role
+            total = sum(sem_roles.values())
+            top_ratio = top_count / total if total else 0.0
+        else:
+            display = "unknown"
+            top_ratio = 0.0
+
+        ambiguous = top_ratio < ambiguous_threshold
 
         role_registry[cluster_id] = {
             "signature": {
                 "marker_family": sig[0],
                 "parent_marker_family": sig[1],
                 "level": sig[2],
-                "paraPrIDRef": sig[3],
             },
             "display_role": display,
             "instance_count": len(paras_in_cluster),
             "semantic_role_distribution": dict(sem_roles),
+            "paraPrIDRef_distribution": dict(para_prs),
+            "display_role_ratio": round(top_ratio, 3),
+            "ambiguous": ambiguous,
             "instance_idxs": sorted(p.get("idx") for p in paras_in_cluster if p.get("idx") is not None),
         }
 
