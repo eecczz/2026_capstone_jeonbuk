@@ -2156,7 +2156,8 @@ def parse_level_from_llm(llm_response: str, hybrid: bool = False) -> dict:
 
 
 def merge_levels_into_structure(
-    structure: dict, parsed: dict, exclusive_rules: list = None
+    structure: dict, parsed: dict, exclusive_rules: list = None,
+    canonical_mode: str = "on",
 ) -> dict:
     """
     1c (AI 2) 결과를 structure에 병합 + structure_role 자동 합성 + validator 적용.
@@ -2171,6 +2172,10 @@ def merge_levels_into_structure(
         structure: paragraphs (1b의 role_candidates + features 포함)
         parsed: parse_level_from_llm 결과
         exclusive_rules: 1d 결과 (선택)
+        canonical_mode: _FAMILY_DEFAULT_CANONICAL 적용 모드
+            - "on": fallback 적용 (현재 방식)
+            - "report_only": fallback 적용 안 함, log만
+            - "off": fallback 적용 안 함, log도 없음
 
     Returns:
         paragraphs에 level/role/structure_role/parent_idx/sibling_group_id 추가
@@ -2244,19 +2249,20 @@ def merge_levels_into_structure(
     # canonical_role = 양식 구조 관점의 정규화 (1b의 다양한 semantic_role을 family 기반으로 통합)
     # structure_role = marker_family + canonical_role (chapter_types signature용)
     # semantic_role은 paragraph dict에 그대로 보존 (description과 함께 2b가 활용)
-    canonical_fallback_log = []  # 하드코딩 fallback이 LLM 의견 override한 케이스 추적
+    canonical_fallback_log = []  # mode "on"/"report_only" 에서 fallback 발동 케이스
     for p in structure.get("paragraphs", []):
         sem_role = p.get("semantic_role") or p.get("role", "unknown")
         family = p.get("marker_family", "") or ""
 
-        canonical_role, applied_default = canonicalize_role(family, sem_role)
+        canonical_role, fallback_info = canonicalize_role(family, sem_role, mode=canonical_mode)
         p["canonical_role"] = canonical_role
-        if applied_default:
+        if fallback_info is not None:
             canonical_fallback_log.append({
                 "idx": p.get("idx"),
                 "marker_family": family,
                 "semantic_role_from_1b": sem_role,
-                "applied_canonical": canonical_role,
+                "family_default": fallback_info["family_default"],
+                "applied": fallback_info["applied"],   # mode "on" → True, "report_only" → False
             })
 
         family_for_label = family or "no_marker"
@@ -2271,6 +2277,7 @@ def merge_levels_into_structure(
         p["role"] = structure_role
 
     structure["canonical_fallback_log"] = canonical_fallback_log
+    structure["canonical_mode"] = canonical_mode
 
     # 3단계: 코드가 parent_idx + sibling_group_id 자동 계산 (level 시퀀스 기반)
     # canonical_role 합성 후라 _can_be_parent 필터가 정확히 동작
@@ -2318,35 +2325,44 @@ _FAMILY_DEFAULT_CANONICAL = {
 _ALLOWED_OVERRIDES = {}
 
 
-def canonicalize_role(marker_family: str, semantic_role: str) -> tuple[str, bool]:
+def canonicalize_role(marker_family: str, semantic_role: str,
+                       mode: str = "on") -> tuple[str, dict | None]:
     """
     marker_family + semantic_role → canonical_role 정규화.
 
-    매핑 우선순위:
-    1. 마커 없는 항목은 semantic_role 그대로 (제목·박스류는 의미가 곧 양식 역할)
-    2. 매핑된 family + 허용된 override 후보 → semantic_role 그대로
-    3. 매핑된 family + 그 외 → family 기본 canonical (= 하드코딩 fallback)
-    4. 매핑 안 된 family → semantic_role 그대로 (양식별 특수 마커 보존)
+    mode:
+        - "on": family default가 있고 semantic_role과 다르면 default로 override (현재 방식)
+        - "report_only": override 안 함 (semantic_role 반환). 발생했을 fallback은 log.
+        - "off": override 안 함. fallback log도 None.
 
     Returns:
-        (canonical_role, applied_family_default)
-        - applied_family_default=True: family 하드코딩이 1b의 semantic_role을 override
-        - measurement용 — 다른 양식·prompt에서 LLM과 하드코딩 disagree 빈도 추적
+        (final_canonical_role, fallback_info)
+        - fallback_info: None or dict
+            - None: family default 없음 / semantic_role과 일치 / mode="off"
+            - dict: {family_default, applied (bool)}
     """
     if not marker_family or marker_family == "":
-        return semantic_role, False
+        return semantic_role, None
 
     default = _FAMILY_DEFAULT_CANONICAL.get(marker_family)
     if not default:
-        return semantic_role, False
+        return semantic_role, None
 
     overrides = _ALLOWED_OVERRIDES.get(marker_family, set())
     if semantic_role in overrides:
-        return semantic_role, False
+        return semantic_role, None
 
-    # family default 사용. 의미 있는 override = 1b semantic_role과 default 다를 때.
-    applied_override = (semantic_role != default)
-    return default, applied_override
+    if semantic_role == default:
+        # 1b가 이미 family default와 같은 role 줌 — fallback 발생 안 함
+        return semantic_role, None
+
+    # 여기서부터 fallback이 발동 가능 (mode에 따라 적용 여부 달라짐)
+    if mode == "on":
+        return default, {"family_default": default, "applied": True}
+    elif mode == "report_only":
+        return semantic_role, {"family_default": default, "applied": False}
+    else:  # "off"
+        return semantic_role, None
 
 
 def _compute_container_scores(paragraphs: list[dict]) -> dict:
