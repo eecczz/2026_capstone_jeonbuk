@@ -15,12 +15,14 @@ import sys
 import tempfile
 import time
 import uuid
+import hashlib
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, StreamingResponse
 
 # (참고) 음성 응답 출력은 Phase 2a에서 브라우저 speechSynthesis API 활용,
 # Phase 2b에서 Qwen3-TTS 서버 사이드 합성으로 전환 예정.
@@ -36,6 +38,49 @@ logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+PUBLIC_VOICE_AUDIO_PREFIX = "public-voice-"
+
+
+def _public_chatbot_rag_files(request: Request) -> list[dict]:
+    """Build explicit RAG file/collection attachments for the public chatbot.
+
+    PUBLIC_CHATBOT_KNOWLEDGE_ID accepts comma separated entries:
+    - <knowledge_id> or collection:<knowledge_id> for normal Knowledge bases
+    - legacy:<collection_name> for direct vector collections such as crawler output
+    """
+    raw_value = str(
+        getattr(request.app.state.config, "PUBLIC_CHATBOT_KNOWLEDGE_ID", "") or ""
+    ).strip()
+    if not raw_value:
+        return []
+
+    files: list[dict] = []
+    for raw_item in raw_value.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+
+        if item.startswith("legacy:"):
+            collection_name = item[len("legacy:") :].strip()
+            if collection_name:
+                files.append(
+                    {
+                        "id": collection_name,
+                        "name": collection_name,
+                        "type": "file",
+                        "legacy": True,
+                    }
+                )
+            continue
+
+        if item.startswith("collection:"):
+            item = item[len("collection:") :].strip()
+
+        if item:
+            files.append({"id": item, "name": item, "type": "collection"})
+
+    return files
 
 
 ####################
@@ -262,11 +307,14 @@ async def _run_public_llm(
     }
 
     # 5. form_data 초기화
+    rag_files = _public_chatbot_rag_files(request)
+
     form_data = {
         "model": model_id,
         "messages": messages,
         "stream": False,
         "metadata": metadata,
+        "files": rag_files,
     }
 
     # request.state에도 metadata 반영 (generate_chat_completion 내부에서 참조됨)
@@ -406,6 +454,114 @@ async def public_chat_health(request: Request):
 ####################
 
 
+async def _synthesize_public_qwen_tts(request: Request, text: str) -> Optional[str]:
+    """Synthesize public voice replies with the configured Qwen3-TTS model."""
+    if not text.strip():
+        return None
+
+    if getattr(request.app.state.config, "TTS_ENGINE", "") != "qwen":
+        log.info("Public voice TTS skipped because TTS_ENGINE is not 'qwen'")
+        return None
+
+    try:
+        import soundfile as sf
+        from open_webui.routers.audio import SPEECH_CACHE_DIR
+    except Exception as e:
+        log.exception(f"Qwen3-TTS dependencies unavailable: {e}")
+        return None
+
+    model_name = getattr(
+        request.app.state.config,
+        "AUDIO_TTS_QWEN_MODEL",
+        "Qwen/Qwen3-TTS-12Hz-1.7B",
+    )
+    voice = getattr(request.app.state.config, "AUDIO_TTS_QWEN_VOICE", "")
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {"text": text, "model": model_name, "voice": voice},
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    filename = f"{PUBLIC_VOICE_AUDIO_PREFIX}{cache_key}.wav"
+    file_path = SPEECH_CACHE_DIR.joinpath(filename)
+
+    if file_path.is_file():
+        return f"/api/v1/public/voice-audio/{filename}"
+
+    try:
+        if getattr(request.app.state, "qwen_tts_pipeline", None) is None:
+            from transformers import pipeline
+
+            try:
+                import torch
+
+                device = 0 if torch.cuda.is_available() else -1
+            except Exception:
+                device = -1
+
+            log.info(f"Loading Qwen3-TTS model: {model_name} on device={device}")
+            request.app.state.qwen_tts_pipeline = pipeline(
+                task="text-to-speech",
+                model=model_name,
+                device=device,
+            )
+
+        pipe = request.app.state.qwen_tts_pipeline
+        forward_params = {"voice": voice} if voice else {}
+        try:
+            result = (
+                pipe(text, forward_params=forward_params)
+                if forward_params
+                else pipe(text)
+            )
+        except TypeError:
+            result = pipe(text)
+
+        audio_array = None
+        sampling_rate = 24000
+        if isinstance(result, dict):
+            audio_array = result.get("audio")
+            sampling_rate = result.get("sampling_rate", sampling_rate)
+        elif isinstance(result, list) and result and isinstance(result[0], dict):
+            audio_array = result[0].get("audio")
+            sampling_rate = result[0].get("sampling_rate", sampling_rate)
+
+        if audio_array is None:
+            log.error("Qwen3-TTS returned no audio")
+            return None
+
+        if hasattr(audio_array, "detach"):
+            audio_array = audio_array.detach().cpu().numpy()
+
+        sf.write(str(file_path), audio_array, samplerate=sampling_rate)
+        return f"/api/v1/public/voice-audio/{filename}"
+    except Exception as e:
+        log.exception(f"Public Qwen3-TTS failed: {e}")
+        return None
+
+
+@router.get("/voice-audio/{filename}")
+async def public_voice_audio(filename: str):
+    """Serve cached public voice replies generated by Qwen3-TTS."""
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or not safe_name.startswith(PUBLIC_VOICE_AUDIO_PREFIX):
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in {".wav", ".mp3"}:
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+    from open_webui.routers.audio import SPEECH_CACHE_DIR
+
+    file_path = SPEECH_CACHE_DIR.joinpath(safe_name)
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+    media_type = "audio/wav" if suffix == ".wav" else "audio/mpeg"
+    return FileResponse(file_path, media_type=media_type)
+
+
 async def _run_chat_internal(
     request: Request, message: str, history: list[dict]
 ) -> tuple[str, str, list[dict]]:
@@ -522,14 +678,15 @@ async def public_voice_chat(
             status_code=500, detail=f"챗봇 응답 생성 실패: {str(e)}"
         )
 
-    # 5. 응답 반환 (Phase 2a: 텍스트만 반환, 음성 재생은 프론트 브라우저 speechSynthesis 사용)
-    # TTS 완전 통합은 audio.py의 speech() 함수를 리팩터링해야 하므로 차후 작업.
+    audio_url = await _synthesize_public_qwen_tts(request, reply_text)
+
+    # 5. 응답 반환 (Qwen3-TTS audio_url 우선, 실패 시 프론트 브라우저 TTS fallback)
     return JSONResponse(
         {
             "question": question_text,
             "reply": reply_text,
             "session_id": session_id,
             "sources": sources,
-            "audio_url": None,  # Phase 2a: 프론트 브라우저 TTS로 대체
+            "audio_url": audio_url,
         }
     )
