@@ -34,3 +34,18 @@ AUDIO_TTS_QWEN_VOICE=female_kr_01
 
 The frontend still falls back to browser speech synthesis when Qwen3-TTS is disabled
 or fails.
+
+## STT post-processing
+
+`open_webui.utils.public_voice` applies the first service-facing correction layer:
+
+- domain term correction such as `국취제` -> `국민취업지원제도`
+- Korean speech normalization for common type/date expressions
+- short utterance interpretation against recent chat history
+- intent hints for schedule, amount, channel, documents, eligibility, apply, cancel
+- directedness scoring so background speech can be ignored
+- confidence-based `answer`, `clarify`, or `ignore` decisions
+
+The public voice endpoint only sends the normalized question to RAG when the action is
+`answer`. It returns a confirmation prompt for `clarify`, and `ignored: true` for
+background speech.

@@ -33,6 +33,7 @@ from open_webui.models.models import Models
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.middleware import process_chat_payload
 from open_webui.utils.models import get_all_models
+from open_webui.utils.public_voice import understand_public_voice
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -665,10 +666,62 @@ async def public_voice_chat(
         except Exception:
             log.warning(f"invalid history_json: {history_json[:200]}")
 
+    stt_confidence = None
+    try:
+        stt_confidence = (stt_result or {}).get("confidence")
+    except Exception:
+        stt_confidence = None
+
+    voice_understanding = understand_public_voice(
+        question_text,
+        history=history,
+        stt_confidence=stt_confidence,
+    )
+
+    if voice_understanding.action == "ignore":
+        return JSONResponse(
+            {
+                "question": voice_understanding.raw_text,
+                "normalized_question": voice_understanding.normalized_text,
+                "reply": "",
+                "session_id": None,
+                "sources": [],
+                "audio_url": None,
+                "ignored": True,
+                "confidence": voice_understanding.confidence,
+                "directedness": voice_understanding.directedness,
+                "intent": voice_understanding.intent,
+                "reason": voice_understanding.reason,
+                "corrections": voice_understanding.corrections,
+            }
+        )
+
+    if voice_understanding.action == "clarify":
+        reply_text = voice_understanding.confirmation or (
+            "제가 이해한 내용이 맞는지 한 번만 확인해 주세요."
+        )
+        audio_url = await _synthesize_public_qwen_tts(request, reply_text)
+        return JSONResponse(
+            {
+                "question": voice_understanding.raw_text,
+                "normalized_question": voice_understanding.normalized_text,
+                "reply": reply_text,
+                "session_id": None,
+                "sources": [],
+                "audio_url": audio_url,
+                "needs_confirmation": True,
+                "confidence": voice_understanding.confidence,
+                "directedness": voice_understanding.directedness,
+                "intent": voice_understanding.intent,
+                "reason": voice_understanding.reason,
+                "corrections": voice_understanding.corrections,
+            }
+        )
+
     # 4. LLM 호출 (RAG 포함)
     try:
         reply_text, session_id, sources = await _run_chat_internal(
-            request, question_text, history
+            request, voice_understanding.normalized_text, history
         )
     except HTTPException:
         raise
@@ -683,10 +736,18 @@ async def public_voice_chat(
     # 5. 응답 반환 (Qwen3-TTS audio_url 우선, 실패 시 프론트 브라우저 TTS fallback)
     return JSONResponse(
         {
-            "question": question_text,
+            "question": voice_understanding.raw_text,
+            "normalized_question": voice_understanding.normalized_text,
             "reply": reply_text,
             "session_id": session_id,
             "sources": sources,
             "audio_url": audio_url,
+            "ignored": False,
+            "needs_confirmation": False,
+            "confidence": voice_understanding.confidence,
+            "directedness": voice_understanding.directedness,
+            "intent": voice_understanding.intent,
+            "reason": voice_understanding.reason,
+            "corrections": voice_understanding.corrections,
         }
     )
