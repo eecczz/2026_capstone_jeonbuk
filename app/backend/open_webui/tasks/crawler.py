@@ -243,10 +243,14 @@ async def _fetch_html(url: str) -> Optional[str]:
     """페이지 raw HTML 취득 (첨부/이미지 링크 추출 용도).
 
     get_web_loader 와 별개로 호출되며 실패해도 페이지 처리에는 영향 없음.
+    정부 사이트의 self-signed cert 체인을 고려해 SSL 검증을 끈다 (기존 크롤러와 동일 정책).
     """
     try:
         timeout = aiohttp.ClientTimeout(total=20)
-        async with aiohttp.ClientSession(headers=_DEFAULT_HEADERS) as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(
+            headers=_DEFAULT_HEADERS, connector=connector
+        ) as session:
             async with session.get(
                 url, allow_redirects=True, timeout=timeout
             ) as resp:
@@ -269,10 +273,10 @@ async def _fetch_html(url: str) -> Optional[str]:
 def _load_page_sync(url: str) -> list[Document]:
     """기존 get_web_loader로 페이지를 로드하여 langchain Document 반환.
 
+    정부 사이트의 self-signed cert 체인 때문에 verify_ssl=False 사용.
     주의: get_web_loader는 전역 WEB_LOADER_ENGINE 설정을 사용한다.
-    사이트별 엔진 지정은 현재 지원하지 않음 (향후 개선 여지).
     """
-    loader = get_web_loader(url)
+    loader = get_web_loader(url, verify_ssl=False)
     try:
         docs = loader.load()
         return docs or []

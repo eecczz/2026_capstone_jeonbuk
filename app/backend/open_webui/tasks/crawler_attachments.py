@@ -286,7 +286,7 @@ def _build_loader(request) -> DocLoader:
     crawler 호출 컨텍스트에서는 routers.retrieval 의 분기 코드를 그대로 재사용한다.
     OCR 서버 URL 등은 환경변수에서 자동 로드된다.
     """
-    from open_webui.config import OCR_SERVER_URL  # late import
+    from open_webui.env import OCR_SERVER_URL  # late import
 
     cfg = getattr(request.app.state, "config", None)
     kwargs = {}
@@ -355,7 +355,7 @@ def _ocr_image_file(file_path: str) -> list[Document]:
 
     이미지 분기는 Loader._get_loader 가 PDF 만 지원하므로 직접 호출.
     """
-    from open_webui.config import OCR_SERVER_URL  # late import
+    from open_webui.env import OCR_SERVER_URL  # late import
     from open_webui.retrieval.loaders.deepseek_ocr_loader import DeepSeekOCRLoader
 
     if not OCR_SERVER_URL:
