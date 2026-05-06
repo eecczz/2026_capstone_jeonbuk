@@ -239,6 +239,28 @@ async def _http_head(url: str) -> dict[str, Optional[str]]:
         return {"status": None, "etag": None, "last_modified": None}
 
 
+async def _fetch_html(url: str) -> Optional[str]:
+    """페이지 raw HTML 취득 (첨부/이미지 링크 추출 용도).
+
+    get_web_loader 와 별개로 호출되며 실패해도 페이지 처리에는 영향 없음.
+    """
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(headers=_DEFAULT_HEADERS) as session:
+            async with session.get(
+                url, allow_redirects=True, timeout=timeout
+            ) as resp:
+                if resp.status >= 400:
+                    return None
+                ctype = resp.headers.get("Content-Type", "")
+                if "html" not in ctype.lower():
+                    return None
+                return await resp.text(errors="ignore")
+    except Exception as e:
+        log.debug(f"fetch_html failed for {url}: {e}")
+        return None
+
+
 ####################
 # 페이지 로드 (langchain Document 반환)
 ####################
@@ -423,6 +445,33 @@ async def _process_url(
         chunks_count=len(docs),
         content_changed=True,
     )
+
+    # 첨부 + 인라인 이미지 처리 (best-effort, 실패해도 페이지는 success 유지)
+    cfg = getattr(request.app.state, "config", None)
+    attach_enabled = bool(getattr(cfg, "CRAWL_ATTACHMENTS_ENABLED", True)) if cfg else True
+    images_enabled = bool(getattr(cfg, "CRAWL_INLINE_IMAGES_ENABLED", True)) if cfg else True
+    if attach_enabled:
+        try:
+            from open_webui.tasks.crawler_attachments import process_page_attachments
+
+            html = await _fetch_html(url)
+            if html:
+                stats = await process_page_attachments(
+                    request,
+                    page_url=url,
+                    page_html=html,
+                    page_metadata=metadata,
+                    site_code=site_config["code"],
+                    collection_name=collection_name,
+                    include_images=images_enabled,
+                )
+                log.info(
+                    f"attachments[{url}] discovered={stats.get('discovered',0)} "
+                    f"processed={stats.get('processed',0)} skipped={stats.get('skipped',0)} "
+                    f"error={stats.get('error',0)}"
+                )
+        except Exception as e:
+            log.exception(f"attachment processing failed for {url}: {e}")
 
     return "updated" if existing else "new"
 

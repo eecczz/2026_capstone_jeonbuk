@@ -798,6 +798,132 @@
         }
       })();
     </script>
+
+    <!-- ===========================================================
+         Public Voice Chatbot floating button (auth page only)
+         - /auth 경로에서만 우측 하단에 챗봇 버튼 표시
+         - 클릭 시 /static/public-chatbot.html 을 슬라이드 패널 iframe 으로 띄움
+         =========================================================== -->
+    <script>
+      (function () {
+        var AUTH_PATH_PREFIXES = ["/auth"];
+        var BTN_ID = "jb-pub-chatbot-btn";
+        var PANEL_ID = "jb-pub-chatbot-panel";
+        var STYLE_ID = "jb-pub-chatbot-style";
+        var CHATBOT_URL = "/static/public-chatbot.html";
+
+        function isAuthRoute() {
+          var p = location.pathname || "/";
+          return AUTH_PATH_PREFIXES.some(function (prefix) {
+            return p === prefix || p.startsWith(prefix + "/");
+          });
+        }
+
+        function ensureStyle() {
+          if (document.getElementById(STYLE_ID)) return;
+          var st = document.createElement("style");
+          st.id = STYLE_ID;
+          st.textContent =
+            "#" + BTN_ID + "{position:fixed;right:20px;bottom:20px;z-index:99999;width:62px;height:62px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#0b5ed7,#38bdf8);box-shadow:0 6px 24px rgba(11,94,215,0.45);display:flex;align-items:center;justify-content:center;color:#fff;font-size:28px;transition:transform 0.2s ease, box-shadow 0.2s ease;}" +
+            "#" + BTN_ID + ":hover{transform:scale(1.08);box-shadow:0 8px 32px rgba(11,94,215,0.6);}" +
+            "#" + BTN_ID + " .jb-label{position:absolute;right:72px;background:rgba(20,30,50,0.92);color:#fff;font-size:12px;padding:6px 10px;border-radius:8px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 0.15s;}" +
+            "#" + BTN_ID + ":hover .jb-label{opacity:1;}" +
+            "#" + PANEL_ID + "{position:fixed;right:20px;bottom:96px;z-index:99998;width:min(420px,calc(100vw - 40px));height:min(640px,calc(100vh - 140px));background:#fff;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,0.28);overflow:hidden;display:none;flex-direction:column;border:1px solid rgba(0,0,0,0.06);}" +
+            "#" + PANEL_ID + ".open{display:flex;animation:jb-pop 0.18s ease-out;}" +
+            "#" + PANEL_ID + " .jb-head{height:42px;display:flex;align-items:center;justify-content:space-between;padding:0 12px 0 14px;background:#0b5ed7;color:#fff;font-size:13px;font-weight:600;}" +
+            "#" + PANEL_ID + " .jb-close{background:transparent;border:none;color:#fff;font-size:20px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px;}" +
+            "#" + PANEL_ID + " .jb-close:hover{background:rgba(255,255,255,0.18);}" +
+            "#" + PANEL_ID + " iframe{flex:1;width:100%;border:none;background:#f5f7fb;}" +
+            "@keyframes jb-pop{from{opacity:0;transform:translateY(8px) scale(0.98);}to{opacity:1;transform:none;}}" +
+            "@media (max-width:480px){" +
+            "  #" + PANEL_ID + "{right:10px;left:10px;bottom:88px;width:auto;height:calc(100vh - 110px);}" +
+            "  #" + BTN_ID + "{right:14px;bottom:14px;}" +
+            "}";
+          document.head.appendChild(st);
+        }
+
+        function ensurePanel() {
+          var panel = document.getElementById(PANEL_ID);
+          if (panel) return panel;
+          panel = document.createElement("div");
+          panel.id = PANEL_ID;
+          panel.innerHTML =
+            '<div class="jb-head"><span>전북도청 AI 안내원</span>' +
+            '<button class="jb-close" type="button" aria-label="닫기">&times;</button></div>' +
+            '<iframe title="전북도청 AI 안내원" allow="microphone; autoplay" loading="lazy"></iframe>';
+          document.body.appendChild(panel);
+          panel.querySelector(".jb-close").addEventListener("click", closePanel);
+          return panel;
+        }
+
+        function openPanel() {
+          var panel = ensurePanel();
+          var ifr = panel.querySelector("iframe");
+          if (!ifr.src) ifr.src = CHATBOT_URL;
+          panel.classList.add("open");
+        }
+
+        function closePanel() {
+          var panel = document.getElementById(PANEL_ID);
+          if (panel) panel.classList.remove("open");
+        }
+
+        function ensureButton() {
+          if (document.getElementById(BTN_ID)) return;
+          ensureStyle();
+          var btn = document.createElement("button");
+          btn.id = BTN_ID;
+          btn.type = "button";
+          btn.setAttribute("aria-label", "AI 안내원 열기");
+          btn.innerHTML = '<span class="jb-label">AI 안내원에게 물어보기</span><span aria-hidden="true">💬</span>';
+          btn.addEventListener("click", function () {
+            var panel = document.getElementById(PANEL_ID);
+            if (panel && panel.classList.contains("open")) {
+              closePanel();
+            } else {
+              openPanel();
+            }
+          });
+          document.body.appendChild(btn);
+        }
+
+        function removeUi() {
+          var btn = document.getElementById(BTN_ID);
+          if (btn) btn.remove();
+          var panel = document.getElementById(PANEL_ID);
+          if (panel) panel.remove();
+        }
+
+        function sync() {
+          if (isAuthRoute()) {
+            ensureButton();
+          } else {
+            removeUi();
+          }
+        }
+
+        // SPA route 변경 감지 (history API hook)
+        var _push = history.pushState;
+        history.pushState = function () {
+          var r = _push.apply(this, arguments);
+          setTimeout(sync, 0);
+          return r;
+        };
+        var _replace = history.replaceState;
+        history.replaceState = function () {
+          var r = _replace.apply(this, arguments);
+          setTimeout(sync, 0);
+          return r;
+        };
+        window.addEventListener("popstate", sync);
+
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", sync, { once: true });
+        } else {
+          sync();
+        }
+      })();
+    </script>
   </body>
 
   <style type="text/css" nonce="">

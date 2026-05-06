@@ -22,13 +22,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from open_webui.env import GLOBAL_LOG_LEVEL
-from open_webui.models.crawler import CrawledPages
+from open_webui.models.crawler import CrawledAttachments, CrawledPages
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.tasks.crawler import (
+    _fetch_html,
+    _build_metadata,
+    _load_page,
     run_full_crawl,
     run_incremental_crawl,
     run_site_crawl,
 )
+from open_webui.tasks.crawler_attachments import process_page_attachments
 from open_webui.tasks.crawler_sites import SITES, get_site
 from open_webui.utils.auth import get_admin_user
 
@@ -223,3 +227,65 @@ async def delete_site_data(
 
     deleted = CrawledPages.delete_by_site(code)
     return {"status": "ok", "site_code": code, "deleted_records": deleted}
+
+
+####################
+# 첨부 처리
+####################
+
+
+@router.get("/attachments/status")
+async def attachments_status(user=Depends(get_admin_user)):
+    """첨부 처리 통계 (status 별 / type 별)."""
+    return CrawledAttachments.get_stats()
+
+
+class TestPageRequest(BaseModel):
+    url: str
+    site_code: str = "jeonbuk_main"
+    include_images: bool = True
+
+
+@router.post("/test-page")
+async def test_single_page(
+    request: Request,
+    body: TestPageRequest,
+    user=Depends(get_admin_user),
+):
+    """단일 URL 로 페이지 + 첨부 + 인라인 이미지 처리를 즉시 실행 (디버깅/테스트 용).
+
+    크롤 큐 없이 동기로 끝까지 돌리며 결과를 그대로 반환한다.
+    """
+    site = get_site(body.site_code) or {
+        "code": body.site_code,
+        "name": body.site_code,
+        "base_url": body.url,
+    }
+    collection_name = getattr(
+        request.app.state.config, "CRAWLER_COLLECTION_NAME", "jeonbuk_gov"
+    )
+
+    docs = await _load_page(body.url)
+    if not docs:
+        return {"status": "error", "stage": "page_load", "message": "load returned empty"}
+
+    metadata = _build_metadata(body.url, site, docs)
+    html = await _fetch_html(body.url)
+    att_stats: dict = {}
+    if html:
+        att_stats = await process_page_attachments(
+            request,
+            page_url=body.url,
+            page_html=html,
+            page_metadata=metadata,
+            site_code=body.site_code,
+            collection_name=collection_name,
+            include_images=body.include_images,
+        )
+    return {
+        "status": "ok",
+        "url": body.url,
+        "page_chunks": len(docs),
+        "metadata": {k: v for k, v in metadata.items() if k != "_orig_metadata"},
+        "attachments": att_stats,
+    }

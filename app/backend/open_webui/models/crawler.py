@@ -267,3 +267,225 @@ class CrawledPagesTable:
 
 
 CrawledPages = CrawledPagesTable()
+
+
+####################
+# CrawledAttachment DB Schema
+####################
+
+
+class CrawledAttachment(Base):
+    """페이지에 첨부된 파일 (PDF/HWP/HWPX/이미지 등) 메타데이터.
+
+    페이지 크롤링 시 발견되는 모든 다운로드 가능한 첨부의 처리 상태를 추적한다.
+    실제 파일은 Open WebUI 스토리지에 보관되고, 청크는 같은 collection에 저장된다.
+    """
+
+    __tablename__ = "crawled_attachment"
+
+    id = Column(String, primary_key=True, unique=True)
+    url = Column(Text, unique=True, nullable=False, index=True)
+    source_page_url = Column(Text, index=True)
+
+    site_code = Column(String, index=True)
+    institution = Column(String)
+    category = Column(String)
+
+    file_type = Column(String)  # pdf / hwp / hwpx / xlsx / image / etc.
+    file_size = Column(BigInteger)
+    content_hash = Column(String)
+
+    status = Column(String, default="pending", index=True)  # pending / processed / error / skipped
+    error_message = Column(Text, nullable=True)
+    chunks_count = Column(Integer, default=0)
+
+    first_discovered_at = Column(BigInteger)
+    last_processed_at = Column(BigInteger, nullable=True)
+
+
+class CrawledAttachmentModel(BaseModel):
+    id: str
+    url: str
+    source_page_url: Optional[str] = None
+    site_code: Optional[str] = None
+    institution: Optional[str] = None
+    category: Optional[str] = None
+    file_type: Optional[str] = None
+    file_size: Optional[int] = None
+    content_hash: Optional[str] = None
+    status: Optional[str] = "pending"
+    error_message: Optional[str] = None
+    chunks_count: Optional[int] = 0
+    first_discovered_at: Optional[int] = None
+    last_processed_at: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CrawledAttachmentsTable:
+    def get_by_url(self, url: str) -> Optional[CrawledAttachmentModel]:
+        try:
+            with get_db_context() as db:
+                row = (
+                    db.query(CrawledAttachment)
+                    .filter(CrawledAttachment.url == url)
+                    .first()
+                )
+                if not row:
+                    return None
+                return CrawledAttachmentModel.model_validate(row)
+        except Exception as e:
+            log.exception(f"CrawledAttachmentsTable.get_by_url failed: {e}")
+            return None
+
+    def upsert(
+        self,
+        url: str,
+        source_page_url: str,
+        site_code: str,
+        file_type: Optional[str] = None,
+        file_size: Optional[int] = None,
+        content_hash: Optional[str] = None,
+        institution: Optional[str] = None,
+        category: Optional[str] = None,
+        status: str = "pending",
+        error_message: Optional[str] = None,
+        chunks_count: int = 0,
+    ) -> Optional[CrawledAttachmentModel]:
+        now = int(time.time())
+        try:
+            with get_db_context() as db:
+                row = (
+                    db.query(CrawledAttachment)
+                    .filter(CrawledAttachment.url == url)
+                    .first()
+                )
+                if row is None:
+                    row = CrawledAttachment(
+                        id=str(uuid.uuid4()),
+                        url=url,
+                        source_page_url=source_page_url,
+                        site_code=site_code,
+                        institution=institution,
+                        category=category,
+                        file_type=file_type,
+                        file_size=file_size,
+                        content_hash=content_hash,
+                        status=status,
+                        error_message=error_message,
+                        chunks_count=chunks_count,
+                        first_discovered_at=now,
+                        last_processed_at=now if status != "pending" else None,
+                    )
+                    db.add(row)
+                else:
+                    row.source_page_url = source_page_url or row.source_page_url
+                    row.site_code = site_code or row.site_code
+                    if institution is not None:
+                        row.institution = institution
+                    if category is not None:
+                        row.category = category
+                    if file_type is not None:
+                        row.file_type = file_type
+                    if file_size is not None:
+                        row.file_size = file_size
+                    if content_hash is not None:
+                        row.content_hash = content_hash
+                    row.status = status
+                    row.error_message = error_message
+                    if chunks_count:
+                        row.chunks_count = chunks_count
+                    if status != "pending":
+                        row.last_processed_at = now
+                db.commit()
+                db.refresh(row)
+                return CrawledAttachmentModel.model_validate(row)
+        except Exception as e:
+            log.exception(f"CrawledAttachmentsTable.upsert failed for {url}: {e}")
+            return None
+
+    def mark_processed(
+        self, url: str, chunks_count: int, content_hash: Optional[str] = None
+    ) -> None:
+        try:
+            with get_db_context() as db:
+                row = (
+                    db.query(CrawledAttachment)
+                    .filter(CrawledAttachment.url == url)
+                    .first()
+                )
+                if row:
+                    row.status = "processed"
+                    row.chunks_count = chunks_count
+                    if content_hash:
+                        row.content_hash = content_hash
+                    row.last_processed_at = int(time.time())
+                    row.error_message = None
+                    db.commit()
+        except Exception as e:
+            log.exception(f"mark_processed failed for {url}: {e}")
+
+    def mark_error(self, url: str, error_message: str) -> None:
+        try:
+            with get_db_context() as db:
+                row = (
+                    db.query(CrawledAttachment)
+                    .filter(CrawledAttachment.url == url)
+                    .first()
+                )
+                if row:
+                    row.status = "error"
+                    row.error_message = (error_message or "")[:2000]
+                    row.last_processed_at = int(time.time())
+                    db.commit()
+        except Exception as e:
+            log.exception(f"mark_error failed for {url}: {e}")
+
+    def list_pending(
+        self, site_code: Optional[str] = None, limit: int = 100
+    ) -> list[CrawledAttachmentModel]:
+        try:
+            with get_db_context() as db:
+                q = db.query(CrawledAttachment).filter(
+                    CrawledAttachment.status == "pending"
+                )
+                if site_code:
+                    q = q.filter(CrawledAttachment.site_code == site_code)
+                rows = q.limit(limit).all()
+                return [CrawledAttachmentModel.model_validate(r) for r in rows]
+        except Exception as e:
+            log.exception(f"list_pending failed: {e}")
+            return []
+
+    def get_stats(self) -> dict:
+        try:
+            with get_db_context() as db:
+                total = (
+                    db.query(func.count(CrawledAttachment.id)).scalar() or 0
+                )
+                by_status = dict(
+                    db.query(
+                        CrawledAttachment.status, func.count(CrawledAttachment.id)
+                    )
+                    .group_by(CrawledAttachment.status)
+                    .all()
+                )
+                by_type = dict(
+                    db.query(
+                        CrawledAttachment.file_type,
+                        func.count(CrawledAttachment.id),
+                    )
+                    .group_by(CrawledAttachment.file_type)
+                    .all()
+                )
+                return {
+                    "total": total,
+                    "by_status": {k or "unknown": v for k, v in by_status.items()},
+                    "by_type": {k or "unknown": v for k, v in by_type.items()},
+                }
+        except Exception as e:
+            log.exception(f"CrawledAttachmentsTable.get_stats failed: {e}")
+            return {}
+
+
+CrawledAttachments = CrawledAttachmentsTable()

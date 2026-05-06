@@ -4427,6 +4427,20 @@ CRAWLER_WEEKLY_FULL_ENABLED = PersistentConfig(
     os.environ.get("CRAWLER_WEEKLY_FULL_ENABLED", "False").lower() == "true",
 )
 
+# 페이지 처리 후 첨부파일 (PDF/HWP/HWPX/이미지 등) 다운로드 + RAG 인덱싱
+CRAWL_ATTACHMENTS_ENABLED = PersistentConfig(
+    "CRAWL_ATTACHMENTS_ENABLED",
+    "crawler.attachments_enabled",
+    os.environ.get("CRAWL_ATTACHMENTS_ENABLED", "True").lower() == "true",
+)
+
+# 페이지 인라인 <img> 태그 OCR 인덱싱 (CRAWL_ATTACHMENTS_ENABLED 의 sub-flag)
+CRAWL_INLINE_IMAGES_ENABLED = PersistentConfig(
+    "CRAWL_INLINE_IMAGES_ENABLED",
+    "crawler.inline_images_enabled",
+    os.environ.get("CRAWL_INLINE_IMAGES_ENABLED", "True").lower() == "true",
+)
+
 CRAWLER_WEEKLY_FULL_DAY = PersistentConfig(
     "CRAWLER_WEEKLY_FULL_DAY",
     "crawler.weekly_full_day",
