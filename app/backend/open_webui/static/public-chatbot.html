@@ -377,6 +377,10 @@
         throw new Error(err || `HTTP ${resp.status}`);
       }
       const data = await resp.json();
+      if (data.ignored) {
+        statusEl.textContent = "";
+        return;
+      }
       const question = data.question || "(음성 인식 실패)";
       const reply = data.reply || "(응답이 비어 있습니다)";
       const sources = data.sources || [];
