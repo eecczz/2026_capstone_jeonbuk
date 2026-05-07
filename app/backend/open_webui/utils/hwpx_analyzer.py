@@ -5052,17 +5052,17 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
     # chapter title = "뒤에 더 깊은 level의 자식을 가진 최상위 문단"
     # cover/TOC처럼 자식 없는 level 0 문단은 자동 제외됨
 
-    # 먼저 chapter title level 결정: level 0 중 자식을 가진 것이 있으면 0,
-    # 없으면 기존처럼 level 1을 chapter title로 사용
-    chapter_title_level = None
+    # 먼저 chapter title level 결정: level 0 중 자식을 가진 것이 2개 이상이면 0,
+    # 1개뿐이면 컨테이너(목차 등)이므로 level 1을 chapter title로 사용
+    l0_with_children = 0
     for i, p in enumerate(paragraphs):
         if p.get("level", 0) == 0:
-            # 바로 다음 문단이 level > 0이면 이 문단은 chapter title 후보
             if i + 1 < len(paragraphs) and paragraphs[i + 1].get("level", 0) > 0:
-                chapter_title_level = 0
-                break
+                l0_with_children += 1
 
-    if chapter_title_level is None:
+    if l0_with_children >= 2:
+        chapter_title_level = 0
+    else:
         chapter_title_level = 1
 
     body_min_level = chapter_title_level + 1
