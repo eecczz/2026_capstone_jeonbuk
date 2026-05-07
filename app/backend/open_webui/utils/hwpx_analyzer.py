@@ -5195,7 +5195,7 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
                      or r in children_filter[parent_role])
             ]
             node = {
-                "repeat": info["count"] >= 2,  # 기존 호환
+                "repeat": info.get("per_parent", "single") == "multiple" or info["count"] >= 2,
                 "per_parent": info.get("per_parent", "single"),
                 "optional": info.get("optional", False),
                 "observed_counts": info.get("observed_counts", []),
