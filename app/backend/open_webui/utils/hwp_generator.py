@@ -25,6 +25,13 @@ def _get_parent(elem, root):
     return _build_parent_map(root).get(elem)
 
 
+def _doc_to_bytes(doc: HwpxDocument) -> bytes:
+    """HwpxDocument → bytes. save(BytesIO) 경유."""
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 @dataclass
 class HwpxResult:
     """HWPX 생성 결과"""
@@ -578,7 +585,7 @@ def generate_hwpx_dynamic(
         _clear_unmodified_fields(doc, structure, modified_paragraphs, modified_cells)
 
     return HwpxResult(
-        data=doc.to_bytes(),
+        data=_doc_to_bytes(doc),
         success_count=success_count,
         fail_count=fail_count,
         errors=errors,
@@ -727,7 +734,7 @@ def assemble_hwpx(
     )
 
     return HwpxResult(
-        data=doc.to_bytes(),
+        data=_doc_to_bytes(doc),
         success_count=success_count,
         fail_count=len(errors),
         errors=errors,
@@ -1001,7 +1008,7 @@ def assemble_hwpx_hybrid(
     )
 
     return HwpxResult(
-        data=doc.to_bytes(),
+        data=_doc_to_bytes(doc),
         success_count=success_count,
         fail_count=len(errors),
         errors=errors,
