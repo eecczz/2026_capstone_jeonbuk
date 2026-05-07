@@ -309,7 +309,7 @@ def _execute_insert_paragraph(doc, action: dict):
         raise IndexError(f"삽입 위치 {idx} 범위 초과 (전체 {len(doc.paragraphs)}개)")
 
     target = doc.paragraphs[idx]
-    section_elem = target.element.getparent()
+    section_elem = doc.oxml._sections[0].element
     target_pos = list(section_elem).index(target.element)
 
     # 대상 문단 복제 후 내용/스타일 교체
@@ -347,7 +347,7 @@ def _execute_clone_paragraph(doc, action: dict):
         )
 
     source = doc.paragraphs[source_idx]
-    section_elem = source.element.getparent()
+    section_elem = doc.oxml._sections[0].element
     source_pos = list(section_elem).index(source.element)
 
     # 문단 전체 복제 (표, 텍스트 상자, 서식 모두 포함)
@@ -360,7 +360,7 @@ def _execute_clone_paragraph(doc, action: dict):
         tbl = new_elem.find(f".//{NS}tbl")
         if tbl is not None:
             for t_elem in tbl.iter(f"{NS}t"):
-                if t_elem.text is not None or t_elem.getparent().tag.endswith("}run"):
+                if t_elem.text is not None:
                     t_elem.text = text
                     break
         else:
@@ -687,7 +687,7 @@ def assemble_hwpx(
                         errors.append(f"meta({idx}): {e}")
 
     # ── 3단계: 본문 영역 비우기 (header 제외) ──
-    section_elem = doc.paragraphs[0].element.getparent()
+    section_elem = doc.oxml._sections[0].element
     body_elements = []
     for i, p in enumerate(doc.paragraphs):
         if i not in header_indices:
@@ -903,7 +903,7 @@ def assemble_hwpx_hybrid(
         header_indices.add(0)
 
     # ── 4단계: 본문 영역 비우기 (header/toc/fixed/secPr 제외) ──
-    section_elem = doc.paragraphs[0].element.getparent()
+    section_elem = doc.oxml._sections[0].element
     body_elements = []
     for i, p in enumerate(doc.paragraphs):
         if i not in header_indices:
@@ -1014,9 +1014,8 @@ def _strip_secpr(elem, NS: str):
     secPr이 있는 문단을 clone하면 매번 새 섹션이 시작되어
     불필요한 페이지 나누기가 발생합니다.
     """
-    for secpr in elem.findall(f".//{NS}secPr"):
-        parent = secpr.getparent()
-        if parent is not None:
+    for parent in elem.iter():
+        for secpr in list(parent.findall(f"{NS}secPr")):
             parent.remove(secpr)
 
 
@@ -1026,9 +1025,8 @@ def _strip_linesegarray(elem, NS: str):
     linesegarray는 줄 위치 좌표(고정값)로, 다른 길이의 텍스트가 들어가면
     글자가 겹치는 원인이 됩니다. 제거하면 한글 뷰어가 자동 재계산합니다.
     """
-    for lsa in elem.findall(f".//{NS}linesegarray"):
-        parent = lsa.getparent()
-        if parent is not None:
+    for parent in elem.iter():
+        for lsa in list(parent.findall(f"{NS}linesegarray")):
             parent.remove(lsa)
 
 
@@ -1039,16 +1037,16 @@ def _strip_document_ctrls(elem, NS: str):
     exemplar를 clone할 때 중복 생성되지 않도록 제거합니다.
     """
     remove_types = {"footer", "header", "newNum", "pageHiding"}
+    parent_map = _build_parent_map(elem)
     for ctrl in elem.findall(f".//{NS}ctrl"):
         for child in list(ctrl):
             local_name = child.tag.split("}")[-1] if "}" in child.tag else child.tag
             if local_name in remove_types:
-                # ctrl을 포함하는 run 전체를 제거
-                run = ctrl.getparent()
+                run = parent_map.get(ctrl)
                 if run is not None:
-                    parent = run.getparent()
-                    if parent is not None:
-                        parent.remove(run)
+                    run_parent = parent_map.get(run)
+                    if run_parent is not None:
+                        run_parent.remove(run)
                 break
 
 
