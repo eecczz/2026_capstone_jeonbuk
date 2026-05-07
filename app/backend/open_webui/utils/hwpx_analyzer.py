@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import zipfile
-from itertools import combinations
+from itertools import combinations, product
 from lxml import etree
 from typing import Optional
 
@@ -320,7 +320,7 @@ def extract_style_groups(hwpx_source) -> dict:
             ],
         }
     """
-    from hwpx import HwpxDocument
+    from hwpx.document import HwpxDocument
 
     if isinstance(hwpx_source, str):
         doc = HwpxDocument.open(hwpx_source)
@@ -1832,16 +1832,24 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
         table_refs = [f"T{t.get('_tbl_idx', '?')}" for t in tbls_in_p]
         table_str = ",".join(table_refs) if table_refs else ""
 
-        # 텍스트 (표 내부 텍스트 제외)
+        # 텍스트: 직접 run 텍스트 우선, 없으면 표 셀 내부 첫 텍스트 fallback
         text_parts = []
         for run in p.findall(f"{NS_HP}run"):
             if run.find(f"{NS_HP}tbl") is not None:
-                # 표 포함 run은 텍스트 추출 건너뜀
                 continue
             for t in run.iter(f"{NS_HP}t"):
                 if t.text:
                     text_parts.append(t.text)
         text = "".join(text_parts).strip()
+        if not text:
+            # 표 배치 문단: 표 셀 내부 첫 텍스트를 가져옴
+            for tbl in p.iter(f"{NS_HP}tbl"):
+                for t in tbl.iter(f"{NS_HP}t"):
+                    if t.text and t.text.strip():
+                        text = "[표내] " + t.text.strip()
+                        break
+                if text:
+                    break
         if len(text) > 200:
             text = text[:200] + "…"
 
@@ -4059,6 +4067,20 @@ def _extract_indent_and_marker_data(para_elem) -> dict:
             # 첫 run에서 text 찾았으면 더 이상 indent 수집 안 함
             pass
 
+    # 표 배치 문단: 직접 run에 텍스트가 없으면 표 셀 내부 첫 텍스트를 fallback
+    if not found_visible:
+        for tbl in para_elem.iter(f"{NS_HP}tbl"):
+            for t in tbl.iter(f"{NS_HP}t"):
+                text = (t.text or "").strip()
+                if text:
+                    first_text = text
+                    found_visible = True
+                    result["is_blank"] = False
+                    result["is_table_text"] = True
+                    break
+            if found_visible:
+                break
+
     result["first_text_after_indent"] = first_text
     return result
 
@@ -5003,17 +5025,43 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         """호환용 wrapper — 실제 필터는 level == 0 기반"""
         return False
 
-    # 1단계: level 1 문단으로 챕터 경계 나누기 (level 0은 표지/목차/spacer)
+    # 1단계: 챕터 경계 나누기
+    # chapter title = "뒤에 더 깊은 level의 자식을 가진 최상위 문단"
+    # cover/TOC처럼 자식 없는 level 0 문단은 자동 제외됨
+
+    # 먼저 chapter title level 결정: level 0 중 자식을 가진 것이 있으면 0,
+    # 없으면 기존처럼 level 1을 chapter title로 사용
+    chapter_title_level = None
+    for i, p in enumerate(paragraphs):
+        if p.get("level", 0) == 0:
+            # 바로 다음 문단이 level > 0이면 이 문단은 chapter title 후보
+            if i + 1 < len(paragraphs) and paragraphs[i + 1].get("level", 0) > 0:
+                chapter_title_level = 0
+                break
+
+    if chapter_title_level is None:
+        chapter_title_level = 1
+
+    body_min_level = chapter_title_level + 1
+
     chapters = []  # [(title_para, [body_paras])]
     current_title = None
     current_body = []
 
     for p in paragraphs:
-        role = p.get("role", "")
         level = p.get("level", 0)
-        if level == 0:
+        if level < chapter_title_level:
             continue
-        if level == 1:
+        if level == chapter_title_level:
+            # level 0이 chapter_title_level인 경우, 자식 없는 cover 문단은 skip
+            if chapter_title_level == 0:
+                idx = p.get("idx", 0)
+                has_child = any(
+                    pp.get("level", 0) > 0
+                    for pp in paragraphs[idx + 1: idx + 5]
+                )
+                if not has_child:
+                    continue
             if current_title is not None:
                 chapters.append((current_title, current_body))
             current_title = p
@@ -5025,7 +5073,7 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         chapters.append((current_title, current_body))
 
     if not chapters:
-        log.warning("chapter_types 생성 실패: level 1 문단이 없습니다")
+        log.warning("chapter_types 생성 실패: chapter title 문단이 없습니다")
         return {}
 
     # 2단계: 내부 도우미 함수들
@@ -5370,27 +5418,83 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
             f"{depth}단 깊이, {total}개 role, 최상위: {top_str}"
         )
 
-    # ── 1단계: 모든 chapter의 (title_role, pattern) 수집 ──────────
-    chapters_data = []  # [(title_role, pattern)]
+    # ── 1단계: 모든 chapter의 (title_role, role_info, body_paras, pattern) 수집 ──
+    # 배타 감지를 위해 role_info, body_paras도 보존
+    chapters_data = []  # [(title_role, pattern, body_paras, role_info)]
     for title_para, body_paras in chapters:
         title_role = title_para.get("role", "chapter_title")
         role_info = _build_role_info(body_paras)
         if not role_info:
             continue
-        pattern = _build_pattern(role_info)
-        chapters_data.append((title_role, pattern))
 
-    # ── 2단계: coarse_key로 그룹화 ────────────────────────────────
-    # coarse_key = (title_role, sorted top-level children roles)
-    coarse_groups = {}  # key → [chapter index list]
-    for i, (tr, pat) in enumerate(chapters_data):
-        key = (tr, tuple(sorted(pat.keys())))
-        coarse_groups.setdefault(key, []).append(i)
+        # top-level 배타 감지: parent=None인 역할들만 대상
+        top_level_roles = {r for r, info in role_info.items() if info["parent"] is None}
+        exclusive = _detect_exclusive_children(body_paras, role_info)
+
+        # top-level parent에서의 배타만 유지 (깊은 배타는 무시)
+        top_exclusive = {
+            pr: variants for pr, variants in exclusive.items()
+            if pr in top_level_roles
+        }
+
+        if top_exclusive:
+            # 배타적 자식 → 변형별로 별도 pattern 생성
+            exclusive_items = list(top_exclusive.items())
+            variant_combos = list(product(
+                *[variants for _, variants in exclusive_items]
+            ))
+            variant_combos = variant_combos[:8]  # 변형 수 제한
+
+            for combo in variant_combos:
+                children_filter = {}
+                marker_descs = []
+                for (parent_role, _), variant in zip(exclusive_items, combo):
+                    children_filter[parent_role] = variant
+                    md = _get_variant_marker_desc(
+                        body_paras, parent_role, variant
+                    )
+                    if md:
+                        marker_descs.append(md)
+
+                variant_pattern = _build_pattern(role_info, children_filter)
+                marker_info = " / ".join(marker_descs)
+                chapters_data.append((title_role, variant_pattern, body_paras, role_info))
+
+            log.info(
+                f"top-level 배타 감지 → {len(variant_combos)}개 변형: "
+                + ", ".join(
+                    f"{pr}={[set(v) for v in vs]}"
+                    for pr, vs in exclusive_items
+                )
+            )
+        else:
+            pattern = _build_pattern(role_info)
+            chapters_data.append((title_role, pattern, body_paras, role_info))
+
+    # ── 2단계: pattern signature 기반 그룹화 ───────────────���────────
+    # coarse_key = (title_role, pattern_signature) — top-level + 1단계 children까지
+    def _shallow_signature(pattern: dict, max_depth: int = 2, depth: int = 0) -> str:
+        """top-level + immediate children까지만 signature (깊은 variant 차이는 무시)"""
+        if depth >= max_depth:
+            return ""
+        parts = []
+        for role in sorted(pattern.keys()):
+            info = pattern[role]
+            children = info.get("children", {})
+            children_sig = _shallow_signature(children, max_depth, depth + 1)
+            parts.append(f"{role}({children_sig})")
+        return "|".join(parts)
+
+    sig_groups = {}  # (title_role, sig) → [chapter index list]
+    for i, (tr, pat, _, _) in enumerate(chapters_data):
+        sig = _shallow_signature(pat)
+        key = (tr, sig)
+        sig_groups.setdefault(key, []).append(i)
 
     # ── 3단계: 그룹별로 union pattern 만들고 type 부여 ────────────
     chapter_types = {}
     type_counter = 0
-    for coarse_key, indices in coarse_groups.items():
+    for group_key, indices in sig_groups.items():
         type_counter += 1
         type_name = f"type_{type_counter}"
         title_role = chapters_data[indices[0]][0]
@@ -5416,7 +5520,7 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         }
 
     log.info(
-        f"chapter_types coarse 그룹화: {len(chapters_data)}개 챕터 → "
+        f"chapter_types 그룹화: {len(chapters_data)}개 챕터 항목 → "
         f"{len(chapter_types)}개 type ({list(chapter_types.keys())})"
     )
     for type_name, info in chapter_types.items():
