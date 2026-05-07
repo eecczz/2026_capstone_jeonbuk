@@ -1440,12 +1440,7 @@ _idx가 있는 모든 문단에 대해:
     ✓ "가. 내용" → marker=`"가."` (마침표 포함)
     ✓ "1 내용" → marker=`"1"` (공백이 바로 오면 단독 숫자 OK)
   - 다른 문단의 마커와 비슷해 보여도 **눈에 보이는 문자 그대로** 기록. 정규화·변환 금지.
-  - **`T` 태그가 있는 문단(표 포함)도 마커 추출 규칙은 동일합니다.** 텍스트가 보이면 반드시 마커를 추출하세요.
-    ✓ `22|p5|c12|T3 | 1 업무추진 여건` → marker=`"1"`
-    ✓ `39|p5|c12|T5 | [전략1] 활력이 넘치는...` → marker=`"[전략1]"`
-    ✓ `42|p5|c12|T6 | 󰊱 보증수수료 인하...` → marker=`"󰊱"`
-    ✓ `4|p5|c12|T0 | Ⅰ . 추진성과 및 평가` → marker=`"Ⅰ."`
-    ✗ 표 포함이라고 marker="" 처리 — 금지
+  - 텍스트가 보이는 모든 문단에서 마커를 추출하세요. 예외 없음.
 
 - **description**: 이 자리에 **어떤 내용이 어떤 형식으로** 들어가야 하는지 구체적으로 설명
 - **paraPrIDRef**: <hp:p>의 paraPrIDRef 속성값
@@ -1833,9 +1828,14 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
         first_run = p.find(f"{NS_HP}run")
         char_pr = first_run.get("charPrIDRef", "0") if first_run is not None else "0"
 
-        # 표 참조
+        # 표 참조 — 실제 데이터 표만 T 태그 부착 (꾸미기 박스는 제외)
         tbls_in_p = list(p.iter(f"{NS_HP}tbl"))
-        table_refs = [f"T{t.get('_tbl_idx', '?')}" for t in tbls_in_p]
+        table_refs = []
+        for t in tbls_in_p:
+            rows = int(t.get("rowCnt", "1"))
+            cols = int(t.get("colCnt", "1"))
+            if rows > 2 or cols > 2:
+                table_refs.append(f"T{t.get('_tbl_idx', '?')}")
         table_str = ",".join(table_refs) if table_refs else ""
 
         # 텍스트: 직접 run 텍스트 우선, 없으면 표 셀 내부 첫 텍스트 fallback
