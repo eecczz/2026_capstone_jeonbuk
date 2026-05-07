@@ -4443,23 +4443,24 @@ def parse_format_rules_from_llm(llm_response: str) -> dict:
 
 EXCLUSIVITY_ANALYSIS_PROMPT = """당신은 계층 구조의 형제 배타 관계를 판정하는 전문가입니다.
 
-아래 **각 부모 role의 인스턴스별 직계 자식 집합**을 보고, 같은 부모 아래에서
-**한 번도 공존하지 않은 자식 쌍**을 찾아 배타 규칙을 출력하세요.
+아래 **각 부모 role의 인스턴스별 직계 자식 집합**을 보고,
+**한 번이라도 같은 인스턴스에서 공존한 자식 쌍**을 찾아 공존 규칙을 출력하세요.
+공존한 적 없는 쌍은 자동으로 배타 처리됩니다.
 
 ## 규칙 (기계적 적용)
 
 각 부모 role의 인스턴스들을 훑어서:
-- 자식 쌍 (A, B) 공존 횟수 = 0 → **배타** (무조건)
-- 공존 횟수 ≥ 1 → **배타 아님** (무조건)
+- 자식 쌍 (A, B) 공존 횟수 ≥ 1 → **공존 OK** (리스트에 포함)
+- 공존 횟수 = 0 → **배타** (리스트에 미포함 → 자동 배타)
 
 OX의 이분법입니다. 판단 여지 없음.
 
 ## 절차
 
 1. 각 부모 role에 대해 인스턴스들을 순회하며 자식 쌍 공존 카운트
-2. 공존 0회 쌍이 하나라도 있으면 그 부모에 대해 variant 분리
+2. 공존 ≥1회 쌍을 `pairs_cooccurred`에 기록
 3. variant = 공존 그래프의 maximal clique (서로 공존 OK인 자식들의 묶음)
-4. 공존 0회 쌍이 없으면 그 부모는 스킵 (규칙 출력 X)
+4. 모든 쌍이 공존 → 배타 없음 → 그 부모는 스킵 (규칙 출력 X)
 
 ## 예시
 
@@ -4475,9 +4476,9 @@ section_header (6 인스턴스):
 ```
 
 쌍별 공존:
-- (detail_item, note): 1 → OK
-- (key_point, note): 1 → OK
-- (detail_item, key_point): **0 → 배타**
+- (detail_item, note): 1 → **공존 OK**
+- (key_point, note): 1 → **공존 OK**
+- (detail_item, key_point): 0 → 배타 (리스트에 미포함)
 
 출력:
 - variant A = {detail_item, note}
@@ -4495,13 +4496,14 @@ section_header (6 인스턴스):
         ["detail_item", "note"],
         ["key_point", "note"]
       ],
-      "pairs_never_cooccurred": [["detail_item", "key_point"]]
+      "pairs_cooccurred": [["detail_item", "note"], ["key_point", "note"]]
     }
   ]
 }
 ```
 
-- `exclusive_rules`: 공존 0회 쌍이 발견된 **모든** 부모를 포함. 없으면 빈 배열.
+- `exclusive_rules`: 배타 쌍이 존재하는 **모든** 부모를 포함. 없으면 빈 배열.
+- `pairs_cooccurred`: 한 번이라도 공존한 쌍만 기록. 여기 없는 쌍은 배타.
 - 판단 여지 없음. 카운트 결과만.
 - 반드시 JSON만 출력. 다른 설명 금지.
 """
@@ -4557,6 +4559,7 @@ def build_exclusivity_analysis_prompt(
                 lines.append(f"- inst {i}: {{}}")
     lines.append(
         "\n위 데이터를 기반으로 exclusive_rules를 JSON으로 출력하세요.\n"
+        "**공존한 쌍만 `pairs_cooccurred`에 기록. 공존 안 한 쌍은 기록하지 마세요 (자동 배타).**\n"
         "**role 이름에 마커(괄호 포함) 붙이지 말고 위 표의 이름 그대로 사용.**\n"
         "반드시 JSON만 출력."
     )
@@ -4573,7 +4576,7 @@ def parse_exclusivity_from_llm(llm_response: str) -> list:
     1.5b LLM 응답에서 exclusive_rules 리스트를 파싱합니다.
 
     Returns:
-        [{"parent": str, "variants": [[role,...], ...], "pairs_never_cooccurred": [...]}, ...]
+        [{"parent": str, "variants": [[role,...], ...], "pairs_cooccurred": [...]}, ...]
     """
     json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
     if json_match:
@@ -4616,7 +4619,7 @@ def parse_exclusivity_from_llm(llm_response: str) -> list:
             result.append({
                 "parent": parent,
                 "variants": norm_variants,
-                "pairs_never_cooccurred": r.get("pairs_never_cooccurred", []),
+                "pairs_cooccurred": r.get("pairs_cooccurred", []),
             })
 
     log.info(f"배타 규칙 파싱: {len(result)}개")
@@ -5595,7 +5598,7 @@ def compute_exclusivity_rules_code(parent_instances: dict) -> list[dict]:
 
     Returns:
         [{"parent": str, "variants": [[role, ...], ...],
-          "pairs_never_cooccurred": [[a, b], ...]}, ...]
+          "pairs_cooccurred": [[a, b], ...]}, ...]
     """
     from itertools import combinations
 
@@ -5618,13 +5621,16 @@ def compute_exclusivity_rules_code(parent_instances: dict) -> list[dict]:
             for a, b in combinations(sorted(inst_set), 2):
                 pair_cooc[(a, b)] = pair_cooc.get((a, b), 0) + 1
 
-        # 한 번도 공존 안 한 쌍
-        never_pairs = []
+        # 공존한 쌍 기록 (공존 안 한 쌍은 자동 배타)
+        cooccur_pairs = []
+        has_never = False
         for a, b in combinations(sorted(all_children), 2):
-            if pair_cooc.get((a, b), 0) == 0:
-                never_pairs.append([a, b])
+            if pair_cooc.get((a, b), 0) > 0:
+                cooccur_pairs.append([a, b])
+            else:
+                has_never = True
 
-        if not never_pairs:
+        if not has_never:
             # 모든 쌍이 한 번 이상 공존 → 배타 없음
             continue
 
@@ -5664,7 +5670,7 @@ def compute_exclusivity_rules_code(parent_instances: dict) -> list[dict]:
         rules.append({
             "parent": parent,
             "variants": [sorted(list(v)) for v in unique_maximal],
-            "pairs_never_cooccurred": never_pairs,
+            "pairs_cooccurred": cooccur_pairs,
         })
 
     return rules

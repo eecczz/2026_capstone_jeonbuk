@@ -979,10 +979,6 @@ async def generate_hwpx_dynamic_endpoint(
     3. AI에게 양식 + 내용 전달 → 명령 JSON 수신
     4. 명령 실행하여 HWPX 생성
     """
-    # ── TEMP DEBUG: 1차 구조분석 + 마커 분리까지만 실행 (2a/2b 건너뜀) ──
-    # role 분류 알고리즘 개선 작업 중. 되돌리려면 이 return 블록 삭제.
-    return await debug_hwpx_structure_endpoint(request, form_data, user, db)
-
     from io import BytesIO
     from open_webui.utils.hwpx_analyzer import (
         analyze_hwpx,
