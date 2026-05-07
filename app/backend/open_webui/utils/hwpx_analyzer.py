@@ -2939,8 +2939,8 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 
 ### 서식 신호
 
-- paraPrIDRef가 다르고 + description의 내용 성격도 다르면 → **반드시 다른 클러스터로 split**. 서식(글꼴/크기/정렬)이 다르고 역할도 다르면 같은 슬롯이 아님.
-- paraPrIDRef가 다르지만 description 성격이 같으면 (예: 같은 역할이 여러 위치에 반복) → 같은 클러스터 가능.
+- **마커 없음 + level 0 + 자식 없음 + 그룹 내 paraPrIDRef가 서로 모두 다름** → 각각 고유 서식의 고정 슬롯이므로 **반드시 별도 클러스터로 분리** (예: 표지의 제목/날짜/기관명은 각각 다른 서식·역할)
+- 그 외: paraPrIDRef가 다르더라도 마커가 같거나 반복 패턴이 보이면 같은 클러스터 가능.
 
 ### 자식 유무 — 단독 split 금지
 
