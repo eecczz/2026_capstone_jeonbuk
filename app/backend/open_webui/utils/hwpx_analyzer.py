@@ -1842,13 +1842,21 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
                     text_parts.append(t.text)
         text = "".join(text_parts).strip()
         if not text:
-            # 표 배치 문단: 표 셀 내부 첫 텍스트를 가져옴
+            # 1x1 표 = 텍스트박스 → 내부 텍스트를 문단 텍스트로 취급
             for tbl in p.iter(f"{NS_HP}tbl"):
+                rows = int(tbl.get("rowCnt", "1"))
+                cols = int(tbl.get("colCnt", "1"))
+                cell_texts = []
                 for t in tbl.iter(f"{NS_HP}t"):
                     if t.text and t.text.strip():
-                        text = "[표내] " + t.text.strip()
-                        break
-                if text:
+                        cell_texts.append(t.text.strip())
+                if cell_texts:
+                    if rows <= 2 and cols <= 2:
+                        # 텍스트박스: 그냥 텍스트로
+                        text = " ".join(cell_texts)
+                    else:
+                        # 실제 데이터 표
+                        text = "[표] " + cell_texts[0]
                     break
         if len(text) > 200:
             text = text[:200] + "…"
