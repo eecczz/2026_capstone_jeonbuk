@@ -1834,7 +1834,7 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
         for t in tbls_in_p:
             rows = int(t.get("rowCnt", "1"))
             cols = int(t.get("colCnt", "1"))
-            if rows > 2 or cols > 2:
+            if rows > 2 and cols > 2:
                 table_refs.append(f"T{t.get('_tbl_idx', '?')}")
         table_str = ",".join(table_refs) if table_refs else ""
 
