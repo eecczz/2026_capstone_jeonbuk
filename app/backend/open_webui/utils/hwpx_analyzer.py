@@ -2939,7 +2939,7 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 
 ### 약한 신호 (보조용, 단독 split 금지)
 
-- paraPrIDRef, charPrIDRef, style_id: formatting hint. 다른 신호와 일관될 때만 보조로 활용. 이것만으로 split 금지.
+- paraPrIDRef, charPrIDRef, style_id: formatting hint. 다른 신호와 일관될 때 보조로 활용. 단, paraPrIDRef가 다르고 description의 내용 성격도 다르면 split 고려.
 
 ### 자식 유무 — 단독 split 금지
 
@@ -2949,11 +2949,12 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 
 ## 절대 원칙 — 양식 무관
 
-- ❌ marker 이름이나 marker_family를 cluster 정답으로 보지 말 것
+- ✓ **마커가 다르면 반드시 다른 클러스터** (hard constraint) — 마커가 같은데 다른 클러스터일 수는 있지만, 마커가 다른데 같은 클러스터일 수는 없음
+- ❌ marker 이름이나 marker_family를 cluster 정답으로 보지 말 것 — 단, 마커가 다른 paragraph를 같은 cluster에 넣으면 안 됨
 - ❌ 1b/1c가 준 role 이름이 같다고 같은 cluster, 다르다고 다른 cluster 라고 단정 X
 - ❌ "이 marker 는 보통 X 의미"라는 외부 convention 사전 가정 X
 - ❌ 특정 도메인(한국 문서 등) convention 을 정답으로 보지 말 것
-- ❌ **의미 차이만으로 split 금지** — 같은 구조 기능이면 semantic sub-genre 달라도 merge
+- ❌ **의미 차이만으로 split 금지** — 같은 구조 기능이면 semantic sub-genre 달라도 merge. 단, 마커가 다르면 이 규칙 적용 불가 (마커 분리가 우선)
 - ✓ 이 양식 자체의 paragraph 데이터 + tree 구조 패턴 에서만 추론
 
 ## Cluster 개수 — 경제성

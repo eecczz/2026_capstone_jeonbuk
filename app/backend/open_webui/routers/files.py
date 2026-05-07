@@ -1396,7 +1396,7 @@ async def generate_hwpx_dynamic_endpoint(
 
     # 7-1) 결과 문서 내용 디버그 덤프
     try:
-        from hwpx import HwpxDocument
+        from hwpx.document import HwpxDocument
         debug_doc = HwpxDocument.open(BytesIO(result.data))
         debug_lines = []
         debug_lines.append(f"=== 결과 문서: 문단 {len(debug_doc.paragraphs)}개 ===")

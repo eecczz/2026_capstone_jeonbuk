@@ -8,11 +8,21 @@ import io
 import logging
 from dataclasses import dataclass, field
 
-from hwpx import HwpxDocument
+from hwpx.document import HwpxDocument
 from open_webui.env import GLOBAL_LOG_LEVEL
 
 log = logging.getLogger(__name__)
 log.setLevel(GLOBAL_LOG_LEVEL)
+
+
+def _build_parent_map(root):
+    """stdlib ElementTree용 parent map 생성 (lxml getparent() 대체)."""
+    return {c: p for p in root.iter() for c in p}
+
+
+def _get_parent(elem, root):
+    """elem의 부모를 반환. lxml getparent() 대체."""
+    return _build_parent_map(root).get(elem)
 
 
 @dataclass
