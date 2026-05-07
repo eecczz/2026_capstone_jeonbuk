@@ -1228,7 +1228,8 @@ async def generate_hwpx_dynamic_endpoint(
         )
 
     # header role 목록 추출 — 속성 기반:
-    # level 0 + 첫 level 1 문단 이전에 등장 + role 이름 무관 (동적 양식 대응)
+    # level 0 + 첫 level 1 문단 이전에 등장 + chapter_types의 title_role 제외
+    title_roles = {t.get("title_role") for t in chapter_types.values() if t.get("title_role")}
     first_ch_idx = next(
         (p.get("idx", 0) for p in structure.get("paragraphs", []) if p.get("level", 0) == 1),
         float("inf"),
@@ -1237,6 +1238,8 @@ async def generate_hwpx_dynamic_endpoint(
     for p in structure.get("paragraphs", []):
         role = p.get("role", "")
         if not role or role in header_roles:
+            continue
+        if role in title_roles:
             continue
         if p.get("level", 0) != 0:
             continue
