@@ -3559,10 +3559,10 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
 
     원본 paragraphs를 in-place 수정.
     """
-    # 1단계: 양식 자체에서 container roles 데이터 기반 추론 (하드코딩 X)
-    container_roles = _compute_container_roles(paragraphs)
-
-    # 2단계: stack 기반 parent 계산 (container만 stack에 push)
+    # stack 기반 parent 계산
+    # 모든 role을 stack에 push — level이 정확하면 parent-child 관계가 자동으로 맞음
+    # (이전의 container 필터링은 level이 잘못된 경우를 보정하려 했으나,
+    #  올바른 parent-child까지 망가뜨리는 부작용이 있어 제거)
     level_stack = {}
 
     for p in paragraphs:
@@ -3578,7 +3578,7 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
             p["sibling_group_id"] = "roots"
             continue
 
-        # 부모 찾기: stack엔 container만 있으니 가장 가까운 것
+        # 부모 찾기: 직전에 나온 level-1 이하의 가장 가까운 문단
         parent = None
         for l in range(level - 1, -1, -1):
             if l in level_stack:
@@ -3595,12 +3595,7 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
         for deeper in [k for k in level_stack if k > level]:
             del level_stack[deeper]
 
-        # container role만 stack에 push.
-        # non-container는 stack에 안 들어가서, 같은 level의 이전 container가 살아남음.
-        # → 그 다음 자식이 잘못 non-container 밑에 들어가는 것 방지.
-        role = p.get("role", "")
-        if role in container_roles:
-            level_stack[level] = p
+        level_stack[level] = p
 
     return paragraphs
 
