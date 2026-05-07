@@ -5029,7 +5029,175 @@ def build_chapter_types_from_structure(structure: dict) -> dict:
     structure["chapter_types"] = _build_chapter_types(
         structure.get("paragraphs", [])
     )
+    structure["template_grammar"] = extract_template_grammar(
+        structure.get("paragraphs", []),
+        structure.get("chapter_types", {}),
+    )
     return structure
+
+
+def extract_template_grammar(
+    paragraphs: list[dict],
+    chapter_types: dict,
+) -> dict:
+    """
+    Template의 observed parent→child 전이에서 grammar를 추출합니다.
+
+    Returns:
+        {
+            "global": {
+                role: {
+                    "allowed_children": [child_roles],
+                    "allowed_parents": [parent_roles],
+                    "repeatable": bool,
+                    "singleton": bool,       # 부모 인스턴스당 1회만
+                    "optional": bool,
+                    "observed_counts": {parent_role: [counts_per_instance]},
+                },
+                ...
+            },
+            "per_type": {
+                type_name: {
+                    "root_roles": [roles],   # chapter title 직속 자식
+                    "grammar": {role: {...}}, # type별 grammar subset
+                },
+                ...
+            },
+            "observed_transitions": [(parent, child), ...],
+        }
+    """
+    # ── 1. Global observed transitions ──
+    # parent_idx → parent role, child role 매핑
+    idx_to_role = {}
+    idx_to_parent = {}
+    for p in paragraphs:
+        idx = p.get("idx")
+        role = p.get("role", "")
+        parent_idx = p.get("parent_idx")
+        if role:
+            idx_to_role[idx] = role
+            idx_to_parent[idx] = parent_idx
+
+    # parent_role → child_role 전이 수집
+    transitions = set()
+    parent_children = {}      # parent_role → set(child_roles)
+    child_parents = {}        # child_role → set(parent_roles)
+    role_counts = {}          # role → total count
+    parent_instance_children = {}  # (parent_role, parent_idx) → {child_role: count}
+
+    for p in paragraphs:
+        idx = p.get("idx")
+        role = p.get("role", "")
+        parent_idx = p.get("parent_idx")
+        if not role:
+            continue
+
+        role_counts[role] = role_counts.get(role, 0) + 1
+
+        if parent_idx is not None:
+            parent_role = idx_to_role.get(parent_idx)
+            if parent_role:
+                transitions.add((parent_role, role))
+                parent_children.setdefault(parent_role, set()).add(role)
+                child_parents.setdefault(role, set()).add(parent_role)
+                # per-instance count
+                key = (parent_role, parent_idx)
+                if key not in parent_instance_children:
+                    parent_instance_children[key] = {}
+                parent_instance_children[key][role] = (
+                    parent_instance_children[key].get(role, 0) + 1
+                )
+
+    # ── 2. Role별 singleton/repeatable/optional 계산 ──
+    # parent_role별 인스턴스들의 idx 수집
+    parent_instances = {}
+    for p in paragraphs:
+        role = p.get("role", "")
+        idx = p.get("idx")
+        if role:
+            parent_instances.setdefault(role, []).append(idx)
+
+    global_grammar = {}
+    for role in set(list(parent_children.keys()) + list(child_parents.keys()) +
+                    list(role_counts.keys())):
+        allowed_ch = sorted(parent_children.get(role, set()))
+        allowed_pa = sorted(child_parents.get(role, set()))
+
+        # per-parent observed counts → singleton/repeatable/optional
+        observed = {}  # parent_role → [count_per_instance]
+        for pr in allowed_pa:
+            pr_idxs = parent_instances.get(pr, [])
+            counts = []
+            for pr_idx in pr_idxs:
+                key = (pr, pr_idx)
+                c = parent_instance_children.get(key, {}).get(role, 0)
+                counts.append(c)
+            observed[pr] = counts
+
+        # Aggregate: singleton if max count across all parent instances <= 1
+        all_counts = [c for clist in observed.values() for c in clist]
+        max_count = max(all_counts) if all_counts else 0
+        has_zero = any(c == 0 for c in all_counts) if all_counts else False
+
+        global_grammar[role] = {
+            "allowed_children": allowed_ch,
+            "allowed_parents": allowed_pa,
+            "repeatable": max_count >= 2,
+            "singleton": max_count <= 1 and not has_zero,
+            "optional": has_zero,
+            "total_count": role_counts.get(role, 0),
+            "observed_counts": observed,
+        }
+
+    # ── 3. Per-type grammar subset ──
+    per_type = {}
+    for type_name, type_info in chapter_types.items():
+        pattern = type_info.get("pattern", {})
+        title_role = type_info.get("title_role", "")
+
+        # pattern tree에서 사용되는 role 수집
+        def _collect_pattern_roles(pat, acc):
+            for r, info in pat.items():
+                acc.add(r)
+                ch = info.get("children", {})
+                if ch:
+                    _collect_pattern_roles(ch, acc)
+
+        type_roles = set()
+        _collect_pattern_roles(pattern, type_roles)
+
+        # root_roles = pattern의 top-level keys
+        root_roles = sorted(pattern.keys())
+
+        # type에 속하는 role만 추린 grammar subset
+        type_grammar = {}
+        for role in type_roles:
+            if role in global_grammar:
+                g = global_grammar[role]
+                type_grammar[role] = {
+                    "allowed_children": [
+                        c for c in g["allowed_children"] if c in type_roles
+                    ],
+                    "allowed_parents": [
+                        p for p in g["allowed_parents"]
+                        if p in type_roles or p == title_role
+                    ],
+                    "repeatable": g["repeatable"],
+                    "singleton": g["singleton"],
+                    "optional": g["optional"],
+                }
+
+        per_type[type_name] = {
+            "title_role": title_role,
+            "root_roles": root_roles,
+            "grammar": type_grammar,
+        }
+
+    return {
+        "global": global_grammar,
+        "per_type": per_type,
+        "observed_transitions": sorted(transitions),
+    }
 
 
 def _build_chapter_types(paragraphs: list[dict]) -> dict:
@@ -5553,6 +5721,245 @@ def _build_chapter_types(paragraphs: list[dict]) -> dict:
         )
 
     return chapter_types
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Grammar-based tree reconstruction & validation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+class GrammarViolation:
+    """단일 grammar 위반 사항."""
+
+    def __init__(self, violation_type: str, item_index: int, role: str,
+                 detail: str, expected: str = "", actual: str = ""):
+        self.violation_type = violation_type  # no_valid_parent, ambiguous_parent, etc.
+        self.item_index = item_index
+        self.role = role
+        self.detail = detail
+        self.expected = expected
+        self.actual = actual
+
+    def to_dict(self) -> dict:
+        return {
+            "type": self.violation_type,
+            "item_index": self.item_index,
+            "role": self.role,
+            "detail": self.detail,
+            "expected": self.expected,
+            "actual": self.actual,
+        }
+
+    def __repr__(self):
+        return f"GrammarViolation({self.violation_type}, idx={self.item_index}, {self.role}: {self.detail})"
+
+
+class ReconstructionResult:
+    """Tree reconstruction 결과."""
+
+    def __init__(self):
+        self.nodes: list[dict] = []        # [{id, parent_id, role, text}, ...]
+        self.violations: list[GrammarViolation] = []
+        self.failure_type: str | None = None  # None=성공, generation_failure 등
+
+    @property
+    def success(self) -> bool:
+        return len(self.violations) == 0
+
+    def to_dict(self) -> dict:
+        return {
+            "success": self.success,
+            "failure_type": self.failure_type,
+            "node_count": len(self.nodes),
+            "violation_count": len(self.violations),
+            "violations": [v.to_dict() for v in self.violations],
+            "nodes": self.nodes,
+        }
+
+
+def reconstruct_tree_from_flat(
+    flat_items: list[dict],
+    type_grammar: dict,
+    root_roles: list[str],
+    title_role: str = "",
+) -> ReconstructionResult:
+    """
+    2b flat list를 grammar 기반으로 strict tree reconstruction.
+
+    자동 보정이 아니라 검증: flat list가 grammar상 유일한 tree로
+    복원 가능한지 확인합니다. 불가능하면 violation을 기록합니다.
+
+    violation이 있어도 노드는 추가하여 후속 분석이 가능하게 합니다.
+    (violation이 있으면 assemble 전에 차단됨)
+
+    Args:
+        flat_items: [{"role": ..., "text": ...}, ...]
+        type_grammar: {role: {"allowed_children": [...], ...}}
+        root_roles: chapter title 직속 자식으로 허용되는 role 목록
+        title_role: chapter title role (부모의 부모)
+
+    Returns:
+        ReconstructionResult
+    """
+    result = ReconstructionResult()
+
+    if not flat_items:
+        return result
+
+    # singleton 추적: role → count (이 chapter 내에서)
+    singleton_counts = {}
+
+    # planning_failure 감지: 첫 item이 root_roles에 없으면
+    first_role = flat_items[0].get("role", "")
+    if first_role and first_role not in root_roles:
+        result.violations.append(GrammarViolation(
+            "wrong_type_assignment", 0, first_role,
+            f"첫 item이 root_roles에 없음 — 2a type 선택 오류 가능성",
+            expected=f"one of {root_roles}",
+            actual=first_role,
+        ))
+
+    # stack: [(node_id, role)] — 현재 열려있는 조상 경로
+    stack = []  # (node_id, role)
+
+    for i, item in enumerate(flat_items):
+        role = item.get("role", "")
+        text = item.get("text", "")
+
+        if not role:
+            result.violations.append(GrammarViolation(
+                "empty_role", i, "", "role이 비어있음",
+            ))
+            continue
+
+        # role이 이 type의 grammar에 있는지
+        if role not in type_grammar and role != title_role:
+            result.violations.append(GrammarViolation(
+                "unknown_role", i, role,
+                f"type grammar에 없는 role",
+                expected=f"one of {sorted(type_grammar.keys())}",
+                actual=role,
+            ))
+            # violation이어도 노드 추가 (orphan)
+            node = {"id": i, "parent_id": None, "role": role, "text": text,
+                    "violation": "unknown_role"}
+            result.nodes.append(node)
+            continue
+
+        # singleton 체크
+        grammar_entry = type_grammar.get(role, {})
+        singleton_counts[role] = singleton_counts.get(role, 0) + 1
+        if grammar_entry.get("singleton") and singleton_counts[role] > 1:
+            result.violations.append(GrammarViolation(
+                "singleton_duplicate", i, role,
+                f"singleton role이 {singleton_counts[role]}번째 등장",
+                expected="1", actual=str(singleton_counts[role]),
+            ))
+
+        # parent 찾기
+        parent_id = None
+        violation_on_parent = None
+
+        # Case 1: root role → parent는 chapter title
+        if role in root_roles:
+            parent_id = None
+            stack.clear()
+
+        # Case 2: stack에서 이 role을 자식으로 허용하는 부모 찾기
+        else:
+            candidates = []
+            for idx in range(len(stack) - 1, -1, -1):
+                ancestor_id, ancestor_role = stack[idx]
+                ancestor_grammar = type_grammar.get(ancestor_role, {})
+                if role in ancestor_grammar.get("allowed_children", []):
+                    candidates.append((idx, ancestor_id, ancestor_role))
+
+            if len(candidates) == 0:
+                violation_on_parent = GrammarViolation(
+                    "no_valid_parent", i, role,
+                    f"grammar상 유효한 부모가 없음. stack: {[r for _, r in stack]}",
+                    expected=f"parent with {role} in allowed_children",
+                    actual="none found",
+                )
+                result.violations.append(violation_on_parent)
+                # best-effort: ROOT에 붙이되 violation 기록
+                parent_id = None
+
+            elif len(candidates) == 1:
+                pop_to_idx, parent_id, parent_role = candidates[0]
+                stack = stack[:pop_to_idx + 1]
+
+            else:
+                # 가장 가까운(깊은) 조상 선택 (proximity rule)
+                # Grammar가 여러 부모를 허용하는 건 자연스러운 현상
+                # (예: *보충노트가 ➊ 아래에도, ▪ 아래에도 올 수 있음)
+                # proximity로 결정 가능하면 ambiguous가 아님
+                closest = candidates[0]
+                pop_to_idx, parent_id, parent_role = closest
+                stack = stack[:pop_to_idx + 1]
+
+        # 노드 추가 (violation이 있어도 항상 추가)
+        node_id = i
+        node = {"id": node_id, "parent_id": parent_id, "role": role, "text": text}
+        if violation_on_parent:
+            node["violation"] = violation_on_parent.violation_type
+        result.nodes.append(node)
+        stack.append((node_id, role))
+
+    # failure type 결정
+    if result.violations:
+        vtypes = {v.violation_type for v in result.violations}
+        if "wrong_type_assignment" in vtypes:
+            result.failure_type = "planning_failure"
+        else:
+            result.failure_type = "generation_failure"
+
+    return result
+
+
+def validate_reconstruction(
+    recon: ReconstructionResult,
+    type_grammar: dict,
+    root_roles: list[str],
+) -> list[GrammarViolation]:
+    """
+    Reconstruction 결과에 대한 추가 validation.
+    - required (non-optional) role 누락
+    - root 이외의 role이 ROOT에 직접 붙어있는지
+    - 전체적 구조 일관성
+
+    Returns:
+        추가 violation 목록 (recon.violations에 append됨)
+    """
+    extra = []
+
+    # 사용된 role 집합
+    used_roles = {n["role"] for n in recon.nodes}
+
+    # required role 누락 체크 (optional=False인 role)
+    for role, g in type_grammar.items():
+        if not g.get("optional", True) and role not in used_roles:
+            extra.append(GrammarViolation(
+                "missing_required_role", -1, role,
+                f"required role이 생성되지 않음",
+                expected=role, actual="(absent)",
+            ))
+
+    # ROOT에 붙은 role이 root_roles에 있는지
+    for node in recon.nodes:
+        if node["parent_id"] is None and node["role"] not in root_roles:
+            extra.append(GrammarViolation(
+                "invalid_root_child", node["id"], node["role"],
+                f"ROOT 직속 자식으로 허용되지 않는 role",
+                expected=f"one of {root_roles}",
+                actual=node["role"],
+            ))
+
+    recon.violations.extend(extra)
+    if extra and not recon.failure_type:
+        recon.failure_type = "generation_failure"
+
+    return extra
 
 
 def _normalize_marker_type(marker: str) -> str:
