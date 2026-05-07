@@ -2937,9 +2937,10 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 - **위계**: tree 위 같은 위계의 같은 역할 paragraph 는 같은 cluster
 - **description**: 의미 보조 신호 (정답 아님)
 
-### 약한 신호 (보조용, 단독 split 금지)
+### 서식 신호
 
-- paraPrIDRef, charPrIDRef, style_id: formatting hint. 다른 신호와 일관될 때 보조로 활용. 단, paraPrIDRef가 다르고 description의 내용 성격도 다르면 split 고려.
+- paraPrIDRef가 다르고 + description의 내용 성격도 다르면 → **반드시 다른 클러스터로 split**. 서식(글꼴/크기/정렬)이 다르고 역할도 다르면 같은 슬롯이 아님.
+- paraPrIDRef가 다르지만 description 성격이 같으면 (예: 같은 역할이 여러 위치에 반복) → 같은 클러스터 가능.
 
 ### 자식 유무 — 단독 split 금지
 
