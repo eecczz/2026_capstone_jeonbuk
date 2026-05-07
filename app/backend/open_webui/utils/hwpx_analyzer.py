@@ -1858,12 +1858,7 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
                     if t.text and t.text.strip():
                         cell_texts.append(t.text.strip())
                 if cell_texts:
-                    if rows <= 2 and cols <= 2:
-                        # 텍스트박스: 그냥 텍스트로
-                        text = " ".join(cell_texts)
-                    else:
-                        # 실제 데이터 표
-                        text = "[표] " + cell_texts[0]
+                    text = " ".join(cell_texts)
                     break
         if len(text) > 200:
             text = text[:200] + "…"
