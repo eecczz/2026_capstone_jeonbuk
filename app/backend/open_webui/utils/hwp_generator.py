@@ -955,6 +955,7 @@ def assemble_hwpx_hybrid(
     from open_webui.utils.hwpx_analyzer import extract_marker_policies
     _marker_policies = extract_marker_policies(paragraphs_info)
     _marker_rewrite_log = []
+    REWRITE_ALLOWED_POLICIES = {"arabic_sequence", "circled_sequence", "fixed_char"}
 
     # chapter title roles
     _chapter_title_roles = set()
@@ -1064,6 +1065,7 @@ def assemble_hwpx_hybrid(
                 "rewritten_text": text[:80],
                 "marker_match": None,
                 "rewrite_applied": False,
+                "apply_reason": None,
                 "skip_reason": "star_depth",
             })
             return text
@@ -1125,7 +1127,26 @@ def assemble_hwpx_hybrid(
             rewritten = f"{expected}{sep}{stripped_content}" if stripped_content else f"{expected}"
 
         marker_match = (detected == expected) if detected else None
-        applied = enable_marker_rewrite and rewritten != text
+        would_change = rewritten != text
+
+        # apply/skip 판정
+        if not enable_marker_rewrite:
+            applied = False
+            apply_reason = None
+            skip_reason = "feature_flag_disabled"
+        elif policy_type not in REWRITE_ALLOWED_POLICIES:
+            applied = False
+            apply_reason = None
+            skip_reason = "policy_not_in_allowlist"
+        elif not would_change:
+            applied = False
+            apply_reason = None
+            skip_reason = "no_change_needed"
+        else:
+            applied = True
+            apply_reason = "enabled_and_allowed"
+            skip_reason = None
+
         _marker_rewrite_log.append({
             "chapter_idx": ch_idx,
             "node_id": node["id"] if node else None,
@@ -1142,9 +1163,11 @@ def assemble_hwpx_hybrid(
             "rewritten_text": rewritten[:80],
             "marker_match": marker_match,
             "rewrite_applied": applied,
+            "apply_reason": apply_reason,
+            "skip_reason": skip_reason,
         })
 
-        return rewritten if enable_marker_rewrite else text
+        return rewritten if applied else text
 
     for bi_idx, item in enumerate(body_items):
         role = item.get("role", "")
