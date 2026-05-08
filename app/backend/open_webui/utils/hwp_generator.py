@@ -747,6 +747,7 @@ def assemble_hwpx_hybrid(
     content: dict,
     removed_indices: list[int] = None,
     idx_map: dict = None,
+    enable_marker_rewrite: bool = False,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -1024,6 +1025,7 @@ def assemble_hwpx_hybrid(
             # 기존 marker를 expected로 교체
             rewritten = f"{expected}{sep}{content}" if content else f"{expected}"
 
+        applied = enable_marker_rewrite and rewritten != text
         _marker_rewrite_log.append({
             "role": role,
             "sibling_index": sib_idx,
@@ -1032,9 +1034,10 @@ def assemble_hwpx_hybrid(
             "expected_marker": expected,
             "rewritten_text": rewritten[:50],
             "changed": rewritten != text,
+            "rewrite_applied": applied,
         })
 
-        return rewritten
+        return rewritten if enable_marker_rewrite else text
 
     for item in body_items:
         role = item.get("role", "")
