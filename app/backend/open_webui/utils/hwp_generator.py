@@ -747,7 +747,7 @@ def assemble_hwpx_hybrid(
     content: dict,
     removed_indices: list[int] = None,
     idx_map: dict = None,
-    enable_marker_rewrite: bool = False,
+    enable_marker_rewrite: bool = True,
     chapter_trees: list[list[dict]] | None = None,
 ) -> HwpxResult:
     """
