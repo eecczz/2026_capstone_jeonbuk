@@ -748,6 +748,7 @@ def assemble_hwpx_hybrid(
     removed_indices: list[int] = None,
     idx_map: dict = None,
     enable_marker_rewrite: bool = False,
+    chapter_trees: list[list[dict]] | None = None,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -953,21 +954,85 @@ def assemble_hwpx_hybrid(
     # marker rewrite: marker_policy 기반으로 AI text의 marker를 교체
     from open_webui.utils.hwpx_analyzer import extract_marker_policies
     _marker_policies = extract_marker_policies(paragraphs_info)
-    _role_sibling_counter: dict[str, int] = {}  # role별 sibling 카운트
     _marker_rewrite_log = []
 
-    # chapter title role — 이 role이 나오면 sibling counter 리셋
+    # chapter title roles
     _chapter_title_roles = set()
     for _ct in structure.get("chapter_types", {}).values():
         tr = _ct.get("title_role", "")
         if tr:
             _chapter_title_roles.add(tr)
 
-    def _rewrite_marker(role: str, text: str) -> str:
+    # ── chapter_trees 기반 node lookup 구축 ──
+    # body_items를 title_role 기준으로 chapter 분할 → node 매칭
+    _node_lookup: dict[int, dict] = {}  # body_items index → tree node
+    _chapter_idx_lookup: dict[int, int] = {}  # body_items index → chapter_idx
+    _tree_available = False
+
+    if chapter_trees:
+        chapters_split = []  # [(start_idx_in_body, [item_indices_excluding_title])]
+        current_start = None
+        current_indices = []
+        for bi, item in enumerate(body_items):
+            if item.get("role", "") in _chapter_title_roles:
+                if current_start is not None:
+                    chapters_split.append((current_start, current_indices))
+                current_start = bi
+                current_indices = []
+                _chapter_idx_lookup[bi] = len(chapters_split)
+            else:
+                if current_start is not None:
+                    current_indices.append(bi)
+                    _chapter_idx_lookup[bi] = len(chapters_split)
+        if current_start is not None:
+            chapters_split.append((current_start, current_indices))
+
+        # 매칭: chapter_trees[ci]의 nodes vs chapters_split[ci]의 body indices
+        if len(chapters_split) == len(chapter_trees):
+            _tree_available = True
+            for ci, (title_bi, body_indices) in enumerate(chapters_split):
+                nodes = chapter_trees[ci]
+                if len(body_indices) == len(nodes):
+                    for node_idx, bi in enumerate(body_indices):
+                        _node_lookup[bi] = nodes[node_idx]
+                        _chapter_idx_lookup[bi] = ci
+                    _chapter_idx_lookup[title_bi] = ci
+                else:
+                    log.warning(
+                        f"marker_rewrite: chapter {ci} node count mismatch "
+                        f"(body={len(body_indices)} vs tree={len(nodes)}), skipping tree"
+                    )
+                    _tree_available = False
+                    _node_lookup.clear()
+                    break
+        else:
+            log.warning(
+                f"marker_rewrite: chapter count mismatch "
+                f"(body_split={len(chapters_split)} vs trees={len(chapter_trees)}), skipping tree"
+            )
+
+    # parent_id → role lookup (from tree nodes)
+    # chapter별로 node id → node dict
+    _chapter_node_maps: list[dict[int, dict]] = []
+    if _tree_available and chapter_trees:
+        for nodes in chapter_trees:
+            node_map = {n["id"]: n for n in nodes}
+            _chapter_node_maps.append(node_map)
+
+    # sibling counter: key = (chapter_idx, parent_id, role) → count
+    _sibling_counter: dict[tuple, int] = {}
+    # fallback counter (no tree): key = role → count
+    _fallback_counter: dict[str, int] = {}
+
+    def _rewrite_marker(body_item_idx: int, role: str, text: str) -> str:
         """marker_policy에 따라 text의 leading marker를 교체."""
-        # chapter title이 나오면 모든 sibling counter 리셋
+        node = _node_lookup.get(body_item_idx)
+        ch_idx = _chapter_idx_lookup.get(body_item_idx)
+
+        # chapter title → skip (marker policy 대상 아님) + fallback counter 리셋
         if role in _chapter_title_roles:
-            _role_sibling_counter.clear()
+            _fallback_counter.clear()
+            return text
 
         policy = _marker_policies.get(role)
         if not policy:
@@ -975,71 +1040,113 @@ def assemble_hwpx_hybrid(
 
         markers = policy.get("markers", [])
         policy_type = policy.get("policy_type", "")
+        marker_family = policy.get("family", "")
         sep = policy.get("separator", " ")
 
         if not markers:
             return text
 
-        # sibling index 증가
-        _role_sibling_counter[role] = _role_sibling_counter.get(role, 0) + 1
-        sib_idx = _role_sibling_counter[role]
+        # star_depth: preview skip
+        if policy_type == "star_depth":
+            _marker_rewrite_log.append({
+                "chapter_idx": ch_idx,
+                "node_id": node["id"] if node else None,
+                "role": role,
+                "parent_id": node["parent_id"] if node else None,
+                "parent_role": None,
+                "sibling_group_key": None,
+                "marker_policy_type": policy_type,
+                "marker_family": marker_family,
+                "sibling_index": None,
+                "detected_marker": None,
+                "expected_marker": None,
+                "stripped_content": text[:80],
+                "rewritten_text": text[:80],
+                "marker_match": None,
+                "rewrite_applied": False,
+                "skip_reason": "star_depth",
+            })
+            return text
+
+        # sibling index 계산
+        parent_id = None
+        parent_role = None
+        sibling_group_key = None
+
+        if _tree_available and node is not None and ch_idx is not None:
+            parent_id = node.get("parent_id")
+            # parent role lookup
+            if parent_id is not None and ch_idx < len(_chapter_node_maps):
+                parent_node = _chapter_node_maps[ch_idx].get(parent_id)
+                if parent_node:
+                    parent_role = parent_node.get("role")
+            sibling_group_key = f"{ch_idx}_{parent_id}_{role}"
+            counter_key = (ch_idx, parent_id, role)
+            _sibling_counter[counter_key] = _sibling_counter.get(counter_key, 0) + 1
+            sib_idx = _sibling_counter[counter_key]
+        else:
+            # fallback: role별 global counter (chapter title에서 리셋)
+            _fallback_counter[role] = _fallback_counter.get(role, 0) + 1
+            sib_idx = _fallback_counter[role]
+            sibling_group_key = f"fallback_{role}"
 
         # expected marker 결정
         if policy.get("style") == "sequence":
             if sib_idx <= len(markers):
                 expected = markers[sib_idx - 1]
             else:
-                # markers 범위 초과: 마지막 marker 기반 확장
-                expected = markers[-1]  # fallback
-            # star_depth: parent context 없이는 정확한 depth 판단 불가
-            # AI가 이미 *, **, ***를 적절히 생성하므로 원본 유지
-            if policy_type == "star_depth":
-                return text
+                expected = markers[-1]
         else:
             expected = markers[0]
 
         # text에서 기존 marker strip
         stripped = text.lstrip()
-        content = stripped
+        stripped_content = stripped
         detected = ""
         for m in sorted(markers, key=len, reverse=True):
             if stripped.startswith(m):
                 detected = m
                 after = stripped[len(m):]
                 if after and after[0] in (" ", "\t"):
-                    content = after[1:]
+                    stripped_content = after[1:]
                 elif after:
-                    content = after
+                    stripped_content = after
                 else:
-                    content = ""
+                    stripped_content = ""
                 break
 
-        # marker가 없는 role (예: c4 대제목 — AI가 마커 없이 생성)
+        # rewritten text 계산
         if not detected and policy_type in ("roman_sequence", "arabic_sequence",
                                              "circled_sequence", "circled_pua_sequence"):
-            # 번호형인데 마커 없으면 추가
-            rewritten = f"{expected}{sep}{content}" if content else f"{expected}"
+            rewritten = f"{expected}{sep}{stripped_content}" if stripped_content else f"{expected}"
         elif detected == expected:
-            rewritten = text  # 이미 맞음
+            rewritten = text
         else:
-            # 기존 marker를 expected로 교체
-            rewritten = f"{expected}{sep}{content}" if content else f"{expected}"
+            rewritten = f"{expected}{sep}{stripped_content}" if stripped_content else f"{expected}"
 
+        marker_match = (detected == expected) if detected else None
         applied = enable_marker_rewrite and rewritten != text
         _marker_rewrite_log.append({
+            "chapter_idx": ch_idx,
+            "node_id": node["id"] if node else None,
             "role": role,
+            "parent_id": parent_id,
+            "parent_role": parent_role,
+            "sibling_group_key": sibling_group_key,
+            "marker_policy_type": policy_type,
+            "marker_family": marker_family,
             "sibling_index": sib_idx,
-            "raw_text": text[:50],
             "detected_marker": detected,
             "expected_marker": expected,
-            "rewritten_text": rewritten[:50],
-            "changed": rewritten != text,
+            "stripped_content": stripped_content[:80],
+            "rewritten_text": rewritten[:80],
+            "marker_match": marker_match,
             "rewrite_applied": applied,
         })
 
         return rewritten if enable_marker_rewrite else text
 
-    for item in body_items:
+    for bi_idx, item in enumerate(body_items):
         role = item.get("role", "")
         text = item.get("text", "")
 
@@ -1048,7 +1155,7 @@ def assemble_hwpx_hybrid(
             continue
 
         # marker rewrite 적용
-        text = _rewrite_marker(role, text)
+        text = _rewrite_marker(bi_idx, role, text)
 
         cur_level = role_level.get(role, 0)
 

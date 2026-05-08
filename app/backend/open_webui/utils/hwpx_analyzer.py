@@ -7600,6 +7600,7 @@ def write_stage_debug_files(
             "fail_count": assembly.get("fail_count", 0),
             "errors": assembly.get("errors", []),
             "output_size": assembly.get("output_size", 0),
+            "marker_rewrite_log": assembly.get("marker_rewrite_log", []),
         })
     else:
         _skip("10_assemble_result.json")
