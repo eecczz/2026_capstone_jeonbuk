@@ -5316,17 +5316,30 @@ def build_per_type_role_semantics(
     # ── 4. 결과 구성 ──
     # text_type 추론 keywords
     _summary_kw = {"요약", "박스", "마무리", "전환", "기대효과"}
-    _supporting_kw = {"보충", "예시", "나열", "각주", "세부", "보충문", "근거", "수치"}
+    _supporting_kw = {"보충", "예시", "나열", "각주", "보충문", "근거", "수치"}
+    _body_kw = {"설명", "본문", "서술", "실행 내용", "성과 설명", "내용 제시", "진단"}
     _heading_kw = {"제목", "표지", "단원", "분류", "장 시작", "전략", "과제", "항목 제목"}
 
     def _infer_text_type(desc: str, has_ch: bool) -> str:
+        is_summary = any(k in desc for k in _summary_kw)
+        is_supporting = any(k in desc for k in _supporting_kw)
+        is_body = any(k in desc for k in _body_kw)
+        is_heading = any(k in desc for k in _heading_kw)
         if has_ch:
-            return "summary" if any(k in desc for k in _summary_kw) else "heading"
-        if any(k in desc for k in _summary_kw):
+            # children 있어도 description이 명확하면 그쪽 우선
+            if is_summary:
+                return "summary"
+            if is_supporting:
+                return "supporting"
+            if is_body and not is_heading:
+                return "body"
+            return "heading"
+        # leaf
+        if is_summary:
             return "summary"
-        if any(k in desc for k in _supporting_kw):
+        if is_supporting:
             return "supporting"
-        if any(k in desc for k in _heading_kw):
+        if is_heading:
             return "heading"
         return "body"
 
@@ -5408,34 +5421,42 @@ def classify_role_text_types(
         role_has_children[role] = bool(g.get("allowed_children"))
 
     # keyword sets
-    _heading_kw = {"제목", "표지", "단원", "분류", "장 시작", "전략", "과제", "항목 제목", "구분 제목"}
+    _heading_kw = {"제목", "표지", "단원", "장 시작", "항목 제목", "구분 제목"}
     _summary_kw = {"요약", "박스", "마무리", "전환", "기대효과"}
-    _supporting_kw = {"보충", "예시", "나열", "각주", "세부", "보충문", "근거", "수치"}
+    _supporting_kw = {"보충", "예시", "나열", "각주", "보충문", "근거", "수치"}
+    _body_kw = {"설명", "본문", "서술", "실행 내용", "성과 설명", "내용 제시", "진단"}
 
     result = {}
     for role, meta in role_meta.items():
         desc = meta["desc"]
-        desc_lower = desc.lower()
         has_ch = role_has_children.get(role, False)
 
-        # 1. grammar 기반이 primary, keyword는 secondary
+        is_summary = any(kw in desc for kw in _summary_kw)
+        is_supporting = any(kw in desc for kw in _supporting_kw)
+        is_body = any(kw in desc for kw in _body_kw)
+        is_heading = any(kw in desc for kw in _heading_kw)
+
         if has_ch:
-            # children 있으면 heading 또는 summary (구조적으로 상위 역할)
-            if any(kw in desc for kw in _summary_kw):
+            if is_summary:
                 text_type = "summary"
-                reason = "grammar: has_children + keyword: summary"
+                reason = "has_children + keyword: summary"
+            elif is_supporting:
+                text_type = "supporting"
+                reason = "has_children + keyword: supporting"
+            elif is_body and not is_heading:
+                text_type = "body"
+                reason = "has_children + keyword: body (no heading kw)"
             else:
                 text_type = "heading"
-                reason = "grammar: has_children"
+                reason = "has_children" + (" + keyword: heading" if is_heading else "")
         else:
-            # leaf node → keyword로 body/supporting/summary 구분
-            if any(kw in desc for kw in _summary_kw):
+            if is_summary:
                 text_type = "summary"
                 reason = "leaf + keyword: summary"
-            elif any(kw in desc for kw in _supporting_kw):
+            elif is_supporting:
                 text_type = "supporting"
                 reason = "leaf + keyword: supporting"
-            elif any(kw in desc for kw in _heading_kw):
+            elif is_heading:
                 text_type = "heading"
                 reason = "leaf + keyword: heading"
             else:
