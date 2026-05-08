@@ -5032,6 +5032,11 @@ def build_chapter_types_from_structure(structure: dict) -> dict:
         structure.get("paragraphs", []),
         structure.get("template_grammar"),
     )
+    structure["per_type_role_semantics"] = build_per_type_role_semantics(
+        structure.get("paragraphs", []),
+        structure.get("chapter_types", {}),
+        structure.get("template_grammar"),
+    )
     return structure
 
 
@@ -5197,6 +5202,174 @@ def extract_template_grammar(
         "per_type": per_type,
         "observed_transitions": sorted(transitions),
     }
+
+
+def build_per_type_role_semantics(
+    paragraphs: list[dict],
+    chapter_types: dict,
+    template_grammar: dict | None = None,
+) -> dict:
+    """
+    1a description을 chapter→type별로 그룹핑하여 role별 per_type semantics 생성.
+
+    같은 role_cluster라도 type/context에 따라 다른 의미를 가질 수 있음.
+    AI가 이미 만든 paragraph-level description을 type-level로 집계.
+
+    Returns:
+        {role: {"default": {...}, "per_type": {type_name: {...}}}}
+    """
+    from collections import defaultdict
+
+    global_grammar = (template_grammar or {}).get("global", {})
+    per_type_grammar = (template_grammar or {}).get("per_type", {})
+
+    # ── 1. chapter 경계 결정 (same logic as _build_chapter_types) ──
+    l0_with_ch = sum(
+        1 for i, p in enumerate(paragraphs)
+        if p.get("level", 0) == 0
+        and i + 1 < len(paragraphs)
+        and paragraphs[i + 1].get("level", 0) > 0
+    )
+    ch_title_level = 0 if l0_with_ch >= 2 else 1
+
+    chapters = []  # [(title_para, body_paras)]
+    cur_title = None
+    cur_body = []
+    for p in paragraphs:
+        lv = p.get("level", 0)
+        if lv < ch_title_level:
+            continue
+        if lv == ch_title_level:
+            if ch_title_level == 0:
+                idx = p.get("idx", 0)
+                has_child = any(
+                    pp.get("level", 0) > 0
+                    for pp in paragraphs[idx + 1: idx + 5]
+                )
+                if not has_child:
+                    continue
+            if cur_title is not None:
+                chapters.append((cur_title, cur_body))
+            cur_title = p
+            cur_body = []
+        elif cur_title is not None:
+            cur_body.append(p)
+    if cur_title is not None:
+        chapters.append((cur_title, cur_body))
+
+    # ── 2. chapter→type 매핑 (role set overlap) ──
+    def _collect_pattern_roles(pat: dict) -> set:
+        roles = set()
+        for r, info in pat.items():
+            roles.add(r)
+            ch = info.get("children", {})
+            if ch:
+                roles |= _collect_pattern_roles(ch)
+        return roles
+
+    type_role_sets = {}
+    for tn, ti in chapter_types.items():
+        type_role_sets[tn] = _collect_pattern_roles(ti.get("pattern", {}))
+
+    ch_type_map = []  # [(type_name, body_paras)]
+    for title, body in chapters:
+        ch_roles = {p.get("role", "") for p in body if p.get("role")}
+        # best match: highest Jaccard similarity
+        best_type = None
+        best_score = -1.0
+        for tn, tr in type_role_sets.items():
+            if not tr:
+                continue
+            intersection = len(ch_roles & tr)
+            union = len(ch_roles | tr)
+            score = intersection / union if union else 0
+            if score > best_score:
+                best_score = score
+                best_type = tn
+        ch_type_map.append((best_type, body))
+
+    # ── 3. (type, role) 별로 description + parent + evidence 수집 ──
+    # type_role_data[type_name][role] = {descriptions, parent_roles, evidence_idx}
+    type_role_data = defaultdict(lambda: defaultdict(lambda: {
+        "descriptions": [], "parent_roles": set(), "evidence_idx": [],
+    }))
+    idx_role = {p.get("idx"): p.get("role", "") for p in paragraphs}
+
+    for type_name, body in ch_type_map:
+        if not type_name:
+            continue
+        for p in body:
+            role = p.get("role", "")
+            if not role:
+                continue
+            desc = p.get("description", "")
+            pidx = p.get("parent_idx")
+            parent_role = idx_role.get(pidx, "")
+
+            entry = type_role_data[type_name][role]
+            if desc and desc not in entry["descriptions"]:
+                entry["descriptions"].append(desc)
+            if parent_role:
+                entry["parent_roles"].add(parent_role)
+            entry["evidence_idx"].append(p.get("idx"))
+
+    # ── 4. 결과 구성 ──
+    # text_type 추론 keywords
+    _summary_kw = {"요약", "박스", "마무리", "전환", "기대효과"}
+    _supporting_kw = {"보충", "예시", "나열", "각주", "세부", "보충문", "근거", "수치"}
+    _heading_kw = {"제목", "표지", "단원", "분류", "장 시작", "전략", "과제", "항목 제목"}
+
+    def _infer_text_type(desc: str, has_ch: bool) -> str:
+        if has_ch:
+            return "summary" if any(k in desc for k in _summary_kw) else "heading"
+        if any(k in desc for k in _summary_kw):
+            return "summary"
+        if any(k in desc for k in _supporting_kw):
+            return "supporting"
+        if any(k in desc for k in _heading_kw):
+            return "heading"
+        return "body"
+
+    result = {}
+    all_roles = set()
+    for trd in type_role_data.values():
+        all_roles |= trd.keys()
+
+    for role in sorted(all_roles):
+        has_ch_global = bool(global_grammar.get(role, {}).get("allowed_children"))
+        all_descs = []
+        for trd in type_role_data.values():
+            all_descs.extend(trd.get(role, {}).get("descriptions", []))
+        default_desc = all_descs[0] if all_descs else ""
+
+        per_type = {}
+        for type_name in sorted(type_role_data.keys()):
+            entry = type_role_data[type_name].get(role)
+            if not entry or not entry["descriptions"]:
+                continue
+            rep_desc = entry["descriptions"][0]
+            # per_type grammar로 has_children 판단 (type context별로 다를 수 있음)
+            type_g = per_type_grammar.get(type_name, {}).get("grammar", {})
+            has_ch_in_type = bool(type_g.get(role, {}).get("allowed_children"))
+            per_type[type_name] = {
+                "representative_description": rep_desc,
+                "description_examples": entry["descriptions"][:3],
+                "parent_roles": sorted(entry["parent_roles"]),
+                "evidence_idx": entry["evidence_idx"][:10],
+                "has_children_in_type": has_ch_in_type,
+                "inferred_text_type": _infer_text_type(rep_desc, has_ch_in_type),
+            }
+
+        result[role] = {
+            "default": {
+                "representative_description": default_desc,
+                "has_children_global": has_ch_global,
+                "inferred_text_type": _infer_text_type(default_desc, has_ch_global),
+            },
+            "per_type": per_type,
+        }
+
+    return result
 
 
 def classify_role_text_types(
@@ -7031,6 +7204,7 @@ def write_stage_debug_files(
             "cluster_count": len(clusters),
             "clusters": clusters,
             "role_registry": clustering.get("role_registry", {}),
+            "per_type_role_semantics": struct_after.get("per_type_role_semantics", {}),
         })
     else:
         _skip("03_role_clustering.json")
@@ -7702,8 +7876,14 @@ def _format_pattern_tree(
     role_markers: dict,
     indent: int = 0,
     role_text_types: dict | None = None,
+    per_type_semantics: dict | None = None,
+    chapter_type_name: str = "",
 ) -> str:
-    """패턴 트리를 사람이 읽기 좋은 텍스트로 변환. text_type + length_hint 포함."""
+    """패턴 트리를 사람이 읽기 좋은 텍스트로 변환.
+
+    per_type semantics가 있으면 해당 type context의 description과 text_type 사용.
+    없으면 role_text_types(global) fallback.
+    """
     lines = []
     prefix = "  " * indent
     for role_name, info in pattern.items():
@@ -7715,7 +7895,7 @@ def _format_pattern_tree(
         observed = info.get("observed_counts", [])
         children = info.get("children", {})
         flags = []
-        # 개수 제약 (강제)
+        # 개수 제약
         if per_parent == "single":
             flags.append("정확히 1개/부모")
         else:
@@ -7724,22 +7904,33 @@ def _format_pattern_tree(
             flags.append("선택(생략 가능)")
         else:
             flags.append("필수(최소 1개)")
-        # 개수 힌트 (권장)
         if suggested and suggested > 0:
             flags.append(f"권장 개수 약 {suggested}")
         if observed:
             observed_preview = observed[:6]
             more = "…" if len(observed) > len(observed_preview) else ""
             flags.append(f"관찰={observed_preview}{more}")
-        # text_type + length_hint (role_text_types 우선, fallback은 grammar)
-        tt = (role_text_types or {}).get(role_name, {})
-        text_type = tt.get("text_type", "heading" if children else "body")
-        length_hint = tt.get("length_hint", "짧은 한 줄" if children else "한 문장")
-        flags.append(f"text_type={text_type}, {length_hint}")
+        # per_type semantics 우선, global fallback
+        pts = (per_type_semantics or {}).get(role_name, {})
+        type_sem = pts.get("per_type", {}).get(chapter_type_name, {})
+        if type_sem:
+            text_type = type_sem.get("inferred_text_type", "body")
+            desc = type_sem.get("representative_description", "")
+            if desc:
+                flags.append(f"역할: {desc[:50]}")
+            flags.append(f"text_type={text_type}")
+        else:
+            tt = (role_text_types or {}).get(role_name, {})
+            text_type = tt.get("text_type", "heading" if children else "body")
+            length_hint = tt.get("length_hint", "짧은 한 줄" if children else "한 문장")
+            flags.append(f"text_type={text_type}, {length_hint}")
         flags_str = f" [{', '.join(flags)}]" if flags else ""
         lines.append(f"{prefix}- {role_name}{marker_str}{flags_str}")
         if children:
-            lines.append(_format_pattern_tree(children, role_markers, indent + 1, role_text_types))
+            lines.append(_format_pattern_tree(
+                children, role_markers, indent + 1,
+                role_text_types, per_type_semantics, chapter_type_name,
+            ))
     return "\n".join(lines)
 
 
@@ -7754,6 +7945,7 @@ def build_section_fill_prompt(
     exclusive_rules: list = None,
     format_rules: dict = None,
     role_text_types: dict | None = None,
+    per_type_role_semantics: dict | None = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -7769,6 +7961,7 @@ def build_section_fill_prompt(
         exclusive_rules: 1.5b의 형제 배타 규칙 (선택)
         format_rules: 1.5c의 role별 포맷 규칙 (선택)
         role_text_types: classify_role_text_types() 결과 (text_type, length_hint)
+        per_type_role_semantics: build_per_type_role_semantics() 결과 (per-type description)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
@@ -7779,7 +7972,12 @@ def build_section_fill_prompt(
         role_markers[role_name] = info.get("marker", "")
 
     # 패턴 트리 텍스트
-    pattern_text = _format_pattern_tree(pattern, role_markers, role_text_types=role_text_types)
+    pattern_text = _format_pattern_tree(
+        pattern, role_markers,
+        role_text_types=role_text_types,
+        per_type_semantics=per_type_role_semantics,
+        chapter_type_name=chapter_type_name,
+    )
 
     # 이번 패턴에 등장하는 role들만 수집 → 관련된 배타 규칙만 추림
     def _collect_roles(pat: dict, acc: set):
