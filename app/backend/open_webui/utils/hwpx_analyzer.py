@@ -7807,7 +7807,7 @@ def _build_rich_type_catalog(
 
 def build_chapter_classify_prompt(
     chapter_types: dict,
-    header_roles: list[str],
+    header_roles: list[str] | list[dict],
     content_text: str = "",
     content_images: list[str] = None,
     pdf_text: str = "",
@@ -7819,7 +7819,8 @@ def build_chapter_classify_prompt(
 
     Args:
         chapter_types: 1차 AI가 출력한 chapter_types dict
-        header_roles: 양식의 header role 이름 목록 (cover_title 등)
+        header_roles: 양식의 header role 목록.
+            list[str] (하위 호환) 또는 list[dict] ({"role": ..., "description": ...})
         content_text: 직접 입력 텍스트
         content_images: PDF 페이지 base64 JPEG 이미지 리스트
         pdf_text: PDF에서 추출한 텍스트
@@ -7837,12 +7838,43 @@ def build_chapter_classify_prompt(
     type_count = len(valid_type_names)
     type_names_str = ", ".join(valid_type_names) if valid_type_names else "(없음)"
 
-    # header role 목록
+    # header role 목록 — list[str] 또는 list[dict] 모두 지원
+    # list[str]이면 paragraphs에서 description을 자동 조회
+    _role_desc_lookup: dict[str, str] = {}
+    if paragraphs:
+        for p in paragraphs:
+            r = p.get("role", "")
+            if r and r not in _role_desc_lookup and p.get("description"):
+                _role_desc_lookup[r] = p["description"]
+
+    _header_entries: list[dict] = []
     if header_roles:
-        header_text = ", ".join(header_roles)
+        for item in header_roles:
+            if isinstance(item, dict):
+                _header_entries.append(item)
+            else:
+                _header_entries.append({
+                    "role": item,
+                    "description": _role_desc_lookup.get(item, ""),
+                })
+
+    if _header_entries:
+        _has_desc = any(e.get("description") for e in _header_entries)
+        if _has_desc:
+            header_lines = []
+            for e in _header_entries:
+                desc = e.get("description", "")
+                header_lines.append(f"- {e['role']}: {desc}" if desc else f"- {e['role']}")
+            header_text = "\n".join(header_lines)
+        else:
+            header_text = ", ".join(e["role"] for e in _header_entries)
+        header_keys = ", ".join(e["role"] for e in _header_entries)
         header_rule = (
-            f"**header에는 다음 key만 사용 가능** (필수): {header_text}\n"
-            f"- 위 목록의 각 key에 대해 소스에서 적절한 값을 찾아 채우세요\n"
+            f"**header에는 다음 key만 사용 가능**: {header_keys}\n"
+            f"- 각 role의 description을 읽고, 소스에서 해당 의미에 맞는 값만 넣으세요\n"
+            f"- 보안등급·분류표시(예: 대외비, 대외주의 등)는 제목·날짜·기관 슬롯에 넣지 마세요\n"
+            f"- 소스에서 해당 슬롯에 맞는 값이 없으면 빈 문자열 \"\"을 출력하세요\n"
+            f"- 목차·구성 안내처럼 소스에서 직접 추출할 값이 애매하면 빈 문자열로 두세요 (양식 원본이 보존됩니다)\n"
             f"- 위 목록에 없는 key를 만들지 마세요\n"
         )
     else:
