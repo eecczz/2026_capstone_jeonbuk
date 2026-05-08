@@ -5904,7 +5904,15 @@ def reconstruct_tree_from_flat(
     # failure type 결정
     if result.violations:
         vtypes = {v.violation_type for v in result.violations}
+        # planning_failure: 2a가 type을 잘못 골랐을 가능성
+        #   - 첫 item이 root에 없음 (wrong_type_assignment)
+        #   - ROOT에 붙은 non-root role이 전체 violations의 과반 (invalid_root_child)
+        invalid_root_count = sum(
+            1 for v in result.violations if v.violation_type == "invalid_root_child"
+        )
         if "wrong_type_assignment" in vtypes:
+            result.failure_type = "planning_failure"
+        elif invalid_root_count >= len(result.violations) // 2 and invalid_root_count >= 2:
             result.failure_type = "planning_failure"
         else:
             result.failure_type = "generation_failure"
@@ -6683,12 +6691,180 @@ type의 최상위 role 이름에서 성격 유추:
 """
 
 
+def _build_rich_type_catalog(
+    chapter_types: dict,
+    template_grammar: dict | None = None,
+    paragraphs: list[dict] | None = None,
+) -> str:
+    """
+    chapter_types + grammar + paragraph descriptions → 2a 프롬프트용 type catalog.
+
+    각 type에 대해:
+    - 구조 트리 (marker + semantic description)
+    - depth, role count
+    - 적합/부적합 소스 구조 힌트
+    - 예상 항목 수 범위
+    """
+    # ── 1. role → (markers, description) 매핑 ──
+    role_meta: dict[str, dict] = {}
+    for p in (paragraphs or []):
+        role = p.get("role", "")
+        if not role:
+            continue
+        marker = p.get("marker", "").strip()
+        desc = p.get("description", "")
+        if role not in role_meta:
+            role_meta[role] = {"markers": [], "desc": desc}
+        if marker and marker not in role_meta[role]["markers"]:
+            role_meta[role]["markers"].append(marker)
+
+    per_type_grammar = (template_grammar or {}).get("per_type", {})
+
+    # ── helpers ──
+    def _pdepth(pat: dict) -> int:
+        if not pat:
+            return 0
+        return max(
+            1 + _pdepth(info.get("children", {})) if info.get("children") else 1
+            for info in pat.values()
+        )
+
+    def _proles(pat: dict) -> int:
+        return sum(
+            1 + _proles(info.get("children", {}))
+            for info in pat.values()
+        )
+
+    def _role_label(role: str) -> str:
+        meta = role_meta.get(role, {})
+        markers = meta.get("markers", [])
+        short = meta.get("desc", role).split("(")[0].strip()
+        m = markers[0] if markers else ""
+        return f"{m} {short}".strip() if m else short
+
+    def _deepest_chain(role: str, grammar: dict, visited: set | None = None) -> list[str]:
+        if visited is None:
+            visited = set()
+        if role in visited:
+            return []
+        visited.add(role)
+        children = grammar.get(role, {}).get("allowed_children", [])
+        if not children:
+            return [role]
+        best = [role]
+        for ch in children:
+            cand = [role] + _deepest_chain(ch, grammar, visited.copy())
+            if len(cand) > len(best):
+                best = cand
+        return best
+
+    def _tree_lines(role: str, grammar: dict, indent: int = 0,
+                    visited: set | None = None) -> list[str]:
+        if visited is None:
+            visited = set()
+        if role in visited:
+            return []
+        visited.add(role)
+
+        meta = role_meta.get(role, {})
+        markers = meta.get("markers", [])
+        desc_short = meta.get("desc", role).split("(")[0].strip()
+        marker_str = ",".join(markers[:3]) if markers else "(없음)"
+
+        g = grammar.get(role, {})
+        tags = []
+        if g.get("repeatable"):
+            tags.append("반복")
+        if g.get("optional"):
+            tags.append("선택")
+        tag_str = f"  [{','.join(tags)}]" if tags else ""
+
+        prefix = "  " * indent
+        lines = [f"{prefix}{marker_str} {desc_short}{tag_str}"]
+
+        for ch in g.get("allowed_children", []):
+            lines.extend(_tree_lines(ch, grammar, indent + 1, visited.copy()))
+        return lines
+
+    # ── 2. 각 type의 rich description 생성 ──
+    sections = []
+    for type_name, type_info in chapter_types.items():
+        pattern = type_info.get("pattern", {})
+        title_role = type_info.get("title_role", "")
+
+        tg = per_type_grammar.get(type_name, {})
+        root_roles = tg.get("root_roles", sorted(pattern.keys()))
+        type_grammar = tg.get("grammar", {})
+
+        depth = _pdepth(pattern)
+        total = _proles(pattern)
+
+        # one-line summary via deepest chain
+        chains = [_deepest_chain(rr, type_grammar) for rr in root_roles]
+        main_chain = max(chains, key=len) if chains else []
+        chain_str = " → ".join(_role_label(r) for r in main_chain)
+
+        if len(root_roles) > 1:
+            other = [_role_label(r) for r in root_roles if r != main_chain[0]]
+            summary_line = f"대표 경로: {chain_str}" + (f" + {', '.join(other)}" if other else "")
+        else:
+            summary_line = chain_str
+
+        # tree visualization
+        tree = []
+        for rr in root_roles:
+            tree.extend(_tree_lines(rr, type_grammar))
+        tree_str = "\n".join(tree)
+
+        # suitability hints (depth-based + role description keywords)
+        all_descs = " ".join(role_meta.get(r, {}).get("desc", "") for r in type_grammar)
+        has_strategy = any(k in all_descs for k in ("전략", "과제", "추진"))
+        has_summary = any(k in all_descs for k in ("요약", "박스"))
+        has_numbered = any(k in all_descs for k in ("번호형", "중분류"))
+
+        if depth <= 2:
+            suitable = "단순 나열, 요약, 현황 보고, 배경+항목+결론"
+            unsuitable = "전략/과제 계층, 다단계 분석, 깊은 정책 계획"
+            item_range = "5~15"
+        elif depth <= 3:
+            if len(root_roles) >= 3:
+                suitable = "요약+항목 나열+결론 복합 구조, 현황 보고, 성과 나열"
+            elif has_numbered:
+                suitable = "번호형 논점 전개, 분석 보고, 여러 관점의 세부 분석"
+            else:
+                suitable = "중간 깊이 분석, 세부 항목이 있는 보고"
+            unsuitable = "전략→과제→세부계획 다단계 구조, 단순 1단 나열"
+            item_range = "10~30"
+        else:
+            if has_strategy:
+                suitable = "전략/과제/세부추진항목 다단계 계획, 체계적 정책 문서"
+            else:
+                suitable = "깊은 계층 구조, 다단계 세부 분석"
+            unsuitable = "단순 나열, 짧은 요약, 배경 설명 위주"
+            item_range = "20~80"
+
+        section = (
+            f"### {type_name} — depth={depth}, {total}개 role\n"
+            f"**요약**: {summary_line}\n\n"
+            f"**구조 트리** (들여쓰기 = 부모→자식):\n"
+            f"```\n{tree_str}\n```\n\n"
+            f"**적합한 소스**: {suitable}\n"
+            f"**부적합**: {unsuitable}\n"
+            f"**예상 항목 수**: {item_range}개"
+        )
+        sections.append(section)
+
+    return "\n\n---\n\n".join(sections)
+
+
 def build_chapter_classify_prompt(
     chapter_types: dict,
     header_roles: list[str],
     content_text: str = "",
     content_images: list[str] = None,
     pdf_text: str = "",
+    template_grammar: dict | None = None,
+    paragraphs: list[dict] | None = None,
 ) -> list[dict]:
     """
     2a 호출: 소스 PDF → 대제목 추출 + 양식 타입 분류
@@ -6699,23 +6875,17 @@ def build_chapter_classify_prompt(
         content_text: 직접 입력 텍스트
         content_images: PDF 페이지 base64 JPEG 이미지 리스트
         pdf_text: PDF에서 추출한 텍스트
+        template_grammar: extract_template_grammar() 결과 (per_type grammar 포함)
+        paragraphs: structure["paragraphs"] (role descriptions/markers 포함)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
     """
-    # 양식 타입 카탈로그 구성
-    type_lines = []
+    # 양식 타입 카탈로그 구성 (rich catalog with grammar + descriptions)
     valid_type_names = list(chapter_types.keys())
-    for type_name, info in chapter_types.items():
-        desc = info.get("description", "")
-        title_role = info.get("title_role", "")
-        pattern = info.get("pattern", {})
-        top_roles = list(pattern.keys())
-        roles_str = ", ".join(top_roles) if top_roles else "(단순 구조)"
-        type_lines.append(
-            f"- **{type_name}**: {desc} (대제목 role: {title_role}, 하위: {roles_str})"
-        )
-    types_text = "\n".join(type_lines)
+    types_text = _build_rich_type_catalog(
+        chapter_types, template_grammar, paragraphs,
+    )
     type_count = len(valid_type_names)
     type_names_str = ", ".join(valid_type_names) if valid_type_names else "(없음)"
 
