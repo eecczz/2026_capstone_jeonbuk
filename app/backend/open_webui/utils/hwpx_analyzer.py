@@ -5028,6 +5028,10 @@ def build_chapter_types_from_structure(structure: dict) -> dict:
         structure.get("paragraphs", []),
         structure.get("chapter_types", {}),
     )
+    structure["role_text_types"] = classify_role_text_types(
+        structure.get("paragraphs", []),
+        structure.get("template_grammar"),
+    )
     return structure
 
 
@@ -5193,6 +5197,97 @@ def extract_template_grammar(
         "per_type": per_type,
         "observed_transitions": sorted(transitions),
     }
+
+
+def classify_role_text_types(
+    paragraphs: list[dict],
+    template_grammar: dict | None = None,
+) -> dict[str, dict]:
+    """
+    role별 text_type을 자동 분류합니다.
+
+    분류 기준:
+    1. grammar의 has_children → heading 후보
+    2. description keyword로 보정
+    3. 불확실하면 grammar fallback
+
+    Returns:
+        {role: {"text_type": "heading"|"body"|"supporting"|"summary"|"unknown",
+                "length_hint": str, "reason": str}}
+    """
+    global_grammar = (template_grammar or {}).get("global", {})
+
+    # role → description, markers 수집
+    role_meta: dict[str, dict] = {}
+    for p in paragraphs:
+        role = p.get("role", "")
+        if not role or role in role_meta:
+            continue
+        role_meta[role] = {
+            "desc": p.get("description", ""),
+            "marker": p.get("marker", "").strip(),
+        }
+
+    # has_children 판단: global grammar의 allowed_children 비어있지 않으면
+    role_has_children: dict[str, bool] = {}
+    for role in role_meta:
+        g = global_grammar.get(role, {})
+        role_has_children[role] = bool(g.get("allowed_children"))
+
+    # keyword sets
+    _heading_kw = {"제목", "표지", "단원", "분류", "장 시작", "전략", "과제", "항목 제목", "구분 제목"}
+    _summary_kw = {"요약", "박스", "마무리", "전환", "기대효과"}
+    _supporting_kw = {"보충", "예시", "나열", "각주", "세부", "보충문", "근거", "수치"}
+
+    result = {}
+    for role, meta in role_meta.items():
+        desc = meta["desc"]
+        desc_lower = desc.lower()
+        has_ch = role_has_children.get(role, False)
+
+        # 1. grammar 기반이 primary, keyword는 secondary
+        if has_ch:
+            # children 있으면 heading 또는 summary (구조적으로 상위 역할)
+            if any(kw in desc for kw in _summary_kw):
+                text_type = "summary"
+                reason = "grammar: has_children + keyword: summary"
+            else:
+                text_type = "heading"
+                reason = "grammar: has_children"
+        else:
+            # leaf node → keyword로 body/supporting/summary 구분
+            if any(kw in desc for kw in _summary_kw):
+                text_type = "summary"
+                reason = "leaf + keyword: summary"
+            elif any(kw in desc for kw in _supporting_kw):
+                text_type = "supporting"
+                reason = "leaf + keyword: supporting"
+            elif any(kw in desc for kw in _heading_kw):
+                text_type = "heading"
+                reason = "leaf + keyword: heading"
+            else:
+                text_type = "body"
+                reason = "grammar: leaf node"
+
+        # 3. length_hint
+        if text_type == "heading":
+            length_hint = "짧은 한 줄 (20~40자)"
+        elif text_type == "summary":
+            length_hint = "1~2문장 (40~80자)"
+        elif text_type == "supporting":
+            length_hint = "짧은 보충문 (20~60자)"
+        else:  # body
+            length_hint = "한 문장 (30~100자)"
+
+        result[role] = {
+            "text_type": text_type,
+            "length_hint": length_hint,
+            "reason": reason,
+            "has_children": has_ch,
+            "description": desc[:60],
+        }
+
+    return result
 
 
 def _build_chapter_types(paragraphs: list[dict]) -> dict:
@@ -5965,6 +6060,71 @@ def validate_reconstruction(
     return extra
 
 
+def validate_text_quality(
+    flat_items: list[dict],
+    role_text_types: dict | None = None,
+    role_markers: dict | None = None,
+    expected_item_range: tuple[int, int] | None = None,
+) -> list[dict]:
+    """
+    6-lite: text 품질 검사 (warning only, assemble 차단 안 함).
+
+    검사 항목:
+    - heading role 텍스트 길이 과다 (>80자)
+    - marker contamination (text가 expected marker로 시작)
+    - item count expected range 이탈
+
+    Returns:
+        [{"type": "heading_too_long"|"marker_contamination"|"item_count_mismatch",
+          "item_index": N, "role": str, "detail": str, "severity": "warning"}]
+    """
+    warnings = []
+    rtt = role_text_types or {}
+    markers = role_markers or {}
+
+    for i, item in enumerate(flat_items):
+        role = item.get("role", "")
+        text = item.get("text", "")
+        tt = rtt.get(role, {})
+        text_type = tt.get("text_type", "")
+
+        # heading length check
+        if text_type == "heading" and len(text) > 80:
+            warnings.append({
+                "type": "heading_too_long",
+                "item_index": i,
+                "role": role,
+                "detail": f"heading role에 {len(text)}자 (>80). text: {text[:40]}...",
+                "severity": "warning",
+            })
+
+        # marker contamination: text가 role의 known marker로 시작하는지
+        expected_marker = markers.get(role, "")
+        if expected_marker and text.lstrip().startswith(expected_marker):
+            warnings.append({
+                "type": "marker_contamination",
+                "item_index": i,
+                "role": role,
+                "detail": f"text가 마커 '{expected_marker}'로 시작: {text[:30]}",
+                "severity": "info",
+            })
+
+    # item count range check
+    if expected_item_range:
+        lo, hi = expected_item_range
+        actual = len(flat_items)
+        if actual < lo or actual > hi:
+            warnings.append({
+                "type": "item_count_mismatch",
+                "item_index": -1,
+                "role": "",
+                "detail": f"item count {actual}, expected range [{lo}, {hi}]",
+                "severity": "warning",
+            })
+
+    return warnings
+
+
 def _normalize_marker_type(marker: str) -> str:
     """마커를 종류별로 정규화. 같은 시퀀스의 마커는 같은 타입으로 취급."""
     if not marker:
@@ -6638,6 +6798,9 @@ type의 최상위 role 이름에서 성격 유추:
         "content_nature": "요약적 / 분석적 / 나열적 / 서술적 / 조항·규정 / 설명적 / 기타"
       },
       "type_match_reason": "위 최적 구조가 type_X의 pattern과 일치하는 이유 (role 조합, depth, capacity 관점)",
+      "rejected_types": [
+        {"type": "type_Y", "reason": "이 type을 선택하지 않은 구체적 이유"}
+      ],
       "confidence": "high"
     },
     ...
@@ -6649,7 +6812,7 @@ type의 최상위 role 이름에서 성격 유추:
 }
 ```
 
-⭐ **`optimal_structure`와 `type_match_reason` 필드는 필수**.
+⭐ **`optimal_structure`, `type_match_reason`, `rejected_types` 필드는 필수**.
 
 규칙:
 - `rationale`: **반드시 소스 내용 근거** — "이 chapter가 OOO이기 때문에" 형태로 구체적 근거
@@ -6981,6 +7144,7 @@ def write_stage_debug_files(
                 "selected_type": ch.get("type", ""),
                 "optimal_structure": ch.get("optimal_structure", {}),
                 "type_match_reason": ch.get("type_match_reason", ""),
+                "rejected_types": ch.get("rejected_types", []),
                 "confidence": ch.get("confidence", ""),
             })
 
@@ -7042,6 +7206,7 @@ def write_stage_debug_files(
                     "violation_count": gv.get("violation_count", 0),
                     "violations": gv.get("violations", []),
                     "reconstructed_tree": gv.get("nodes", []),
+                    "text_quality_warnings": sf.get("text_quality_warnings", []),
                 })
             else:
                 val_chapters.append({
@@ -7532,8 +7697,13 @@ role과 text는 양식의 role 카탈로그·format_rules에 따라 결정. role
 """
 
 
-def _format_pattern_tree(pattern: dict, role_markers: dict, indent: int = 0) -> str:
-    """패턴 트리를 사람이 읽기 좋은 텍스트로 변환. children 유무로 제목/본문 표시."""
+def _format_pattern_tree(
+    pattern: dict,
+    role_markers: dict,
+    indent: int = 0,
+    role_text_types: dict | None = None,
+) -> str:
+    """패턴 트리를 사람이 읽기 좋은 텍스트로 변환. text_type + length_hint 포함."""
     lines = []
     prefix = "  " * indent
     for role_name, info in pattern.items():
@@ -7561,15 +7731,15 @@ def _format_pattern_tree(pattern: dict, role_markers: dict, indent: int = 0) -> 
             observed_preview = observed[:6]
             more = "…" if len(observed) > len(observed_preview) else ""
             flags.append(f"관찰={observed_preview}{more}")
-        # children 유무로 성격 표시
-        if children:
-            flags.append("짧은 제목만")
-        else:
-            flags.append("본문 내용")
+        # text_type + length_hint (role_text_types 우선, fallback은 grammar)
+        tt = (role_text_types or {}).get(role_name, {})
+        text_type = tt.get("text_type", "heading" if children else "body")
+        length_hint = tt.get("length_hint", "짧은 한 줄" if children else "한 문장")
+        flags.append(f"text_type={text_type}, {length_hint}")
         flags_str = f" [{', '.join(flags)}]" if flags else ""
         lines.append(f"{prefix}- {role_name}{marker_str}{flags_str}")
         if children:
-            lines.append(_format_pattern_tree(children, role_markers, indent + 1))
+            lines.append(_format_pattern_tree(children, role_markers, indent + 1, role_text_types))
     return "\n".join(lines)
 
 
@@ -7583,6 +7753,7 @@ def build_section_fill_prompt(
     pdf_text: str = "",
     exclusive_rules: list = None,
     format_rules: dict = None,
+    role_text_types: dict | None = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -7597,6 +7768,7 @@ def build_section_fill_prompt(
         pdf_text: PDF에서 추출한 텍스트
         exclusive_rules: 1.5b의 형제 배타 규칙 (선택)
         format_rules: 1.5c의 role별 포맷 규칙 (선택)
+        role_text_types: classify_role_text_types() 결과 (text_type, length_hint)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
@@ -7607,7 +7779,7 @@ def build_section_fill_prompt(
         role_markers[role_name] = info.get("marker", "")
 
     # 패턴 트리 텍스트
-    pattern_text = _format_pattern_tree(pattern, role_markers)
+    pattern_text = _format_pattern_tree(pattern, role_markers, role_text_types=role_text_types)
 
     # 이번 패턴에 등장하는 role들만 수집 → 관련된 배타 규칙만 추림
     def _collect_roles(pat: dict, acc: set):
