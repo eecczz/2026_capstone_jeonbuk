@@ -6691,6 +6691,417 @@ type의 최상위 role 이름에서 성격 유추:
 """
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stage-separated debug file writer
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def write_stage_debug_files(
+    debug_payload: dict,
+    debug_dir: str = "/tmp/hwpx_debug",
+) -> dict:
+    """
+    debug_payload를 단계별 파일로 분리 저장.
+
+    Returns:
+        {filename: "ok" | "skip" | "error: ..."} status dict
+    """
+    import os
+    from datetime import datetime
+
+    os.makedirs(debug_dir, exist_ok=True)
+    results = {}
+
+    def _write(filename: str, data: dict) -> None:
+        path = os.path.join(debug_dir, filename)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+            results[filename] = "ok"
+        except Exception as e:
+            results[filename] = f"error: {e}"
+
+    def _skip(filename: str) -> None:
+        results[filename] = "skip"
+
+    # ── shortcuts ──
+    struct_after = debug_payload.get("structure_after_split", {})
+    struct_before = debug_payload.get("structure_before_split", {})
+    paras_after = struct_after.get("paragraphs", [])
+    paras_before = struct_before.get("paragraphs", [])
+    chapter_types = struct_after.get("chapter_types", {})
+    template_grammar = struct_after.get("template_grammar", {})
+    role_cands = debug_payload.get("1b_role_candidates", {})
+    level_data = debug_payload.get("1c_structure_global", {})
+    parent_corr = debug_payload.get("parent_correction", {})
+    clustering = debug_payload.get("1e_canonical_clustering", {})
+    classify = debug_payload.get("chapter_classify", {})
+    section_fill = debug_payload.get("section_fill", [])
+    assembly = debug_payload.get("assembly", {})
+
+    # ═══════════════════════════════════════════════════════════════
+    # 01. Template paragraph analysis (1a/1b)
+    # ═══════════════════════════════════════════════════════════════
+    if paras_before or role_cands:
+        rc_list = role_cands.get("role_candidates", [])
+        rc_by_idx = {}
+        if isinstance(rc_list, list):
+            for rc in rc_list:
+                if isinstance(rc, dict):
+                    rc_by_idx[rc.get("idx", rc.get("paragraph_idx"))] = rc
+
+        rows = []
+        for p in (paras_before or paras_after):
+            idx = p.get("idx")
+            rc = rc_by_idx.get(idx, {})
+            rows.append({
+                "idx": idx,
+                "marker": p.get("marker", ""),
+                "description": p.get("description", ""),
+                "paraPrIDRef": p.get("paraPrIDRef", p.get("paraStyleId", "")),
+                "charPrIDRef": p.get("charPrIDRef", p.get("charStyleId", "")),
+                "text_preview": p.get("text", "")[:80],
+                "role_candidates": rc.get("candidates", rc.get("role_candidates", [])),
+            })
+        _write("01_template_paragraph_analysis.json", {
+            "paragraph_count": len(rows),
+            "paragraphs": rows,
+        })
+    else:
+        _skip("01_template_paragraph_analysis.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 02. Level + parent tree (1c + parent correction)
+    # ═══════════════════════════════════════════════════════════════
+    if paras_after:
+        tree_rows = []
+        for p in paras_after:
+            tree_rows.append({
+                "idx": p.get("idx"),
+                "level": p.get("level"),
+                "parent_idx": p.get("parent_idx"),
+                "sibling_group_id": p.get("sibling_group_id"),
+                "role": p.get("role", ""),
+                "marker": p.get("marker", ""),
+            })
+
+        # parent correction diff
+        before_paras = parent_corr.get("before_paragraphs", [])
+        after_paras = parent_corr.get("after_paragraphs", [])
+        correction_diff = []
+        if before_paras and after_paras:
+            before_map = {p.get("idx"): p for p in before_paras}
+            for ap in after_paras:
+                idx = ap.get("idx")
+                bp = before_map.get(idx, {})
+                if bp.get("parent_idx") != ap.get("parent_idx"):
+                    correction_diff.append({
+                        "idx": idx,
+                        "role": ap.get("role", ""),
+                        "parent_before": bp.get("parent_idx"),
+                        "parent_after": ap.get("parent_idx"),
+                    })
+
+        _write("02_level_parent_tree.json", {
+            "paragraph_count": len(tree_rows),
+            "paragraphs": tree_rows,
+            "parent_correction": {
+                "diff_count": len(correction_diff),
+                "diff": correction_diff,
+                "reattach_log": parent_corr.get("reattach_log", []),
+                "reparent_log": parent_corr.get("reparent_log", []),
+            },
+            "level_decisions": level_data.get("decisions", {}),
+        })
+    else:
+        _skip("02_level_parent_tree.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 03. Role clustering (1e)
+    # ═══════════════════════════════════════════════════════════════
+    if paras_after:
+        clusters: dict[str, dict] = {}
+        for p in paras_after:
+            role = p.get("role", "")
+            if not role:
+                continue
+            if role not in clusters:
+                clusters[role] = {
+                    "idx_list": [],
+                    "markers": [],
+                    "descriptions": [],
+                    "parent_roles": set(),
+                    "child_roles": set(),
+                }
+            c = clusters[role]
+            c["idx_list"].append(p.get("idx"))
+            m = p.get("marker", "").strip()
+            if m and m not in c["markers"]:
+                c["markers"].append(m)
+            d = p.get("description", "")
+            if d and d not in c["descriptions"]:
+                c["descriptions"].append(d)
+
+        # parent/child relationships
+        idx_role = {p.get("idx"): p.get("role", "") for p in paras_after}
+        for p in paras_after:
+            role = p.get("role", "")
+            pidx = p.get("parent_idx")
+            if role and pidx is not None and pidx in idx_role:
+                pr = idx_role[pidx]
+                if pr:
+                    clusters[role]["parent_roles"].add(pr)
+                    if pr in clusters:
+                        clusters[pr]["child_roles"].add(role)
+
+        # convert sets to sorted lists
+        for c in clusters.values():
+            c["parent_roles"] = sorted(c["parent_roles"])
+            c["child_roles"] = sorted(c["child_roles"])
+            c["count"] = len(c["idx_list"])
+
+        _write("03_role_clustering.json", {
+            "cluster_count": len(clusters),
+            "clusters": clusters,
+            "role_registry": clustering.get("role_registry", {}),
+        })
+    else:
+        _skip("03_role_clustering.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 04. Chapter types
+    # ═══════════════════════════════════════════════════════════════
+    if chapter_types:
+        def _ct_depth(pat):
+            if not pat:
+                return 0
+            return max(
+                (1 + _ct_depth(v.get("children", {}))) if v.get("children") else 1
+                for v in pat.values()
+            )
+
+        def _ct_roles(pat, acc=None):
+            if acc is None:
+                acc = set()
+            for r, v in pat.items():
+                acc.add(r)
+                if v.get("children"):
+                    _ct_roles(v["children"], acc)
+            return acc
+
+        per_type = template_grammar.get("per_type", {})
+        types_out = {}
+        for tn, ti in chapter_types.items():
+            pat = ti.get("pattern", {})
+            tg = per_type.get(tn, {})
+            roles = sorted(_ct_roles(pat))
+            # evidence: paragraphs with these roles
+            evidence = [
+                p.get("idx") for p in paras_after
+                if p.get("role") in roles
+            ]
+            types_out[tn] = {
+                "title_role": ti.get("title_role", ""),
+                "description": ti.get("description", ""),
+                "root_roles": tg.get("root_roles", sorted(pat.keys())),
+                "max_depth": _ct_depth(pat),
+                "included_roles": roles,
+                "role_count": len(roles),
+                "evidence_idx": evidence[:50],
+                "pattern": pat,
+            }
+
+        _write("04_chapter_types.json", {
+            "type_count": len(types_out),
+            "types": types_out,
+        })
+    else:
+        _skip("04_chapter_types.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 05. Template grammar
+    # ═══════════════════════════════════════════════════════════════
+    if template_grammar:
+        per_type_out = {}
+        for tn, tg in template_grammar.get("per_type", {}).items():
+            grammar = tg.get("grammar", {})
+            per_type_out[tn] = {
+                "root_roles": tg.get("root_roles", []),
+                "title_role": tg.get("title_role", ""),
+                "grammar": grammar,
+            }
+
+        _write("05_template_grammar.json", {
+            "type_count": len(per_type_out),
+            "per_type": per_type_out,
+            "global": template_grammar.get("global", {}),
+            "observed_transitions": template_grammar.get("observed_transitions", []),
+        })
+    else:
+        _skip("05_template_grammar.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 06. Type catalog for 2a prompt
+    # ═══════════════════════════════════════════════════════════════
+    if chapter_types and paras_after:
+        catalog_text = _build_rich_type_catalog(
+            chapter_types, template_grammar or None, paras_after,
+        )
+        # per-type structured summary
+        per_type_grammar = (template_grammar or {}).get("per_type", {})
+        type_summaries = {}
+        for tn, ti in chapter_types.items():
+            pat = ti.get("pattern", {})
+            tg = per_type_grammar.get(tn, {})
+            type_summaries[tn] = {
+                "root_roles": tg.get("root_roles", sorted(pat.keys())),
+                "depth": _ct_depth(pat) if chapter_types else 0,
+                "role_count": len(_ct_roles(pat)) if chapter_types else 0,
+            }
+
+        _write("06_type_catalog_for_2a_prompt.json", {
+            "catalog_text": catalog_text,
+            "type_summaries": type_summaries,
+        })
+    else:
+        _skip("06_type_catalog_for_2a_prompt.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 07. 2a type selection result
+    # ═══════════════════════════════════════════════════════════════
+    if classify:
+        chapters_out = []
+        for ch in classify.get("chapters", []):
+            chapters_out.append({
+                "title": ch.get("title", ""),
+                "selected_type": ch.get("type", ""),
+                "optimal_structure": ch.get("optimal_structure", {}),
+                "type_match_reason": ch.get("type_match_reason", ""),
+                "confidence": ch.get("confidence", ""),
+            })
+
+        _write("07_2a_type_selection_result.json", {
+            "chapter_count": len(chapters_out),
+            "chapters": chapters_out,
+            "header": classify.get("header_data", classify.get("header", {})),
+            "header_roles": classify.get("header_roles", []),
+        })
+    else:
+        _skip("07_2a_type_selection_result.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 08. 2b generation by chapter
+    # ═══════════════════════════════════════════════════════════════
+    if section_fill:
+        chapters_gen = []
+        for sf in section_fill:
+            items = sf.get("items", [])
+            role_seq = [it.get("role", "") for it in items if isinstance(it, dict)]
+            chapters_gen.append({
+                "idx": sf.get("idx"),
+                "chapter_title": sf.get("chapter_title", ""),
+                "selected_type": sf.get("chapter_type", ""),
+                "items_count": len(items),
+                "items": items,
+                "role_sequence": role_seq,
+                "pattern_roles": sf.get("pattern_roles", []),
+            })
+
+        _write("08_2b_generation_by_chapter.json", {
+            "chapter_count": len(chapters_gen),
+            "chapters": chapters_gen,
+        })
+    else:
+        _skip("08_2b_generation_by_chapter.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 09. Grammar validation result
+    # ═══════════════════════════════════════════════════════════════
+    if section_fill:
+        val_chapters = []
+        total_pass = 0
+        total_fail = 0
+        for sf in section_fill:
+            gv = sf.get("grammar_validation")
+            if gv:
+                passed = gv.get("success", False)
+                if passed:
+                    total_pass += 1
+                else:
+                    total_fail += 1
+                val_chapters.append({
+                    "idx": sf.get("idx"),
+                    "chapter_title": sf.get("chapter_title", ""),
+                    "selected_type": sf.get("chapter_type", ""),
+                    "success": passed,
+                    "failure_type": gv.get("failure_type"),
+                    "violation_count": gv.get("violation_count", 0),
+                    "violations": gv.get("violations", []),
+                    "reconstructed_tree": gv.get("nodes", []),
+                })
+            else:
+                val_chapters.append({
+                    "idx": sf.get("idx"),
+                    "chapter_title": sf.get("chapter_title", ""),
+                    "selected_type": sf.get("chapter_type", ""),
+                    "success": None,
+                    "note": "grammar_validation not available",
+                })
+
+        _write("09_grammar_validation_result.json", {
+            "total_pass": total_pass,
+            "total_fail": total_fail,
+            "chapters": val_chapters,
+        })
+    else:
+        _skip("09_grammar_validation_result.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 10. Assemble result
+    # ═══════════════════════════════════════════════════════════════
+    if assembly:
+        _write("10_assemble_result.json", {
+            "success_count": assembly.get("success_count", 0),
+            "fail_count": assembly.get("fail_count", 0),
+            "errors": assembly.get("errors", []),
+            "output_size": assembly.get("output_size", 0),
+        })
+    else:
+        _skip("10_assemble_result.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 99. Debug summary
+    # ═══════════════════════════════════════════════════════════════
+    sf_pass = sum(
+        1 for sf in section_fill
+        if sf.get("grammar_validation", {}).get("success")
+    )
+    sf_fail = sum(
+        1 for sf in section_fill
+        if sf.get("grammar_validation") and not sf["grammar_validation"].get("success")
+    )
+
+    _write("99_debug_summary.json", {
+        "timestamp": datetime.now().isoformat(),
+        "model": debug_payload.get("model", ""),
+        "from_cache": debug_payload.get("from_cache", False),
+        "stage_status": results.copy(),
+        "paragraph_count": len(paras_after),
+        "table_count": len(struct_after.get("tables", [])),
+        "chapter_types": sorted(chapter_types.keys()),
+        "source_chapters": len(classify.get("chapters", [])),
+        "grammar_validation_pass": sf_pass,
+        "grammar_validation_fail": sf_fail,
+        "assembly_success": assembly.get("success_count", 0),
+        "assembly_fail": assembly.get("fail_count", 0),
+    })
+
+    log.info(
+        f"[DEBUG-HWPX] stage files written to {debug_dir}: "
+        + ", ".join(f"{k}={v}" for k, v in results.items() if v != "skip")
+    )
+    return results
+
+
 def _build_rich_type_catalog(
     chapter_types: dict,
     template_grammar: dict | None = None,
