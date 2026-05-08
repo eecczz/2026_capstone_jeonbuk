@@ -6708,7 +6708,12 @@ def write_stage_debug_files(
     import os
     from datetime import datetime
 
+    # 이전 실행 잔재: 현재 payload에 없는 파일만 남는 문제 방지
+    # → 매 호출 시 기존 파일 전부 삭제 후 현재 payload 기준으로 재생성
+    import glob as _glob_mod
     os.makedirs(debug_dir, exist_ok=True)
+    for old in _glob_mod.glob(os.path.join(debug_dir, "*.json")):
+        os.remove(old)
     results = {}
 
     def _write(filename: str, data: dict) -> None:
