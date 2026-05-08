@@ -797,9 +797,29 @@ def assemble_hwpx_hybrid(
     # ── 1단계: role → exemplar idx 매핑 (각 role의 첫 번째 idx를 exemplar로) ──
     role_exemplar_idx = {}  # role → 원본 template idx
     role_is_table_box = {}  # role → bool
-    # skip: level 0 문단 (cover/toc/spacer 모두 level 0)
+    # skip: level 0 중 cover/toc 고정 슬롯만.
+    # chapter_types의 title_role은 level 0이어도 skip하지 않음 (본문 구조의 일부).
+    _title_roles = set()
+    for _ct in structure.get("chapter_types", {}).values():
+        tr = _ct.get("title_role", "")
+        if tr:
+            _title_roles.add(tr)
+    # children을 가지는 level 0 문단도 skip하지 않음 (장 루트)
+    _l0_with_children = set()
+    for i, p in enumerate(paragraphs_info):
+        if p.get("level", 0) == 0:
+            if i + 1 < len(paragraphs_info) and paragraphs_info[i + 1].get("level", 0) > 0:
+                _l0_with_children.add(p.get("idx"))
+
     def _is_skip(para: dict) -> bool:
-        return para.get("level", 0) == 0
+        if para.get("level", 0) != 0:
+            return False
+        role = para.get("role", "")
+        if role in _title_roles:
+            return False
+        if para.get("idx") in _l0_with_children:
+            return False
+        return True
 
     for p in paragraphs_info:
         role = p.get("role", "")
