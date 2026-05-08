@@ -7805,6 +7805,52 @@ def _build_rich_type_catalog(
     return "\n\n---\n\n".join(sections)
 
 
+def extract_header_roles(structure: dict) -> list[dict]:
+    """structure에서 header role 목록을 description 포함하여 추출.
+
+    level-0이고 chapter title_role이 아닌 role 중,
+    첫 번째 chapter 시작 idx 이전에 위치한 것만 수집.
+    """
+    chapter_types = structure.get("chapter_types", {})
+    paragraphs = structure.get("paragraphs", [])
+
+    title_roles = set()
+    for ct in chapter_types.values():
+        tr = ct.get("title_role", "")
+        if tr:
+            title_roles.add(tr)
+
+    # 첫 번째 chapter 시작 idx
+    first_ch_idx = None
+    for p in paragraphs:
+        role = p.get("role", "")
+        if role in title_roles:
+            first_ch_idx = p.get("idx", 0)
+            break
+    if first_ch_idx is None:
+        first_ch_idx = len(paragraphs)
+
+    # level-0, title_role 아닌, first_ch_idx 이전
+    seen = set()
+    result = []
+    for p in paragraphs:
+        role = p.get("role", "")
+        if not role or role in seen:
+            continue
+        if role in title_roles:
+            continue
+        if p.get("level", 0) != 0:
+            continue
+        if p.get("idx", 0) >= first_ch_idx:
+            continue
+        seen.add(role)
+        result.append({
+            "role": role,
+            "description": p.get("description", ""),
+        })
+    return result
+
+
 def build_chapter_classify_prompt(
     chapter_types: dict,
     header_roles: list[str] | list[dict],
