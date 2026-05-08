@@ -6319,6 +6319,153 @@ def validate_text_quality(
     return warnings
 
 
+def extract_marker_policies(paragraphs: list[dict]) -> dict:
+    """
+    paragraphs의 observed markers에서 role별 marker_policy를 추출.
+
+    Returns:
+        {role: {"markers": [...], "family": str, "style": "fixed"|"sequence",
+                "separator": str}}
+    """
+    from collections import defaultdict
+
+    role_markers_ordered = defaultdict(list)
+    role_separators = {}
+    for p in paragraphs:
+        role = p.get("role", "")
+        marker = p.get("marker", "").strip()
+        if not role or not marker:
+            continue
+        if marker not in role_markers_ordered[role]:
+            role_markers_ordered[role].append(marker)
+        # separator 추출: marker 뒤 첫 문자 (공백/탭/없음)
+        text = p.get("text", "") or ""
+        if marker and text.startswith(marker):
+            after = text[len(marker):]
+            if after and after[0] in (" ", "\t"):
+                role_separators.setdefault(role, after[0])
+
+    result = {}
+    for role, markers in role_markers_ordered.items():
+        family = _normalize_marker_type(markers[0]) if markers else ""
+
+        # style: sequence(순서형) vs fixed(고정형)
+        if len(markers) >= 2:
+            style = "sequence"
+        else:
+            style = "fixed"
+
+        # family 기반 더 구체적인 분류
+        family_map = {
+            "roman": "roman_sequence",
+            "dingbat_neg_circle": "circled_sequence",
+            "circle_num_pua": "circled_pua_sequence",
+            "circle_num": "circled_num_sequence",
+            "num_paren": "num_paren_sequence",
+        }
+        if family in family_map:
+            policy_type = family_map[family]
+        elif style == "sequence" and markers[0].isdigit():
+            policy_type = "arabic_sequence"
+        elif family.startswith("char_"):
+            char = family[5:]
+            if char == "*" and len(markers) >= 2:
+                policy_type = "star_depth"
+            else:
+                policy_type = "fixed_char"
+        else:
+            policy_type = "fixed" if style == "fixed" else "sequence"
+
+        result[role] = {
+            "markers": markers,
+            "family": family,
+            "policy_type": policy_type,
+            "style": style,
+            "separator": role_separators.get(role, " "),
+        }
+
+    return result
+
+
+def analyze_marker_in_text(
+    flat_items: list[dict],
+    marker_policies: dict,
+) -> list[dict]:
+    """
+    2b output의 각 item에서 marker를 감지하고 content를 분리.
+
+    Returns:
+        [{role, raw_text, detected_marker, content, expected_policy_type,
+          marker_match, issue}]
+    """
+    results = []
+    # role별 sibling counter (같은 parent 아래 같은 role 카운트)
+    sibling_counts: dict[str, int] = {}
+
+    for item in flat_items:
+        role = item.get("role", "")
+        text = item.get("text", "")
+        policy = marker_policies.get(role, {})
+        markers = policy.get("markers", [])
+        policy_type = policy.get("policy_type", "unknown")
+        sep = policy.get("separator", " ")
+
+        # sibling index
+        sibling_counts[role] = sibling_counts.get(role, 0) + 1
+        sibling_idx = sibling_counts[role]
+
+        # marker 감지: text 앞부분이 known markers 중 하나와 일치하는지
+        detected_marker = ""
+        content = text
+        for m in sorted(markers, key=len, reverse=True):
+            stripped = text.lstrip()
+            if stripped.startswith(m):
+                detected_marker = m
+                after = stripped[len(m):]
+                # separator 제거
+                if after and after[0] in (" ", "\t"):
+                    content = after[1:]
+                else:
+                    content = after
+                break
+
+        # expected marker (sequence면 sibling_idx 기반)
+        expected_marker = ""
+        if markers:
+            if policy.get("style") == "sequence" and sibling_idx <= len(markers):
+                expected_marker = markers[sibling_idx - 1]
+            elif policy.get("style") == "fixed":
+                expected_marker = markers[0]
+
+        # match 판정
+        if not detected_marker:
+            issue = "no_marker_in_text"
+            marker_match = None
+        elif detected_marker == expected_marker:
+            issue = ""
+            marker_match = True
+        elif policy.get("style") == "sequence":
+            issue = "wrong_sequence"
+            marker_match = False
+        else:
+            issue = ""
+            marker_match = True
+
+        results.append({
+            "role": role,
+            "raw_text": text[:60],
+            "detected_marker": detected_marker,
+            "content": content[:60],
+            "expected_marker": expected_marker,
+            "expected_policy_type": policy_type,
+            "sibling_index": sibling_idx,
+            "marker_match": marker_match,
+            "issue": issue,
+        })
+
+    return results
+
+
 def _normalize_marker_type(marker: str) -> str:
     """마커를 종류별로 정규화. 같은 시퀀스의 마커는 같은 타입으로 취급."""
     if not marker:
@@ -7419,6 +7566,30 @@ def write_stage_debug_files(
         })
     else:
         _skip("09_grammar_validation_result.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 09b. Marker analysis
+    # ═══════════════════════════════════════════════════════════════
+    if paras_after and section_fill:
+        policies = extract_marker_policies(paras_after)
+        marker_chapters = []
+        for sf in section_fill:
+            items = sf.get("items", [])
+            analysis = analyze_marker_in_text(items, policies)
+            issues = [a for a in analysis if a.get("issue")]
+            marker_chapters.append({
+                "idx": sf.get("idx"),
+                "chapter_type": sf.get("chapter_type", ""),
+                "total_items": len(items),
+                "marker_issues": len(issues),
+                "analysis": analysis,
+            })
+        _write("09b_marker_analysis.json", {
+            "marker_policies": policies,
+            "chapters": marker_chapters,
+        })
+    else:
+        _skip("09b_marker_analysis.json")
 
     # ═══════════════════════════════════════════════════════════════
     # 10. Assemble result
