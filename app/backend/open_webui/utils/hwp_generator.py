@@ -949,6 +949,93 @@ def assemble_hwpx_hybrid(
     prev_role = None
     prev_level = None
 
+    # marker rewrite: marker_policy 기반으로 AI text의 marker를 교체
+    from open_webui.utils.hwpx_analyzer import extract_marker_policies
+    _marker_policies = extract_marker_policies(paragraphs_info)
+    _role_sibling_counter: dict[str, int] = {}  # role별 sibling 카운트
+    _marker_rewrite_log = []
+
+    # chapter title role — 이 role이 나오면 sibling counter 리셋
+    _chapter_title_roles = set()
+    for _ct in structure.get("chapter_types", {}).values():
+        tr = _ct.get("title_role", "")
+        if tr:
+            _chapter_title_roles.add(tr)
+
+    def _rewrite_marker(role: str, text: str) -> str:
+        """marker_policy에 따라 text의 leading marker를 교체."""
+        # chapter title이 나오면 모든 sibling counter 리셋
+        if role in _chapter_title_roles:
+            _role_sibling_counter.clear()
+
+        policy = _marker_policies.get(role)
+        if not policy:
+            return text
+
+        markers = policy.get("markers", [])
+        policy_type = policy.get("policy_type", "")
+        sep = policy.get("separator", " ")
+
+        if not markers:
+            return text
+
+        # sibling index 증가
+        _role_sibling_counter[role] = _role_sibling_counter.get(role, 0) + 1
+        sib_idx = _role_sibling_counter[role]
+
+        # expected marker 결정
+        if policy.get("style") == "sequence":
+            if sib_idx <= len(markers):
+                expected = markers[sib_idx - 1]
+            else:
+                # markers 범위 초과: 마지막 marker 기반 확장
+                expected = markers[-1]  # fallback
+            # star_depth: parent context 없이는 정확한 depth 판단 불가
+            # AI가 이미 *, **, ***를 적절히 생성하므로 원본 유지
+            if policy_type == "star_depth":
+                return text
+        else:
+            expected = markers[0]
+
+        # text에서 기존 marker strip
+        stripped = text.lstrip()
+        content = stripped
+        detected = ""
+        for m in sorted(markers, key=len, reverse=True):
+            if stripped.startswith(m):
+                detected = m
+                after = stripped[len(m):]
+                if after and after[0] in (" ", "\t"):
+                    content = after[1:]
+                elif after:
+                    content = after
+                else:
+                    content = ""
+                break
+
+        # marker가 없는 role (예: c4 대제목 — AI가 마커 없이 생성)
+        if not detected and policy_type in ("roman_sequence", "arabic_sequence",
+                                             "circled_sequence", "circled_pua_sequence"):
+            # 번호형인데 마커 없으면 추가
+            rewritten = f"{expected}{sep}{content}" if content else f"{expected}"
+        elif detected == expected:
+            rewritten = text  # 이미 맞음
+        else:
+            # 기존 marker를 expected로 교체
+            rewritten = f"{expected}{sep}{content}" if content else f"{expected}"
+
+        _marker_rewrite_log.append({
+            "role": role,
+            "sibling_index": sib_idx,
+            "raw_text": text[:50],
+            "detected_marker": detected,
+            "expected_marker": expected,
+            "rewritten_text": rewritten[:50],
+            "changed": rewritten != text,
+        })
+
+        return rewritten
+
     for item in body_items:
         role = item.get("role", "")
         text = item.get("text", "")
@@ -956,6 +1043,9 @@ def assemble_hwpx_hybrid(
         if role not in exemplars:
             errors.append(f"unknown role '{role}', skipping: {text[:50]}")
             continue
+
+        # marker rewrite 적용
+        text = _rewrite_marker(role, text)
 
         cur_level = role_level.get(role, 0)
 
@@ -1022,9 +1112,12 @@ def assemble_hwpx_hybrid(
         prev_role = role
         prev_level = cur_level
 
+    # marker rewrite log를 structure에 저장 (debug용)
+    changed = sum(1 for r in _marker_rewrite_log if r.get("changed"))
+    structure["_marker_rewrite_log"] = _marker_rewrite_log
     log.info(
         f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
-        f"body 항목 {len(body_items)}개"
+        f"body 항목 {len(body_items)}개, marker rewrite {changed}/{len(_marker_rewrite_log)}"
     )
 
     return HwpxResult(
