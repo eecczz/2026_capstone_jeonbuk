@@ -265,11 +265,46 @@ async def test_single_page(
         request.app.state.config, "CRAWLER_COLLECTION_NAME", "jeonbuk_gov"
     )
 
+    import asyncio as _asyncio
+    from open_webui.routers.retrieval import save_docs_to_vector_db
+    from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
+    from open_webui.models.crawler import CrawledPages
+
     docs = await _load_page(body.url)
     if not docs:
         return {"status": "error", "stage": "page_load", "message": "load returned empty"}
 
     metadata = _build_metadata(body.url, site, docs)
+
+    # 페이지 본문도 collection 에 저장 (덮어쓰기)
+    try:
+        VECTOR_DB_CLIENT.delete(
+            collection_name=collection_name,
+            filter={"url": body.url},
+        )
+    except Exception as e:
+        log.debug(f"page vector delete failed: {e}")
+    page_saved = False
+    try:
+        page_saved = bool(
+            await _asyncio.to_thread(
+                save_docs_to_vector_db,
+                request, docs, collection_name, metadata,
+                False, True, True, None,
+            )
+        )
+        CrawledPages.upsert(
+            url=body.url,
+            site_code=body.site_code,
+            institution=metadata.get("institution"),
+            category=metadata.get("category"),
+            title=metadata.get("title"),
+            chunks_count=len(docs),
+            status="success",
+        )
+    except Exception as e:
+        log.warning(f"page save failed: {e}")
+
     html = await _fetch_html(body.url)
     att_stats: dict = {}
     if html:
@@ -284,6 +319,8 @@ async def test_single_page(
         )
     return {
         "status": "ok",
+        "page_saved": page_saved,
+        "collection_name": collection_name,
         "url": body.url,
         "page_chunks": len(docs),
         "metadata": {k: v for k, v in metadata.items() if k != "_orig_metadata"},

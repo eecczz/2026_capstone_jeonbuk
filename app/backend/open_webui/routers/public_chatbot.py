@@ -11,6 +11,7 @@ Phase 2: 음성 I/O (voice-chat 엔드포인트 추가)
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -19,6 +20,160 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Reply 후처리: 마크다운 / 인용 마커 제거
+# 도민 안내용 자연스러운 대화체로 보이도록 LLM 답변에서 LLM-스러운 표식을 제거.
+# TTS 가 "별표 별표" 등 기호를 그대로 읽지 않도록 음성 파이프라인에도 동일 적용됨.
+# ────────────────────────────────────────────────────────────────────────
+
+_RE_BOLD_AST = re.compile(r"\*\*([^*\n]+?)\*\*")
+_RE_BOLD_UND = re.compile(r"__([^_\n]+?)__")
+_RE_ITALIC_AST = re.compile(r"(?<![\*\w])\*([^*\n]+?)\*(?![\*\w])")
+_RE_ITALIC_UND = re.compile(r"(?<![\w_])_([^_\n]+?)_(?![\w_])")
+_RE_INLINE_CODE = re.compile(r"`([^`\n]+?)`")
+_RE_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+_RE_HRULE = re.compile(r"^\s*(?:-\s*){3,}\s*$|^\s*(?:_\s*){3,}\s*$|^\s*(?:\*\s*){3,}\s*$", re.MULTILINE)
+_RE_LIST_BULLET = re.compile(r"^[ \t]*[-*+•]\s+", re.MULTILINE)
+_RE_NUM_BULLET = re.compile(r"^[ \t]*\d+\.\s+", re.MULTILINE)
+_RE_BLOCKQUOTE = re.compile(r"^[ \t]*>\s?", re.MULTILINE)
+_RE_CITATION = re.compile(r"\s*\[\d+(?:\s*,\s*\d+)*\]")  # [1], [2], [1, 3]
+_RE_LINK_MD = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_RE_MULTI_NEWLINE = re.compile(r"\n{3,}")
+_RE_TRAILING_WS = re.compile(r"[ \t]+$", re.MULTILINE)
+
+
+def _looks_like_korean(text: str, threshold: float = 0.35) -> bool:
+    """STT 결과가 한국어 텍스트로 보이는지 휴리스틱 판정.
+
+    한국어 도청 챗봇은 도민이 한국어로 말한다는 강한 사전 가정이 있다.
+    Cohere/Whisper 가 영어로 잘못 transcribe 한 경우 (낯선 한국어 발음을
+    가까운 영어 단어로 매핑) 그 결과를 신뢰하면 RAG 가 의미 없는 영어
+    문구를 검색해서 사용자 경험이 망가진다.
+
+    한글 음절(가-힣) 비율이 threshold 이상이거나, 한국어 종결어미/조사가
+    검출되면 True. 너무 짧은 발화(<3자)는 검증 제외.
+    """
+    s = (text or "").strip()
+    if len(s) < 3:
+        return True  # 단답("네"/"응") 은 통과
+    hangul = sum(1 for ch in s if "가" <= ch <= "힣")
+    letters = sum(1 for ch in s if ch.isalpha())
+    if letters == 0:
+        return True
+    ratio = hangul / letters
+    if ratio >= threshold:
+        return True
+    # 한국어 특유 토큰 검출 — 짧은 문장이 다 한자어 영어식 표기로 나오는 경우 보정
+    korean_markers = (
+        "이에요",
+        "예요",
+        "입니다",
+        "습니다",
+        "해요",
+        "주세요",
+        "어떻게",
+        "뭐예요",
+        "뭔가요",
+        "있나요",
+        "되나요",
+        "할까요",
+        "은요",
+        "는요",
+    )
+    if any(m in s for m in korean_markers):
+        return True
+    return False
+
+
+_RE_SENTENCE_END = re.compile(r"([.!?。…]|다[\.\s]|요[\.\s]|니다[\.\s]|에요[\.\s])")
+
+
+# Cohere transcribe / Whisper 호환 STT 의 prompt 파라미터.
+# 디코딩 시 어휘 편향을 줘서 "전북특별자치도", "인재개발원" 등 도청 도메인 용어가
+# 비슷한 발음의 다른 단어("한국/반북", "재개발원") 보다 우선 출력되도록 한다.
+# 첫 번째 문장은 도민이 자주 쓰는 정중한 한국어 어조 예시 — Whisper API 의
+# prompt 는 "이전 발화 예시" 로 해석되므로 어조도 안내함.
+_PUBLIC_STT_DOMAIN_PROMPT = (
+    "안녕하세요. 전북특별자치도청에 문의드립니다. "
+    "전북특별자치도, 전북도청, 인재개발원, 농업기술원, 보건환경연구원, "
+    "산림환경연구원, 도립국악원, 도립미술관, 어린이창의체험관, "
+    "농식품인력개발원, 경제통상진흥원, 일자리센터, 동물위생시험소, "
+    "수산기술연구소, 축산연구소, 도로관리사업소, 투어전북. "
+    "전주시, 익산시, 군산시, 정읍시, 김제시, 남원시, "
+    "진안군, 무주군, 장수군, 임실군, 순창군, 고창군, 부안군, 완주군. "
+    "정보공개청구, 행정정보공개, 추경예산, 본예산, 지방재정공시, "
+    "세입세출결산, 시민제안, 옴부즈만, 민원24. "
+    "농어민기본소득, 청년수당, 공공일자리, 재난지원금, 소상공인지원, 정보화교육. "
+    "국민취업지원제도, 구직촉진수당, 내일배움카드, 고용센터, 고용24, 워크넷."
+)
+
+
+def _trim_text_for_tts(text: str, max_chars: int = 240, max_sentences: int = 3) -> str:
+    """음성으로 들려줄 텍스트만 추출.
+
+    - 우선 첫 max_sentences 개 문장까지만 사용
+    - 그 결과가 max_chars 초과면 마지막 문장 경계에서 자름
+    - 길어서 잘릴 경우 끝에 안내 추가 ("자세한 내용은 화면을 참고해 주세요.")
+    """
+    s = (text or "").strip()
+    if not s:
+        return ""
+    if len(s) <= max_chars:
+        return s
+
+    # 문장 단위 분할 (한국어/영어 종결 동시 처리)
+    parts = re.split(r"(?<=[.!?。…])\s+|(?<=다)\s+|(?<=요)\s+", s)
+    parts = [p.strip() for p in parts if p.strip()]
+    if not parts:
+        return s[:max_chars]
+
+    out = []
+    total = 0
+    for p in parts[:max_sentences]:
+        if total + len(p) + 1 > max_chars:
+            break
+        out.append(p)
+        total += len(p) + 1
+    if not out:
+        out = [parts[0][: max_chars - 1]]
+
+    short = " ".join(out).strip()
+    if len(short) < len(s):
+        short += " 자세한 내용은 화면을 참고해 주세요."
+    return short
+
+
+def _humanize_reply(text: str) -> str:
+    """LLM 답변에서 마크다운/인용 마커를 제거해 자연스러운 한국어 대화체로 변환."""
+    if not text:
+        return text or ""
+
+    # 코드 블록 ``` ... ``` 통째 제거 전 내용만 남김
+    text = re.sub(r"```[a-zA-Z0-9_-]*\n?(.*?)```", r"\1", text, flags=re.DOTALL)
+    # 헤딩 (# 제거)
+    text = _RE_HEADING.sub("", text)
+    # 가로 구분선
+    text = _RE_HRULE.sub("", text)
+    # 인용 ">" 제거
+    text = _RE_BLOCKQUOTE.sub("", text)
+    # 마크다운 링크 [text](url) → "text (url)"
+    text = _RE_LINK_MD.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
+    # 굵은 글씨 / 이탤릭 (안쪽 텍스트만 유지)
+    text = _RE_BOLD_AST.sub(r"\1", text)
+    text = _RE_BOLD_UND.sub(r"\1", text)
+    text = _RE_ITALIC_AST.sub(r"\1", text)
+    text = _RE_ITALIC_UND.sub(r"\1", text)
+    # 인라인 코드 ` ` 제거
+    text = _RE_INLINE_CODE.sub(r"\1", text)
+    # 인용 마커 [1], [2,3]
+    text = _RE_CITATION.sub("", text)
+    # 리스트 마커는 유지 (가독성), 번호 매기기는 그대로 둠
+    # 빈 줄 정리
+    text = _RE_TRAILING_WS.sub("", text)
+    text = _RE_MULTI_NEWLINE.sub("\n\n", text)
+    return text.strip()
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
@@ -48,13 +203,21 @@ def _public_chatbot_rag_files(request: Request) -> list[dict]:
 
     PUBLIC_CHATBOT_KNOWLEDGE_ID accepts comma separated entries:
     - <knowledge_id> or collection:<knowledge_id> for normal Knowledge bases
+      (resolved to per-file `file-<id>` collections)
     - legacy:<collection_name> for direct vector collections such as crawler output
+
+    Knowledge base UUID 는 그 자체로는 chroma collection 이 아니므로
+    KB 의 file_ids 를 풀어서 각 파일을 type='file' 로 등록한다.
+    그래야 retrieval.utils.get_sources_from_items 가 file-<id> chroma
+    collection 을 검색해 chunk 를 가져올 수 있다.
     """
     raw_value = str(
         getattr(request.app.state.config, "PUBLIC_CHATBOT_KNOWLEDGE_ID", "") or ""
     ).strip()
     if not raw_value:
         return []
+
+    from open_webui.models.knowledge import Knowledges
 
     files: list[dict] = []
     for raw_item in raw_value.split(","):
@@ -78,7 +241,32 @@ def _public_chatbot_rag_files(request: Request) -> list[dict]:
         if item.startswith("collection:"):
             item = item[len("collection:") :].strip()
 
-        if item:
+        if not item:
+            continue
+
+        # KB UUID → 멤버 file 리스트로 풀어서 type='file' entries 로 등록
+        # (knowledge_file 조인 테이블 사용 — data.file_ids JSON 컬럼은 deprecated)
+        try:
+            kb_files = Knowledges.get_files_by_id(item) or []
+        except Exception as e:
+            log.warning(f"Knowledges.get_files_by_id({item}) failed: {e}")
+            kb_files = []
+
+        if kb_files:
+            for f in kb_files:
+                fid = getattr(f, "id", None)
+                if not fid:
+                    continue
+                fname = getattr(f, "filename", None) or fid
+                files.append(
+                    {
+                        "id": fid,
+                        "name": fname,
+                        "type": "file",
+                    }
+                )
+        else:
+            # 빈 KB 거나 조회 실패 — fallback 으로 collection 항목 그대로 (기존 동작)
             files.append({"id": item, "name": item, "type": "collection"})
 
     return files
@@ -196,6 +384,7 @@ class PublicChatResponse(BaseModel):
     session_id: str
     sources: list[dict] = Field(default_factory=list)
     model: str
+    audio_url: Optional[str] = None  # Qwen3-TTS 합성 결과 URL (실패 시 None → 클라이언트 fallback)
 
 
 ####################
@@ -284,9 +473,11 @@ async def _run_public_llm(
 
     # 4. metadata 조립 (기존 chat_completion 엔드포인트 포맷 참고)
     message_id = str(uuid.uuid4())
+    # NOTE: chat_id 는 socket 이벤트 emitter 내부에서 .startswith("local:") 호출하므로
+    # None 이면 AttributeError 발생. 빈 문자열로 두어 emitter 가 안전하게 분기하게 함.
     metadata = {
         "user_id": user.id,
-        "chat_id": None,  # stateless: 기존 chat 테이블 사용 안 함
+        "chat_id": "",  # stateless: 기존 chat 테이블 사용 안 함
         "message_id": message_id,
         "session_id": session_id,
         "parent_message_id": None,
@@ -307,8 +498,10 @@ async def _run_public_llm(
         "public_chatbot": True,
     }
 
-    # 5. form_data 초기화
+    # 5. form_data 초기화 — chat_completion_files_handler 가 files 를
+    # metadata["files"] 에서 읽으므로 양쪽에 모두 세팅한다.
     rag_files = _public_chatbot_rag_files(request)
+    metadata["files"] = rag_files
 
     form_data = {
         "model": model_id,
@@ -333,6 +526,28 @@ async def _run_public_llm(
         log.exception(f"process_chat_payload failed: {e}")
         # RAG 주입 실패해도 plain LLM 호출은 계속 시도
         log.warning("Falling back to plain LLM call without RAG injection")
+
+    # 6.5 RAG/도구 결과는 이미 messages 에 주입됨 — OpenAI 호환 서버가
+    # 'files', 'tool_servers' 등의 비표준 키를 거부하므로 호출 전에 제거.
+    for k in (
+        "files",
+        "tool_servers",
+        "knowledge",
+        "tools",
+        "tool_ids",
+        "function_calling",
+        "metadata",
+        "session_id",
+        "chat_id",
+        "id",
+        "messageId",
+        "background_tasks",
+        "features",
+        "variables",
+        "filter_ids",
+        "params",
+    ):
+        form_data.pop(k, None)
 
     # 7. LLM 호출
     try:
@@ -380,10 +595,59 @@ async def _run_public_llm(
         except (KeyError, IndexError, TypeError):
             reply_text = json.dumps(response, ensure_ascii=False)
         sources = response.get("sources", []) or []
+    elif isinstance(response, JSONResponse) or hasattr(response, "body"):
+        # generate_chat_completion 이 JSONResponse 를 반환하는 경로 (non-streaming) 처리
+        try:
+            body = response.body
+            if isinstance(body, bytes):
+                body = body.decode("utf-8", errors="replace")
+            obj = json.loads(body) if body else {}
+            try:
+                reply_text = obj["choices"][0]["message"]["content"] or ""
+            except (KeyError, IndexError, TypeError):
+                reply_text = (
+                    obj.get("detail") or obj.get("message")
+                    or json.dumps(obj, ensure_ascii=False)
+                )
+            sources = obj.get("sources", []) or []
+        except Exception as e:
+            log.warning(f"JSONResponse parse failed: {e}")
+            reply_text = "응답을 처리하지 못했습니다."
     else:
+        log.warning(
+            f"unexpected response type from generate_chat_completion: {type(response).__name__}"
+        )
         reply_text = str(response)
 
-    return reply_text.strip(), sources, model_id
+    # 마크다운 / [N] 인용 마커 제거 — TTS 가 기호를 그대로 읽지 않게 함
+    return _humanize_reply(reply_text), sources, model_id
+
+
+# ────────────────────────────────────────────────────────────────────────
+# 챗봇 UI HTML 영구 서빙 — overlay layer 의 /static/ 이 컨테이너 재시작/워커 reload
+# 시점에 사라지는 문제를 우회. 영구 볼륨(/data/owi/public_chatbot/index.html)을
+# 직접 읽어 응답한다. 브라우저는 /api/v1/public/chatbot.html 을 호출.
+# ────────────────────────────────────────────────────────────────────────
+
+_PUBLIC_CHATBOT_HTML_CANDIDATES = [
+    "/data/owi/public_chatbot/index.html",
+    "/app/backend/open_webui/static/public-chatbot.html",
+]
+
+
+@router.get("/chatbot.html")
+async def public_chatbot_ui():
+    """공개 챗봇 UI HTML 서빙 (영구 볼륨 우선, fallback 으로 image 경로)."""
+    for path in _PUBLIC_CHATBOT_HTML_CANDIDATES:
+        try:
+            if os.path.isfile(path):
+                return FileResponse(path, media_type="text/html; charset=utf-8")
+        except Exception as e:
+            log.debug(f"chatbot_ui candidate {path} failed: {e}")
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="공개 챗봇 UI 파일을 찾지 못했습니다.",
+    )
 
 
 @router.post("/chat", response_model=PublicChatResponse)
@@ -417,11 +681,19 @@ async def public_chat(request: Request, body: PublicChatRequest):
         session_id,
     )
 
+    # 텍스트 입력에도 Qwen3-TTS 음성 출력 — 음성챗봇 컨셉에 맞춰 양방향 동일 UX.
+    audio_url = None
+    try:
+        audio_url = await _synthesize_public_qwen_tts(request, reply_text)
+    except Exception as e:
+        log.warning(f"public_chat TTS synthesis failed: {e}")
+
     return PublicChatResponse(
         reply=reply_text,
         session_id=session_id,
         sources=sources,
         model=resolved_model,
+        audio_url=audio_url,
     )
 
 
@@ -456,89 +728,107 @@ async def public_chat_health(request: Request):
 
 
 async def _synthesize_public_qwen_tts(request: Request, text: str) -> Optional[str]:
-    """Synthesize public voice replies with the configured Qwen3-TTS model."""
-    if not text.strip():
+    """OpenAI 호환 TTS 엔드포인트(현재 Qwen3-TTS @192.168.30.2:30201)로 음성 합성.
+
+    DB 의 audio.tts.openai.api_base_url 설정을 사용하므로 STT 와 동일한 외부
+    vLLM 서버 패턴을 따른다. 결과 파일을 SPEECH_CACHE_DIR 에 저장하고
+    /api/v1/public/voice-audio/<filename> 로 서빙.
+
+    실패 시 None 을 반환 → 클라이언트가 브라우저 SpeechSynthesis 로 fallback.
+    """
+    if not text or not text.strip():
         return None
 
-    if getattr(request.app.state.config, "TTS_ENGINE", "") != "qwen":
-        log.info("Public voice TTS skipped because TTS_ENGINE is not 'qwen'")
+    # 음성 출력은 첫 3문장만 (도민이 길게 듣고 있기 어려움) — 화면엔 전체 reply
+    text = _trim_text_for_tts(text)
+
+    cfg = request.app.state.config
+    engine = (getattr(cfg, "TTS_ENGINE", "") or "").lower()
+    # 'qwen' 또는 'openai'(vLLM 호환) 양쪽 모두 지원
+    if engine not in {"qwen", "openai", ""}:
+        log.info(f"Public voice TTS skipped — unsupported engine '{engine}'")
+        return None
+
+    base_url = (
+        getattr(cfg, "TTS_OPENAI_API_BASE_URL", "")
+        or getattr(cfg, "AUDIO_TTS_OPENAI_API_BASE_URL", "")
+        or ""
+    )
+    api_key = (
+        getattr(cfg, "TTS_OPENAI_API_KEY", "")
+        or getattr(cfg, "AUDIO_TTS_OPENAI_API_KEY", "")
+        or "dummy"
+    )
+    model = (
+        getattr(cfg, "TTS_MODEL", "")
+        or getattr(cfg, "AUDIO_TTS_MODEL", "")
+        or "Qwen3-TTS"
+    )
+    voice = (
+        getattr(cfg, "TTS_VOICE", "")
+        or getattr(cfg, "AUDIO_TTS_VOICE", "")
+        or "Sohee"
+    )
+    if not base_url:
+        log.info("Public voice TTS skipped — no TTS base url configured")
         return None
 
     try:
-        import soundfile as sf
         from open_webui.routers.audio import SPEECH_CACHE_DIR
     except Exception as e:
-        log.exception(f"Qwen3-TTS dependencies unavailable: {e}")
+        log.exception(f"audio router import failed: {e}")
         return None
 
-    model_name = getattr(
-        request.app.state.config,
-        "AUDIO_TTS_QWEN_MODEL",
-        "Qwen/Qwen3-TTS-12Hz-1.7B",
-    )
-    voice = getattr(request.app.state.config, "AUDIO_TTS_QWEN_VOICE", "")
     cache_key = hashlib.sha256(
         json.dumps(
-            {"text": text, "model": model_name, "voice": voice},
+            {"text": text, "base": base_url, "model": model, "voice": voice},
             ensure_ascii=False,
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
-    filename = f"{PUBLIC_VOICE_AUDIO_PREFIX}{cache_key}.wav"
-    file_path = SPEECH_CACHE_DIR.joinpath(filename)
+    filename = f"{PUBLIC_VOICE_AUDIO_PREFIX}{cache_key}.mp3"
+    file_path = Path(SPEECH_CACHE_DIR).joinpath(filename)
 
     if file_path.is_file():
         return f"/api/v1/public/voice-audio/{filename}"
 
+    # 너무 긴 텍스트는 자르기 (TTS 안정성 + 사용자 듣기 편의)
+    speak_text = text.strip()
+    if len(speak_text) > 800:
+        speak_text = speak_text[:800].rsplit(" ", 1)[0]
+
     try:
-        if getattr(request.app.state, "qwen_tts_pipeline", None) is None:
-            from transformers import pipeline
+        import aiohttp
 
-            try:
-                import torch
-
-                device = 0 if torch.cuda.is_available() else -1
-            except Exception:
-                device = -1
-
-            log.info(f"Loading Qwen3-TTS model: {model_name} on device={device}")
-            request.app.state.qwen_tts_pipeline = pipeline(
-                task="text-to-speech",
-                model=model_name,
-                device=device,
-            )
-
-        pipe = request.app.state.qwen_tts_pipeline
-        forward_params = {"voice": voice} if voice else {}
-        try:
-            result = (
-                pipe(text, forward_params=forward_params)
-                if forward_params
-                else pipe(text)
-            )
-        except TypeError:
-            result = pipe(text)
-
-        audio_array = None
-        sampling_rate = 24000
-        if isinstance(result, dict):
-            audio_array = result.get("audio")
-            sampling_rate = result.get("sampling_rate", sampling_rate)
-        elif isinstance(result, list) and result and isinstance(result[0], dict):
-            audio_array = result[0].get("audio")
-            sampling_rate = result[0].get("sampling_rate", sampling_rate)
-
-        if audio_array is None:
-            log.error("Qwen3-TTS returned no audio")
+        url = base_url.rstrip("/") + "/audio/speech"
+        payload = {
+            "model": model,
+            "voice": voice,
+            "input": speak_text,
+            "response_format": "mp3",
+        }
+        headers = {"Authorization": f"Bearer {api_key}"}
+        timeout = aiohttp.ClientTimeout(total=30)
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as s:
+            async with s.post(url, json=payload, headers=headers) as resp:
+                if resp.status >= 400:
+                    body = (await resp.text())[:300]
+                    log.warning(f"Public TTS HTTP {resp.status}: {body}")
+                    return None
+                audio_bytes = await resp.read()
+        if not audio_bytes:
+            log.warning("Public TTS empty response")
             return None
-
-        if hasattr(audio_array, "detach"):
-            audio_array = audio_array.detach().cpu().numpy()
-
-        sf.write(str(file_path), audio_array, samplerate=sampling_rate)
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        with open(file_path, "wb") as f:
+            f.write(audio_bytes)
         return f"/api/v1/public/voice-audio/{filename}"
     except Exception as e:
-        log.exception(f"Public Qwen3-TTS failed: {e}")
+        log.exception(f"Public TTS request failed: {e}")
         return None
 
 
@@ -581,6 +871,10 @@ async def public_voice_chat(
     file: UploadFile = File(..., description="도민의 음성 질문 (webm/wav/mp3)"),
     history_json: Optional[str] = Form(
         None, description="이전 대화 히스토리 (JSON 문자열)"
+    ),
+    seconds_since_bot: Optional[str] = Form(
+        None,
+        description="봇 마지막 응답 종료 후 경과 초 (echo 방지/대화 lock 용)",
     ),
 ):
     """음성 → STT → RAG+LLM → TTS → 음성 응답 (Phase 2).
@@ -635,11 +929,20 @@ async def public_voice_chat(
         log.exception(f"tempfile write failed: {e}")
         raise HTTPException(status_code=500, detail="음성 파일 저장 실패")
 
-    # 2. STT — 기존 transcribe() 재사용
+    # 2. STT — 기존 transcribe() 재사용.
+    #   - 한국어 강제 (metadata.language="ko")
+    #   - 한국어 휴리스틱으로 재검증 — 영어로 잡힌 경우 거절
+    #
+    # 도메인 biasing prompt 는 Cohere transcribe 구현이 prompt 를 그대로 echo
+    # 하거나 출력을 왜곡하는 문제로 비활성화 (실측 결과 정상 음성도 빈 응답이 됨).
+    # 더 좋은 STT 모델로 교체 후 재시도 예정.
     user = _get_public_user(request)
     try:
         stt_result = audio_transcribe(
-            request, audio_path, metadata=None, user=user
+            request,
+            audio_path,
+            metadata={"language": "ko"},
+            user=user,
         )
         question_text = (stt_result or {}).get("text", "").strip()
     except Exception as e:
@@ -656,6 +959,9 @@ async def public_voice_chat(
             status_code=400, detail="음성에서 텍스트를 추출하지 못했습니다."
         )
 
+    # [PURE MODE] 한국어 검증 / 도메인 사전 보정 / directedness 휴리스틱 모두 비활성화.
+    # STT 의 raw 결과를 그대로 LLM 에 전달해서 순수 모델 품질 측정.
+
     # 3. 대화 히스토리 파싱
     history: list[dict] = []
     if history_json:
@@ -666,59 +972,72 @@ async def public_voice_chat(
         except Exception:
             log.warning(f"invalid history_json: {history_json[:200]}")
 
-    stt_confidence = None
-    try:
-        stt_confidence = (stt_result or {}).get("confidence")
-    except Exception:
-        stt_confidence = None
+    # 휴리스틱 재활성: 도메인 사전 보정 + directedness/intent/short utterance + sensitive 검증
+    stt_confidence = (stt_result or {}).get("confidence")
+    secs_since_bot: Optional[float] = None
+    if seconds_since_bot:
+        try:
+            secs_since_bot = float(seconds_since_bot)
+        except (TypeError, ValueError):
+            secs_since_bot = None
 
     voice_understanding = understand_public_voice(
         question_text,
         history=history,
         stt_confidence=stt_confidence,
+        seconds_since_bot=secs_since_bot,
+    )
+    log.info(
+        "voice-chat | transcript=%r | normalized=%r | action=%s | "
+        "directed=%.2f | conf=%.2f | intent=%s | corrections=%s",
+        question_text[:120],
+        voice_understanding.normalized_text[:120],
+        voice_understanding.action,
+        voice_understanding.directedness,
+        voice_understanding.confidence,
+        voice_understanding.intent,
+        voice_understanding.corrections,
     )
 
+    # 옆 사람 대화/배경 소음으로 판단되면 응답 안 함
     if voice_understanding.action == "ignore":
-        return JSONResponse(
-            {
-                "question": voice_understanding.raw_text,
-                "normalized_question": voice_understanding.normalized_text,
-                "reply": "",
-                "session_id": None,
-                "sources": [],
-                "audio_url": None,
-                "ignored": True,
-                "confidence": voice_understanding.confidence,
-                "directedness": voice_understanding.directedness,
-                "intent": voice_understanding.intent,
-                "reason": voice_understanding.reason,
-                "corrections": voice_understanding.corrections,
-            }
-        )
+        return JSONResponse({
+            "question": voice_understanding.raw_text,
+            "normalized_question": voice_understanding.normalized_text,
+            "reply": "",
+            "session_id": None,
+            "sources": [],
+            "audio_url": None,
+            "ignored": True,
+            "confidence": voice_understanding.confidence,
+            "directedness": voice_understanding.directedness,
+            "intent": voice_understanding.intent,
+            "reason": voice_understanding.reason,
+            "corrections": voice_understanding.corrections,
+        })
 
+    # 신뢰도 낮음 / sensitive intent → 확인 질문
     if voice_understanding.action == "clarify":
         reply_text = voice_understanding.confirmation or (
-            "제가 이해한 내용이 맞는지 한 번만 확인해 주세요."
+            "제가 이해한 내용이 맞는지 한 번 확인해 주세요."
         )
         audio_url = await _synthesize_public_qwen_tts(request, reply_text)
-        return JSONResponse(
-            {
-                "question": voice_understanding.raw_text,
-                "normalized_question": voice_understanding.normalized_text,
-                "reply": reply_text,
-                "session_id": None,
-                "sources": [],
-                "audio_url": audio_url,
-                "needs_confirmation": True,
-                "confidence": voice_understanding.confidence,
-                "directedness": voice_understanding.directedness,
-                "intent": voice_understanding.intent,
-                "reason": voice_understanding.reason,
-                "corrections": voice_understanding.corrections,
-            }
-        )
+        return JSONResponse({
+            "question": voice_understanding.raw_text,
+            "normalized_question": voice_understanding.normalized_text,
+            "reply": reply_text,
+            "session_id": None,
+            "sources": [],
+            "audio_url": audio_url,
+            "needs_confirmation": True,
+            "confidence": voice_understanding.confidence,
+            "directedness": voice_understanding.directedness,
+            "intent": voice_understanding.intent,
+            "reason": voice_understanding.reason,
+            "corrections": voice_understanding.corrections,
+        })
 
-    # 4. LLM 호출 (RAG 포함)
+    # 4. LLM 호출 (RAG 포함) — 정규화된 transcript 로
     try:
         reply_text, session_id, sources = await _run_chat_internal(
             request, voice_understanding.normalized_text, history
@@ -727,27 +1046,22 @@ async def public_voice_chat(
         raise
     except Exception as e:
         log.exception(f"_run_chat_internal failed: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"챗봇 응답 생성 실패: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"챗봇 응답 생성 실패: {str(e)}")
 
     audio_url = await _synthesize_public_qwen_tts(request, reply_text)
 
-    # 5. 응답 반환 (Qwen3-TTS audio_url 우선, 실패 시 프론트 브라우저 TTS fallback)
-    return JSONResponse(
-        {
-            "question": voice_understanding.raw_text,
-            "normalized_question": voice_understanding.normalized_text,
-            "reply": reply_text,
-            "session_id": session_id,
-            "sources": sources,
-            "audio_url": audio_url,
-            "ignored": False,
-            "needs_confirmation": False,
-            "confidence": voice_understanding.confidence,
-            "directedness": voice_understanding.directedness,
-            "intent": voice_understanding.intent,
-            "reason": voice_understanding.reason,
-            "corrections": voice_understanding.corrections,
-        }
-    )
+    return JSONResponse({
+        "question": voice_understanding.raw_text,
+        "normalized_question": voice_understanding.normalized_text,
+        "reply": reply_text,
+        "session_id": session_id,
+        "sources": sources,
+        "audio_url": audio_url,
+        "ignored": False,
+        "needs_confirmation": False,
+        "confidence": voice_understanding.confidence,
+        "directedness": voice_understanding.directedness,
+        "intent": voice_understanding.intent,
+        "reason": voice_understanding.reason,
+        "corrections": voice_understanding.corrections,
+    })

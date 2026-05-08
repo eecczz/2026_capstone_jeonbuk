@@ -730,6 +730,10 @@ def transcription_handler(request, file_path, metadata, user=None):
         log.debug(data)
         return data
     elif request.app.state.config.STT_ENGINE == "openai":
+        # 도메인 biasing prompt — metadata.prompt 로 전달되거나 config 의 STT_PROMPT 사용
+        stt_prompt = (metadata or {}).get("prompt") or getattr(
+            request.app.state.config, "STT_PROMPT", ""
+        )
         r = None
         try:
             for language in languages:
@@ -739,6 +743,8 @@ def transcription_handler(request, file_path, metadata, user=None):
 
                 if language:
                     payload["language"] = language
+                if stt_prompt:
+                    payload["prompt"] = stt_prompt
 
                 headers = {
                     "Authorization": f"Bearer {request.app.state.config.STT_OPENAI_API_KEY}"
