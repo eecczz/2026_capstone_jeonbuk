@@ -932,21 +932,59 @@ def assemble_hwpx_hybrid(
         header_indices.add(0)
 
     # ── 4단계: 본문 영역 비우기 (header/toc/fixed/secPr 제외) ──
-    section_elem = doc.oxml._sections[0].element
+    # multi-section 대응: 각 paragraph가 속한 section에서 remove
+    _all_sections = doc.oxml._sections
+    _section_count = len(_all_sections)
+
+    # paragraph element → owning section element 매핑
+    _elem_to_section: dict = {}
+    for sec in _all_sections:
+        sec_el = sec.element
+        for child in list(sec_el):
+            _elem_to_section[child] = sec_el
+
     body_elements = []
+    _remove_per_section: dict[int, int] = {}  # section_idx → remove count
     for i, p in enumerate(doc.paragraphs):
         if i not in header_indices:
             body_elements.append(p.element)
 
     for elem in body_elements:
-        section_elem.remove(elem)
+        owning_section = _elem_to_section.get(elem)
+        if owning_section is not None:
+            owning_section.remove(elem)
+            # debug: section별 remove count
+            for si, sec in enumerate(_all_sections):
+                if sec.element is owning_section:
+                    _remove_per_section[si] = _remove_per_section.get(si, 0) + 1
+                    break
+        else:
+            # fallback: section[0]에서 시도 (단일 section 호환)
+            try:
+                _all_sections[0].element.remove(elem)
+                _remove_per_section[0] = _remove_per_section.get(0, 0) + 1
+            except ValueError:
+                log.warning(f"assemble: paragraph element not found in any section")
 
     log.info(
         f"본문 {len(body_elements)}개 문단 제거, "
-        f"header {len(header_indices)}개 보존"
+        f"header {len(header_indices)}개 보존, "
+        f"sections={_section_count}, remove_per_section={dict(_remove_per_section)}"
     )
 
     # ── 5단계: body 항목으로 문서 재조립 (format_rules 기반 indent + blank_rules 기반 blank) ──
+    # append target: remove가 가장 많이 발생한 section (=원래 body가 있던 section)
+    # TODO(8.0b+): section-aware append — chapter/role별로 원래 소속 section에 append
+    if _remove_per_section:
+        _target_sec_idx = max(_remove_per_section, key=_remove_per_section.get)
+    else:
+        _target_sec_idx = 0
+    section_elem = _all_sections[_target_sec_idx].element
+    structure["_section_info"] = {
+        "section_count": _section_count,
+        "remove_per_section": _remove_per_section,
+        "append_target_section": _target_sec_idx,
+    }
     body_items = content.get("body", [])
     prev_role = None
     prev_level = None
