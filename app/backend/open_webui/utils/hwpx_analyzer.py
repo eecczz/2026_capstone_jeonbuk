@@ -9764,3 +9764,139 @@ def build_chapter_trees(
             })
         chapter_trees.append(nodes)
     return chapter_trees
+
+
+def process_section_fill_result(
+    llm_response: str,
+    ch_idx: int,
+    ch_title: str,
+    ch_type: str,
+    title_role: str,
+    template_grammar: dict,
+    role_text_types: dict | None = None,
+    pattern_roles: list | None = None,
+    section_pdf_text_len: int = 0,
+) -> dict:
+    """
+    2b LLM 응답을 처리합니다: parse → normalize → validate → fallback → grammar validation.
+
+    DB tool의 orchestration을 서버 함수로 추출한 것입니다 (8-infra).
+    LLM 호출 이후의 모든 처리를 담당합니다.
+
+    Args:
+        llm_response: 2b LLM raw response
+        ch_idx: chapter index
+        ch_title: chapter title (2a에서 결정)
+        ch_type: chapter type name
+        title_role: chapter title role
+        template_grammar: structure["template_grammar"]
+        role_text_types: structure["role_text_types"]
+        pattern_roles: 이 chapter 패턴에 사용되는 role 목록
+        section_pdf_text_len: source text 길이 (debug용)
+
+    Returns:
+        {
+            "body_items": [title_item, ...items],  # assemble용 (role/text only)
+            "chapter_tree_nodes": [...] | None,     # chapter_trees용
+            "debug_entry": {...},                    # _section_fill_debug용
+            "grammar_passed": bool,
+            "items_count": int,
+        }
+    """
+    # 1. parse
+    raw_items = parse_section_fill_from_llm(llm_response)
+    log.info(f"2b[{ch_idx}] 완료: {ch_title} → {len(raw_items)}개 항목")
+
+    # 2. grammar 정보 추출
+    _type_grammar_info = template_grammar.get("per_type", {}).get(ch_type, {})
+    _type_grammar = _type_grammar_info.get("grammar", {})
+    _root_roles = _type_grammar_info.get("root_roles", [])
+
+    # 3. normalize
+    _norm_result = normalize_section_items(
+        raw_items, ch_idx, ch_title, ch_type, title_role,
+    )
+    _norm_items = _norm_result["items"]
+    _pid_stats = None
+
+    # 4. validate + fallback
+    if _type_grammar:
+        _val_result = validate_ai_parent_ids(
+            _norm_items, _type_grammar, _root_roles, title_role,
+        )
+        _norm_items = _val_result["items"]
+        _pid_stats = _val_result["parent_id_stats"]
+
+        if _val_result["needs_full_fallback"] or _pid_stats["ai_parent_invalid"] > 0:
+            apply_parent_id_fallback(
+                _norm_items, _type_grammar, _root_roles, title_role,
+                needs_full_fallback=_val_result["needs_full_fallback"],
+                parent_id_stats=_pid_stats,
+            )
+
+    # 5. grammar validation (기존 호환 — reconstruct 기반)
+    _grammar_result = None
+    if _type_grammar:
+        _grammar_result = reconstruct_tree_from_flat(
+            [{"role": it["role"], "text": it["text"]} for it in _norm_items],
+            _type_grammar, _root_roles, title_role,
+        )
+        validate_reconstruction(_grammar_result, _type_grammar, _root_roles)
+
+        if _grammar_result.success:
+            log.info(f"2b[{ch_idx}] grammar validation 통과")
+        else:
+            log.warning(
+                f"2b[{ch_idx}] grammar validation 실패: "
+                f"{_grammar_result.failure_type}, "
+                f"{len(_grammar_result.violations)}개 violation"
+            )
+            for _v in _grammar_result.violations[:5]:
+                log.warning(
+                    f"  [{_v.violation_type}] idx={_v.item_index} "
+                    f"{_v.role}: {_v.detail[:60]}"
+                )
+
+    # 6. 결과 구성
+    chapter_tree_nodes = (
+        _grammar_result.nodes
+        if _grammar_result and _grammar_result.nodes
+        else None
+    )
+
+    items = [{"role": it["role"], "text": it["text"]} for it in _norm_items]
+
+    body_items = [{"role": title_role, "text": ch_title}]
+    body_items.extend(items)
+
+    debug_entry = {
+        "idx": ch_idx,
+        "chapter_title": ch_title,
+        "chapter_type": ch_type,
+        "pattern_roles": list(pattern_roles) if pattern_roles else [],
+        "section_pdf_text_len": section_pdf_text_len,
+        "llm_raw_response": llm_response,
+        "items_count": len(items),
+        "items": items,
+        "grammar_validation": (
+            _grammar_result.to_dict() if _grammar_result else None
+        ),
+        "text_quality_warnings": validate_text_quality(
+            items, role_text_types=role_text_types,
+        ),
+        # 8.0a: parent_id 지표
+        "raw_items": _norm_result.get("raw_items"),
+        "normalize_diff": _norm_result.get("normalize_diff"),
+        "chapter_context": _norm_result.get("chapter_context"),
+        "parent_id_stats": _pid_stats,
+    }
+
+    return {
+        "body_items": body_items,
+        "chapter_tree_nodes": chapter_tree_nodes,
+        "debug_entry": debug_entry,
+        "grammar_passed": (
+            _grammar_result.success if _grammar_result else True
+        ),
+        "items_count": len(items),
+    }
