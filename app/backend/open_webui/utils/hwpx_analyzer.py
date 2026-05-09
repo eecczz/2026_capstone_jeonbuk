@@ -7972,6 +7972,21 @@ def write_stage_debug_files(
         _skip("05_template_grammar.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 05b. Cache validation (from debug_payload, re-written here
+    #      because debug_dir cleanup at start deletes the early copy)
+    # ═══════════════════════════════════════════════════════════════
+    _cv_data = debug_payload.get("cache_validation")
+    if _cv_data:
+        from datetime import datetime as _dt2
+        _write("05b_cache_validation.json", {
+            "generated_at": _dt2.now().isoformat(),
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
+            **_cv_data,
+        })
+    else:
+        _skip("05b_cache_validation.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 06. Type catalog for 2a prompt
     # ═══════════════════════════════════════════════════════════════
     if chapter_types and paras_after:
