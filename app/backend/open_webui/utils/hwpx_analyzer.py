@@ -1431,22 +1431,10 @@ STRUCTURE_ANALYSIS_PROMPT = """당신은 HWPX 양식 구조 분석 전문가입�
 ### 문단 분석 (1a의 책임은 관찰만 — role 분류는 별도 단계)
 
 _idx가 있는 모든 문단에 대해:
-- **marker**: 번호 기호가 있으면 그대로 기록 (➊, 󰊲, Ⅰ., 1., 1), 가. 등), 없으면 ""
-
-  **마커 추출 엄수 사항**:
-  - 마커는 **첫 공백 직전까지의 모든 기호/숫자** 전체를 포함. 끝에 붙은 구두점(`)`, `.`, `,`)도 절대 빼지 마세요
-    ✓ "1) 내용" → marker=`"1)"` (괄호 포함)
-    ✗ "1) 내용" → marker=`"1"` (괄호 누락 — 금지)
-    ✓ "가. 내용" → marker=`"가."` (마침표 포함)
-    ✓ "1 내용" → marker=`"1"` (공백이 바로 오면 단독 숫자 OK)
-  - 다른 문단의 마커와 비슷해 보여도 **눈에 보이는 문자 그대로** 기록. 정규화·변환 금지.
-  - 텍스트가 보이는 모든 문단에서 마커를 추출하세요. 예외 없음.
-
+- **marker**: 텍스트 앞에 번호/기호가 보이면 그대로 기록, 없으면 "" (마커 정밀 분류는 별도 단계에서 수행)
 - **description**: 이 자리에 **어떤 내용이 어떤 형식으로** 들어가야 하는지 구체적으로 설명
-- **paraPrIDRef**: <hp:p>의 paraPrIDRef 속성값
-- **charPrIDRef**: 첫 번째 <hp:run>의 charPrIDRef 속성값
 
-**role은 출력하지 마세요.** role 분류는 별도 단계(1b)에서 수행합니다.
+**role, paraPrIDRef, charPrIDRef는 출력하지 마세요.** role은 1b, style ID는 코드가 자동 처리합니다.
 
 ### description 작성 규칙
 1. 해당 위치의 **구조적·관계적 역할**을 기술하세요. **주제/도메인은 절대 언급 금지**.
@@ -1488,14 +1476,14 @@ rowCnt="1" colCnt="1"인 표는 **텍스트 상자/강조 박스**입니다.
 ```json
 {
   "paragraphs": [
-    {"idx": 0, "marker": "", "description": "문서 전체 제목 (연도+기관+사업명+문서종류 형식)", "paraPrIDRef": "5", "charPrIDRef": "12"},
-    {"idx": 1, "marker": "", "description": "작성일자 (yyyy. m. d. 형식)", "paraPrIDRef": "3", "charPrIDRef": "8"},
-    {"idx": 2, "marker": "", "description": "발신 기관명", "paraPrIDRef": "3", "charPrIDRef": "8"},
-    {"idx": 3, "marker": "", "description": "목차 (텍스트 상자)", "paraPrIDRef": "3", "charPrIDRef": "8"},
-    {"idx": 4, "marker": "Ⅰ.", "description": "대분류 제목 (텍스트 상자)", "paraPrIDRef": "3", "charPrIDRef": "8"},
-    {"idx": 5, "marker": "□", "description": "중분류 항목 제목", "paraPrIDRef": "0", "charPrIDRef": "0"},
-    {"idx": 6, "marker": "ㅇ", "description": "세부 항목의 설명 본문", "paraPrIDRef": "0", "charPrIDRef": "0"},
-    {"idx": 7, "marker": "*", "description": "참고/보충 설명", "paraPrIDRef": "0", "charPrIDRef": "0"}
+    {"idx": 0, "marker": "", "description": "문서 전체 제목 (한 줄, 핵심 주제 명시)"},
+    {"idx": 1, "marker": "", "description": "작성일자 (순수 날짜)"},
+    {"idx": 2, "marker": "", "description": "발신 기관명"},
+    {"idx": 3, "marker": "", "description": "목차 (텍스트 상자)"},
+    {"idx": 4, "marker": "Ⅰ", "description": "대분류 제목 (텍스트 상자)"},
+    {"idx": 5, "marker": "□", "description": "중분류 항목 제목"},
+    {"idx": 6, "marker": "ㅇ", "description": "세부 항목의 설명 본문"},
+    {"idx": 7, "marker": "*", "description": "참고/보충 설명"}
   ],
   "tables": [
     {"table": 0, "rows": 5, "cols": 3, "description": "사업별 예산 배분 현황표",
@@ -1506,7 +1494,7 @@ rowCnt="1" colCnt="1"인 표는 **텍스트 상자/강조 박스**입니다.
 ```
 
 ## 중요
-- **role도, level도 절대 출력하지 마세요** — 1b(role), 1c(structure)에서 별도 결정합니다
+- **role, level, paraPrIDRef, charPrIDRef 출력 금지** — 각각 1b, 1c, 코드에서 별도 처리합니다
 - 양식의 텍스트는 샘플입니다. 샘플 텍스트 자체를 description에 넣지 마세요
 - _idx가 있는 문단을 하나도 빠뜨리지 마세요
 - 표의 headers(라벨)와 value_cells(데이터)를 정확히 구분하세요
@@ -1823,10 +1811,13 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
     lines.append(f"## 문단 목록 (총 {len(paragraphs)}개)")
     lines.append("")
 
+    _para_styles = {}  # idx → {"paraPrIDRef": str, "charPrIDRef": str}
+
     for p_idx, p in enumerate(paragraphs):
         para_pr = p.get("paraPrIDRef", "0")
         first_run = p.find(f"{NS_HP}run")
         char_pr = first_run.get("charPrIDRef", "0") if first_run is not None else "0"
+        _para_styles[p_idx] = {"paraPrIDRef": para_pr, "charPrIDRef": char_pr}
 
         # 표 참조 — 실제 데이터 표만 T 태그 부착 (꾸미기 박스는 제외)
         tbls_in_p = list(p.iter(f"{NS_HP}tbl"))
@@ -1910,6 +1901,7 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
         "text": result_text,
         "paragraph_count": len(paragraphs),
         "table_count": len(tables_by_idx),
+        "paragraph_styles": _para_styles,
     }
 
 
@@ -1928,19 +1920,22 @@ def build_structure_analysis_prompt(
                             False면 기존 XML 그대로 전달
 
     Returns:
-        [{"role": "system", ...}, {"role": "user", ...}]
+        ([{"role": "system", ...}, {"role": "user", ...}], paragraph_styles)
+        paragraph_styles: {idx: {"paraPrIDRef": str, "charPrIDRef": str}} or None
     """
+    _paragraph_styles = None
     if use_compact_format:
         compact = serialize_to_compact(light_xml)
+        _paragraph_styles = compact.get("paragraph_styles")
         user_msg = (
             "아래는 HWPX 양식의 구조를 **컴팩트 텍스트 포맷**으로 정리한 것입니다.\n"
-            "각 문단의 **role, description, marker, paraPrIDRef, charPrIDRef**를 파악하고, "
+            "각 문단의 **description, marker**를 파악하고, "
             "표의 라벨/값 셀을 구분하세요.\n"
-            "**level은 이 단계에서 출력하지 마세요** — 별도 단계에서 결정합니다.\n\n"
+            "**level, paraPrIDRef, charPrIDRef는 이 단계에서 출력하지 마세요** — 별도 처리됩니다.\n\n"
             "### 입력 포맷 설명\n"
             "- 문단: `idx|paraPr|charPr[|Ttable_ids] | 텍스트`\n"
-            "  - `p` 접두사: paraPrIDRef (예: `p5` = paraPrIDRef 5)\n"
-            "  - `c` 접두사: 첫 run의 charPrIDRef (예: `c12` = charPrIDRef 12)\n"
+            "  - `p` 접두사: paraPrIDRef (참고용, 출력 불필요)\n"
+            "  - `c` 접두사: charPrIDRef (참고용, 출력 불필요)\n"
             "  - `T<id>`: 이 문단이 포함한 표 (예: `T0` = table id 0)\n"
             "- 표: `[T<id>] rows x cols in_para=N` 뒤에 각 행 내용\n\n"
             f"```\n{compact['text']}\n```\n\n"
@@ -1953,17 +1948,18 @@ def build_structure_analysis_prompt(
             light_xml = tr["xml"]
         user_msg = (
             "아래 HWPX 양식 XML의 구조를 분석하세요.\n"
-            "각 _idx 문단의 **role, description, marker, paraPrIDRef, charPrIDRef**를 파악하고, "
+            "각 _idx 문단의 **description, marker**를 파악하고, "
             "표의 라벨/값 셀을 구분하세요.\n"
-            "**level은 이 단계에서 출력하지 마세요** — 별도 단계에서 결정합니다.\n\n"
+            "**level, paraPrIDRef, charPrIDRef는 출력하지 마세요** — 별도 처리됩니다.\n\n"
             f"```xml\n{light_xml}\n```\n\n"
             "반드시 JSON만 출력하세요."
         )
 
-    return [
+    messages = [
         {"role": "system", "content": STRUCTURE_ANALYSIS_PROMPT},
         {"role": "user", "content": user_msg},
     ]
+    return messages, _paragraph_styles
 
 
 def build_level_analysis_prompt(structure_json: dict, signals: dict = None, hybrid: bool = False) -> list[dict]:
