@@ -970,6 +970,15 @@ def assemble_hwpx_hybrid(
     _chapter_idx_lookup: dict[int, int] = {}  # body_items index → chapter_idx
     _tree_available = False
 
+    # rewrite alignment tracking (C2/C3 structured logging)
+    _rewrite_alignment = {
+        "tree_available": False,
+        "body_split_count": 0,
+        "tree_chapter_count": len(chapter_trees) if chapter_trees else 0,
+        "chapter_count_match": False,
+        "per_chapter": [],
+    }
+
     if chapter_trees:
         chapters_split = []  # [(start_idx_in_body, [item_indices_excluding_title])]
         current_start = None
@@ -988,12 +997,22 @@ def assemble_hwpx_hybrid(
         if current_start is not None:
             chapters_split.append((current_start, current_indices))
 
+        _rewrite_alignment["body_split_count"] = len(chapters_split)
+
         # 매칭: chapter_trees[ci]의 nodes vs chapters_split[ci]의 body indices
         if len(chapters_split) == len(chapter_trees):
+            _rewrite_alignment["chapter_count_match"] = True
             _tree_available = True
             for ci, (title_bi, body_indices) in enumerate(chapters_split):
                 nodes = chapter_trees[ci]
-                if len(body_indices) == len(nodes):
+                aligned = len(body_indices) == len(nodes)
+                _rewrite_alignment["per_chapter"].append({
+                    "chapter_idx": ci,
+                    "body_count": len(body_indices),
+                    "tree_count": len(nodes),
+                    "aligned": aligned,
+                })
+                if aligned:
                     for node_idx, bi in enumerate(body_indices):
                         _node_lookup[bi] = nodes[node_idx]
                         _chapter_idx_lookup[bi] = ci
@@ -1007,10 +1026,13 @@ def assemble_hwpx_hybrid(
                     _node_lookup.clear()
                     break
         else:
+            _rewrite_alignment["chapter_count_match"] = False
             log.warning(
                 f"marker_rewrite: chapter count mismatch "
                 f"(body_split={len(chapters_split)} vs trees={len(chapter_trees)}), skipping tree"
             )
+
+    _rewrite_alignment["tree_available"] = _tree_available
 
     # parent_id → role lookup (from tree nodes)
     # chapter별로 node id → node dict
@@ -1245,9 +1267,10 @@ def assemble_hwpx_hybrid(
         prev_role = role
         prev_level = cur_level
 
-    # marker rewrite log를 structure에 저장 (debug용)
+    # marker rewrite log + alignment를 structure에 저장 (debug용)
     changed = sum(1 for r in _marker_rewrite_log if r.get("changed"))
     structure["_marker_rewrite_log"] = _marker_rewrite_log
+    structure["_rewrite_alignment"] = _rewrite_alignment
     log.info(
         f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
         f"body 항목 {len(body_items)}개, marker rewrite {changed}/{len(_marker_rewrite_log)}"

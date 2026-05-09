@@ -6319,6 +6319,291 @@ def validate_text_quality(
     return warnings
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Validation contract — 11_validation_summary builder
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+_VALIDATION_CHECKS = [
+    # --- blocker (gate_ready=True) ---
+    {
+        "check_id": "A1", "name": "wrong_type_assignment",
+        "source_file": "09", "owner_stage": "2a_type_selection",
+        "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "false_positive_risk": "low",
+        "violation_type": "wrong_type_assignment",
+        "suggested_action": "inspect_type_selection",
+        "notes": "첫 item ∉ root_roles → type 선택 오류",
+    },
+    {
+        "check_id": "A2", "name": "empty_role",
+        "source_file": "09", "owner_stage": "2b_generation",
+        "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "false_positive_risk": "none",
+        "violation_type": "empty_role",
+        "suggested_action": "fix_generation",
+        "notes": "role 필드 누락 → 구조적 불가 상태",
+    },
+    {
+        "check_id": "A3", "name": "unknown_role",
+        "source_file": "09", "owner_stage": "2b_generation",
+        "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "false_positive_risk": "low",
+        "violation_type": "unknown_role",
+        "suggested_action": "fix_generation",
+        "notes": "grammar에 없는 role 생성",
+    },
+    {
+        "check_id": "A5", "name": "no_valid_parent",
+        "source_file": "09", "owner_stage": "2b_generation",
+        "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "false_positive_risk": "low",
+        "violation_type": "no_valid_parent",
+        "suggested_action": "fix_generation",
+        "notes": "grammar상 부모 없음 → tree 깨짐",
+    },
+    {
+        "check_id": "A7", "name": "invalid_root_child",
+        "source_file": "09", "owner_stage": "2b_generation",
+        "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "false_positive_risk": "low",
+        "violation_type": "invalid_root_child",
+        "suggested_action": "fix_generation",
+        "notes": "ROOT 직속에 부적절한 role",
+    },
+    # --- warning ---
+    {
+        "check_id": "A4", "name": "singleton_duplicate",
+        "source_file": "09", "owner_stage": "2b_generation",
+        "severity": "warning", "gate_candidate": True, "gate_ready": False,
+        "false_positive_risk": "medium",
+        "violation_type": "singleton_duplicate",
+        "suggested_action": "inspect_grammar",
+        "notes": "grammar singleton 플래그 정확도 미검증",
+    },
+    {
+        "check_id": "A6", "name": "missing_required_role",
+        "source_file": "09", "owner_stage": "2b_generation",
+        "severity": "warning", "gate_candidate": True, "gate_ready": False,
+        "false_positive_risk": "high",
+        "violation_type": "missing_required_role",
+        "suggested_action": "inspect_grammar",
+        "notes": "optional 플래그 대부분 true → 거의 트리거 안 됨",
+    },
+]
+
+# Check definitions that are NOT grammar-violation based
+_CHECK_C1 = {
+    "check_id": "C1", "name": "assemble_command_fail",
+    "source_file": "10", "owner_stage": "assemble",
+    "severity": "warning", "gate_candidate": True, "gate_ready": True,
+    "false_positive_risk": "none",
+    "suggested_action": "assemble_fix",
+    "notes": "전멸=exception 이미 있음. 부분 실패 gate 추가 가능",
+}
+_CHECK_E1 = {
+    "check_id": "E1", "name": "heading_too_long",
+    "source_file": "09", "owner_stage": "2b_generation",
+    "severity": "warning", "gate_candidate": False, "gate_ready": False,
+    "false_positive_risk": "high",
+    "suggested_action": "inspect_text_type_classification",
+    "notes": "rc11 오분류 문제 — text_type 보정 필요",
+}
+_CHECK_B1 = {
+    "check_id": "B1", "name": "marker_wrong_sequence_pre",
+    "source_file": "09b", "owner_stage": "2b_generation",
+    "severity": "watch", "gate_candidate": False, "gate_ready": False,
+    "false_positive_risk": "high",
+    "suggested_action": "observe",
+    "notes": "rewrite 전 분석. 대량 발생이 정상. B3 구현 후 비교 기준",
+}
+_CHECK_C2 = {
+    "check_id": "C2", "name": "chapter_count_mismatch",
+    "source_file": "10", "owner_stage": "assemble",
+    "severity": "watch", "gate_candidate": False, "gate_ready": False,
+    "false_positive_risk": "low",
+    "suggested_action": "observe",
+    "notes": "body_split vs tree chapter count 불일치",
+}
+_CHECK_C3 = {
+    "check_id": "C3", "name": "node_count_mismatch",
+    "source_file": "10", "owner_stage": "assemble",
+    "severity": "watch", "gate_candidate": False, "gate_ready": False,
+    "false_positive_risk": "low",
+    "suggested_action": "observe",
+    "notes": "chapter 내 body vs tree node count 불일치",
+}
+_CHECK_B3 = {
+    "check_id": "B3", "name": "marker_post_rewrite_mismatch",
+    "source_file": "(미구현)", "owner_stage": "marker_rewrite",
+    "severity": "later", "gate_candidate": True, "gate_ready": False,
+    "false_positive_risk": "low",
+    "suggested_action": "implement",
+    "notes": "placeholder — rewrite 후 검증. 구현 시 가장 유력한 gate 후보",
+}
+
+
+def build_validation_summary(
+    grammar_result: dict | None,
+    marker_analysis: dict | None,
+    assemble_result: dict | None,
+    *,
+    template_hash: str = "",
+    model: str = "",
+    total_chapters: int = 0,
+) -> dict:
+    """
+    09, 09b, 10 데이터를 기반으로 validation contract summary를 생성.
+
+    Returns:
+        11_validation_summary.json에 쓸 dict
+    """
+    from datetime import datetime
+
+    checks = []
+
+    # ── A-group: grammar violations (09) ──
+    all_violations = []
+    chapters_checked = 0
+    total_items_checked = 0
+    if grammar_result:
+        chapters_checked = len(grammar_result.get("chapters", []))
+        for ch in grammar_result.get("chapters", []):
+            nodes = ch.get("reconstructed_tree", [])
+            total_items_checked += len(nodes)
+            for v in ch.get("violations", []):
+                v["_chapter_idx"] = ch.get("idx")
+                all_violations.append(v)
+
+    for check_def in _VALIDATION_CHECKS:
+        vtype = check_def["violation_type"]
+        matched = [v for v in all_violations if v.get("type") == vtype]
+        affected = sorted({v["_chapter_idx"] for v in matched if v.get("_chapter_idx") is not None})
+        is_item_level = vtype not in ("wrong_type_assignment", "missing_required_role")
+        checks.append({
+            "check_id": check_def["check_id"],
+            "name": check_def["name"],
+            "source_file": check_def["source_file"],
+            "owner_stage": check_def["owner_stage"],
+            "severity": check_def["severity"],
+            "gate_candidate": check_def["gate_candidate"],
+            "gate_ready": check_def["gate_ready"],
+            "false_positive_risk": check_def["false_positive_risk"],
+            "observed_count": len(matched),
+            "checked_count": total_items_checked if is_item_level else chapters_checked,
+            "affected_chapters": affected,
+            "evidence_fields": [f"chapters[].violations[?type=='{vtype}']"],
+            "suggested_action": check_def["suggested_action"],
+            "notes": check_def["notes"],
+        })
+
+    # ── C1: assemble command fail (10) ──
+    c1_fail = 0
+    c1_checked = 0
+    if assemble_result:
+        c1_fail = assemble_result.get("fail_count", 0)
+        c1_checked = assemble_result.get("success_count", 0) + c1_fail
+    checks.append({
+        **{k: v for k, v in _CHECK_C1.items()},
+        "observed_count": c1_fail,
+        "checked_count": c1_checked,
+        "affected_chapters": [],
+        "evidence_fields": ["fail_count", "errors[]"],
+    })
+
+    # ── E1: heading_too_long (09) ──
+    e1_count = 0
+    e1_chapters = set()
+    if grammar_result:
+        for ch in grammar_result.get("chapters", []):
+            for w in ch.get("text_quality_warnings", []):
+                if w.get("type") == "heading_too_long":
+                    e1_count += 1
+                    e1_chapters.add(ch.get("idx"))
+    checks.append({
+        **{k: v for k, v in _CHECK_E1.items()},
+        "observed_count": e1_count,
+        "checked_count": total_items_checked,
+        "affected_chapters": sorted(e1_chapters),
+        "evidence_fields": ["chapters[].text_quality_warnings[?type=='heading_too_long']"],
+    })
+
+    # ── B1: marker wrong_sequence pre-rewrite (09b) ──
+    b1_count = 0
+    b1_checked = 0
+    b1_chapters = set()
+    if marker_analysis:
+        for ch in marker_analysis.get("chapters", []):
+            b1_checked += ch.get("total_items", 0)
+            for a in ch.get("analysis", []):
+                if a.get("issue") == "wrong_sequence":
+                    b1_count += 1
+                    b1_chapters.add(ch.get("idx"))
+    checks.append({
+        **{k: v for k, v in _CHECK_B1.items()},
+        "observed_count": b1_count,
+        "checked_count": b1_checked,
+        "affected_chapters": sorted(b1_chapters),
+        "evidence_fields": ["chapters[].analysis[?issue=='wrong_sequence']"],
+    })
+
+    # ── C2/C3: rewrite alignment (10) ──
+    alignment = {}
+    if assemble_result:
+        alignment = assemble_result.get("rewrite_alignment", {})
+
+    c2_observed = 0 if alignment.get("chapter_count_match", True) else 1
+    checks.append({
+        **{k: v for k, v in _CHECK_C2.items()},
+        "observed_count": c2_observed,
+        "checked_count": 1,
+        "affected_chapters": [],
+        "evidence_fields": ["rewrite_alignment.chapter_count_match",
+                            "rewrite_alignment.body_split_count",
+                            "rewrite_alignment.tree_chapter_count"],
+    })
+
+    c3_mismatched = [
+        pc for pc in alignment.get("per_chapter", [])
+        if not pc.get("aligned", True)
+    ]
+    checks.append({
+        **{k: v for k, v in _CHECK_C3.items()},
+        "observed_count": len(c3_mismatched),
+        "checked_count": len(alignment.get("per_chapter", [])) or total_chapters,
+        "affected_chapters": [pc["chapter_idx"] for pc in c3_mismatched],
+        "evidence_fields": ["rewrite_alignment.per_chapter[?aligned==false]"],
+    })
+
+    # ── B3: placeholder ──
+    checks.append({
+        **{k: v for k, v in _CHECK_B3.items()},
+        "observed_count": None,
+        "checked_count": None,
+        "affected_chapters": None,
+        "evidence_fields": [],
+    })
+
+    # ── summary 집계 ──
+    severity_summary = {}
+    for c in checks:
+        sev = c["severity"]
+        if sev not in severity_summary:
+            severity_summary[sev] = {"defined": 0, "triggered": 0}
+        severity_summary[sev]["defined"] += 1
+        if c["observed_count"] and c["observed_count"] > 0:
+            severity_summary[sev]["triggered"] += 1
+
+    return {
+        "schema_version": "0.1",
+        "generated_at": datetime.now().isoformat(),
+        "template_hash": template_hash,
+        "model": model,
+        "total_chapters": total_chapters,
+        "summary": severity_summary,
+        "checks": checks,
+    }
+
+
 def extract_marker_policies(paragraphs: list[dict]) -> dict:
     """
     paragraphs의 observed markers에서 role별 marker_policy를 추출.
@@ -7570,6 +7855,7 @@ def write_stage_debug_files(
     # ═══════════════════════════════════════════════════════════════
     # 09b. Marker analysis
     # ═══════════════════════════════════════════════════════════════
+    _marker_chapters_for_11 = None  # 11번에서 재사용
     if paras_after and section_fill:
         policies = extract_marker_policies(paras_after)
         marker_chapters = []
@@ -7588,6 +7874,7 @@ def write_stage_debug_files(
             "marker_policies": policies,
             "chapters": marker_chapters,
         })
+        _marker_chapters_for_11 = marker_chapters
     else:
         _skip("09b_marker_analysis.json")
 
@@ -7601,9 +7888,57 @@ def write_stage_debug_files(
             "errors": assembly.get("errors", []),
             "output_size": assembly.get("output_size", 0),
             "marker_rewrite_log": assembly.get("marker_rewrite_log", []),
+            "rewrite_alignment": assembly.get("rewrite_alignment", {}),
         })
     else:
         _skip("10_assemble_result.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 11. Validation summary (contract)
+    # ═══════════════════════════════════════════════════════════════
+    try:
+        # 09 grammar result — section_fill에서 직접 추출
+        grammar_result_data = None
+        if section_fill:
+            _gv_chapters = []
+            for sf in section_fill:
+                gv = sf.get("grammar_validation")
+                if gv:
+                    _gv_chapters.append({
+                        "idx": sf.get("idx"),
+                        "violations": gv.get("violations", []),
+                        "reconstructed_tree": gv.get("nodes", []),
+                        "text_quality_warnings": sf.get("text_quality_warnings", []),
+                    })
+            grammar_result_data = {"chapters": _gv_chapters}
+
+        # 09b marker analysis — 위에서 이미 계산한 _marker_chapters_for_11 재사용
+        marker_analysis_data = (
+            {"chapters": _marker_chapters_for_11}
+            if _marker_chapters_for_11 else None
+        )
+
+        # 10 assemble result
+        assemble_data = None
+        if assembly:
+            assemble_data = {
+                "success_count": assembly.get("success_count", 0),
+                "fail_count": assembly.get("fail_count", 0),
+                "rewrite_alignment": assembly.get("rewrite_alignment", {}),
+            }
+
+        summary = build_validation_summary(
+            grammar_result=grammar_result_data,
+            marker_analysis=marker_analysis_data,
+            assemble_result=assemble_data,
+            template_hash=debug_payload.get("template_hash", ""),
+            model=debug_payload.get("model", ""),
+            total_chapters=len(classify.get("chapters", [])),
+        )
+        _write("11_validation_summary.json", summary)
+    except Exception as e:
+        log.warning(f"[DEBUG-HWPX] 11_validation_summary 생성 실패: {e}")
+        results["11_validation_summary.json"] = f"error: {e}"
 
     # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
