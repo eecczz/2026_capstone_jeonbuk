@@ -1047,6 +1047,27 @@ def assemble_hwpx_hybrid(
     # fallback counter (no tree): key = role → count
     _fallback_counter: dict[str, int] = {}
 
+    def _generate_sequence_marker(policy_type: str, sib_idx: int, markers: list) -> str:
+        """markers 배열을 초과한 sibling_index에 대해 규칙형 마커를 직접 생성."""
+        if policy_type == "arabic_sequence":
+            return str(sib_idx)
+        if policy_type == "num_paren_sequence":
+            return f"{sib_idx})"
+        if policy_type == "circled_sequence":
+            # ➊=0x278A ... ➓=0x2793 (1~10)
+            if 1 <= sib_idx <= 10:
+                return chr(0x2789 + sib_idx)
+        if policy_type == "circled_num_sequence":
+            # ①=0x2460 ... ⑳=0x2473 (1~20)
+            if 1 <= sib_idx <= 20:
+                return chr(0x245F + sib_idx)
+        # 생성 불가 — fallback to last observed
+        log.warning(
+            f"marker_rewrite: {policy_type} sibling_index={sib_idx} "
+            f"exceeds generatable range, falling back to last observed"
+        )
+        return markers[-1] if markers else ""
+
     def _rewrite_marker(body_item_idx: int, role: str, text: str) -> str:
         """marker_policy에 따라 text의 leading marker를 교체."""
         node = _node_lookup.get(body_item_idx)
@@ -1119,7 +1140,8 @@ def assemble_hwpx_hybrid(
             if sib_idx <= len(markers):
                 expected = markers[sib_idx - 1]
             else:
-                expected = markers[-1]
+                # markers 배열 초과 — 규칙형 시퀀스는 직접 생성
+                expected = _generate_sequence_marker(policy_type, sib_idx, markers)
         else:
             expected = markers[0]
 
