@@ -4807,6 +4807,9 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
+CACHE_SCHEMA_VERSION = 2
+
+
 def compute_template_hash(template_path: str) -> str:
     """양식 파일 바이트의 SHA256 해시 앞 16자리 (캐시 키용).
 
@@ -4839,11 +4842,12 @@ def get_template_cache_path(cache_key: str, namespace: str = 'full') -> str:
 
 
 def save_template_cache(cache_key: str, data: dict, namespace: str = 'full') -> bool:
-    """양식 분석 결과를 캐시에 저장."""
+    """양식 분석 결과를 캐시에 저장. cache_schema_version 자동 삽입."""
     import os
     path = get_template_cache_path(cache_key, namespace)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        data["cache_schema_version"] = CACHE_SCHEMA_VERSION
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
         log.info(f"[CACHE/{namespace}] 저장: {path} ({os.path.getsize(path):,}B)")
@@ -4854,7 +4858,7 @@ def save_template_cache(cache_key: str, data: dict, namespace: str = 'full') -> 
 
 
 def load_template_cache(cache_key: str, namespace: str = 'full') -> dict | None:
-    """캐시에서 양식 분석 결과 로드. 없거나 실패시 None."""
+    """캐시에서 양식 분석 결과 로드. 없거나 버전 불일치 시 None."""
     import os
     path = get_template_cache_path(cache_key, namespace)
     if not os.path.exists(path):
@@ -4862,6 +4866,14 @@ def load_template_cache(cache_key: str, namespace: str = 'full') -> dict | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+        cached_version = data.get("cache_schema_version", 1)
+        if cached_version < CACHE_SCHEMA_VERSION:
+            log.info(
+                f"[CACHE/{namespace}] version mismatch "
+                f"(found={cached_version}, required={CACHE_SCHEMA_VERSION}), "
+                f"treating as miss: {path}"
+            )
+            return None
         log.info(f"[CACHE/{namespace}] 로드: {path} ({os.path.getsize(path):,}B)")
         return data
     except Exception as e:
@@ -4881,6 +4893,219 @@ def clear_template_cache(cache_key: str, namespace: str = 'full') -> bool:
     except Exception as e:
         log.warning(f"[CACHE/{namespace}] 삭제 실패: {e}")
     return False
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Cache-before-save validation (7단계 gate)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def validate_structure_for_cache(
+    structure: dict,
+    chapter_types: dict,
+) -> dict:
+    """
+    full 캐시 저장 전 구조 무결성 검증. 순수 함수 — IO 없음.
+
+    Returns:
+        {can_cache, should_abort, blocker_count, watch_count, checks: [...]}
+    """
+    paragraphs = structure.get("paragraphs", [])
+    grammar = structure.get("template_grammar", {})
+    per_type = grammar.get("per_type", {})
+
+    # chapter title role 수집
+    title_roles = set()
+    for ct in chapter_types.values():
+        tr = ct.get("title_role", "")
+        if tr:
+            title_roles.add(tr)
+
+    # 본문 시작 idx (첫 title role 등장)
+    first_ch_idx = len(paragraphs)
+    for p in paragraphs:
+        if p.get("role") in title_roles:
+            first_ch_idx = p.get("idx", 0)
+            break
+
+    valid_idxs = {p.get("idx") for p in paragraphs}
+
+    checks = []
+
+    # ── SC1: chapter_types 0개 ──
+    checks.append({
+        "check_id": "SC1",
+        "name": "no_chapter_types",
+        "severity": "blocker",
+        "triggered": len(chapter_types) == 0,
+        "detail": f"chapter_types={len(chapter_types)}" if len(chapter_types) == 0 else "",
+        "evidence": [],
+    })
+
+    # ── SC2: root_roles가 grammar에 없음 ──
+    sc2_missing = []
+    for tn, tg in per_type.items():
+        roots = tg.get("root_roles", [])
+        gram_keys = set(tg.get("grammar", {}).keys())
+        for r in roots:
+            if r not in gram_keys:
+                sc2_missing.append({"type": tn, "root_role": r, "grammar_keys": sorted(gram_keys)})
+    checks.append({
+        "check_id": "SC2",
+        "name": "root_roles_not_in_grammar",
+        "severity": "blocker",
+        "triggered": len(sc2_missing) > 0,
+        "detail": f"{len(sc2_missing)}개 root_role이 grammar에 없음" if sc2_missing else "",
+        "evidence": sc2_missing,
+    })
+
+    # ── SC3: parent_idx self-loop ──
+    sc3 = [{"idx": p.get("idx"), "role": p.get("role")}
+           for p in paragraphs if p.get("parent_idx") is not None and p.get("parent_idx") == p.get("idx")]
+    checks.append({
+        "check_id": "SC3",
+        "name": "parent_self_loop",
+        "severity": "blocker",
+        "triggered": len(sc3) > 0,
+        "detail": f"{len(sc3)}개 self-loop" if sc3 else "",
+        "evidence": sc3[:10],
+    })
+
+    # ── SC4: parent_idx out_of_range ──
+    sc4 = [{"idx": p.get("idx"), "parent_idx": p.get("parent_idx"), "role": p.get("role")}
+           for p in paragraphs
+           if p.get("parent_idx") is not None and p.get("parent_idx") not in valid_idxs]
+    checks.append({
+        "check_id": "SC4",
+        "name": "parent_out_of_range",
+        "severity": "blocker",
+        "triggered": len(sc4) > 0,
+        "detail": f"{len(sc4)}개 out-of-range parent" if sc4 else "",
+        "evidence": sc4[:10],
+    })
+
+    # ── SC5: 본문 paragraph인데 role 없음 ──
+    sc5 = []
+    for p in paragraphs:
+        if p.get("idx", 0) < first_ch_idx:
+            continue
+        if p.get("level") is None:
+            continue
+        if not p.get("role"):
+            sc5.append({
+                "idx": p.get("idx"),
+                "level": p.get("level"),
+                "marker": p.get("marker", ""),
+                "description": p.get("description", ""),
+                "role_candidates": p.get("role_candidates", [])[:3],
+            })
+    checks.append({
+        "check_id": "SC5",
+        "name": "body_paragraph_no_role",
+        "severity": "blocker",
+        "triggered": len(sc5) > 0,
+        "detail": f"{len(sc5)}개 본문 paragraph에 role 없음" if sc5 else "",
+        "evidence": sc5[:10],
+    })
+
+    # ── SC6: parent forward_ref (watch) ──
+    sc6 = [{"idx": p.get("idx"), "parent_idx": p.get("parent_idx"), "role": p.get("role")}
+           for p in paragraphs
+           if p.get("parent_idx") is not None and p.get("parent_idx") > p.get("idx", 0)]
+    checks.append({
+        "check_id": "SC6",
+        "name": "parent_forward_ref",
+        "severity": "watch",
+        "triggered": len(sc6) > 0,
+        "detail": f"{len(sc6)}개 forward reference" if sc6 else "",
+        "evidence": sc6[:10],
+    })
+
+    # ── SC7: grammar 자기참조 (watch) ──
+    sc7 = []
+    for tn, tg in per_type.items():
+        for role, g in tg.get("grammar", {}).items():
+            if role in g.get("allowed_children", []):
+                sc7.append({"type": tn, "role": role})
+    checks.append({
+        "check_id": "SC7",
+        "name": "grammar_self_ref",
+        "severity": "watch",
+        "triggered": len(sc7) > 0,
+        "detail": f"{len(sc7)}개 자기참조" if sc7 else "",
+        "evidence": sc7,
+    })
+
+    # ── SC8: level gap >= 2 (watch) ──
+    idx_to_p = {p.get("idx"): p for p in paragraphs}
+    sc8 = []
+    for p in paragraphs:
+        pi = p.get("parent_idx")
+        if pi is None:
+            continue
+        parent = idx_to_p.get(pi)
+        if not parent:
+            continue
+        pl = parent.get("level") or 0
+        cl = p.get("level") or 0
+        gap = abs(cl - pl)
+        if gap >= 2:
+            sc8.append({"idx": p.get("idx"), "level": cl, "parent_level": pl, "gap": gap})
+    checks.append({
+        "check_id": "SC8",
+        "name": "level_gap",
+        "severity": "watch",
+        "triggered": len(sc8) > 0,
+        "detail": f"{len(sc8)}개 level gap >= 2" if sc8 else "",
+        "evidence": sc8[:10],
+    })
+
+    # ── SC9: singleton 불일치 (watch) ──
+    sc9 = []
+    for tn, tg in per_type.items():
+        for role, g in tg.get("grammar", {}).items():
+            if g.get("singleton"):
+                count = sum(1 for p in paragraphs if p.get("role") == role)
+                if count > 1:
+                    sc9.append({"type": tn, "role": role, "observed_count": count})
+    checks.append({
+        "check_id": "SC9",
+        "name": "singleton_mismatch",
+        "severity": "watch",
+        "triggered": len(sc9) > 0,
+        "detail": f"{len(sc9)}개 singleton 초과" if sc9 else "",
+        "evidence": sc9,
+    })
+
+    # ── 집계 ──
+    blockers = [c for c in checks if c["severity"] == "blocker" and c["triggered"]]
+    watches = [c for c in checks if c["severity"] == "watch" and c["triggered"]]
+
+    return {
+        "can_cache": len(blockers) == 0,
+        "should_abort": len(blockers) > 0,
+        "blocker_count": len(blockers),
+        "watch_count": len(watches),
+        "checks": checks,
+    }
+
+
+def write_cache_validation_debug(result: dict, debug_dir: str) -> None:
+    """05b_cache_validation.json을 debug_dir에 저장."""
+    import os
+    from datetime import datetime
+    os.makedirs(debug_dir, exist_ok=True)
+    path = os.path.join(debug_dir, "05b_cache_validation.json")
+    try:
+        output = {
+            "generated_at": datetime.now().isoformat(),
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
+            **result,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(output, f, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        log.warning(f"[DEBUG] 05b_cache_validation.json 저장 실패: {e}")
 
 
 def compute_role_context_signals(paragraphs: list[dict], idx_texts: dict = None) -> dict:
@@ -7964,6 +8189,20 @@ def write_stage_debug_files(
         if sf.get("grammar_validation") and not sf["grammar_validation"].get("success")
     )
 
+    # cache_validation 요약 (정상 완료 시에만 기록, abort 시에는 05b가 증거)
+    _cv = debug_payload.get("cache_validation")
+    _cv_summary = {}
+    if _cv:
+        _cv_summary = {
+            "cache_validation_present": True,
+            "cache_validation_can_cache": _cv.get("can_cache"),
+            "cache_validation_should_abort": _cv.get("should_abort"),
+            "cache_validation_blocker_count": _cv.get("blocker_count", 0),
+            "cache_validation_watch_count": _cv.get("watch_count", 0),
+        }
+    else:
+        _cv_summary = {"cache_validation_present": False}
+
     _write("99_debug_summary.json", {
         "timestamp": datetime.now().isoformat(),
         "model": debug_payload.get("model", ""),
@@ -7977,6 +8216,7 @@ def write_stage_debug_files(
         "grammar_validation_fail": sf_fail,
         "assembly_success": assembly.get("success_count", 0),
         "assembly_fail": assembly.get("fail_count", 0),
+        **_cv_summary,
     })
 
     log.info(
