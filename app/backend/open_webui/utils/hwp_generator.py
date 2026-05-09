@@ -1002,6 +1002,7 @@ def assemble_hwpx_hybrid(
             f"({len(_secpr_conflict_warnings)} with body conflict)"
         )
 
+    _orig_para_count = len(doc.paragraphs)  # remove 전 총 수 (분류용)
     body_elements = []
     _remove_per_section: dict[int, int] = {}  # section_idx → remove count
     _body_para_indices: set[int] = set()
@@ -1054,7 +1055,7 @@ def assemble_hwpx_hybrid(
     _preserved_per_section: dict[str, list] = {}
     _residual_candidates: list[dict] = []
     for i in sorted(header_indices):
-        if i >= len(doc.paragraphs):
+        if i >= _orig_para_count:
             continue
         sec_idx = _para_to_sec_idx.get(i, 0)
         p_info = _real_idx_to_info.get(i, {})
