@@ -953,7 +953,8 @@ def assemble_hwpx_hybrid(
 
     # marker rewrite: marker_policy 기반으로 AI text의 marker를 교체
     from open_webui.utils.hwpx_analyzer import extract_marker_policies
-    _marker_policies = extract_marker_policies(paragraphs_info)
+    _marker_policy_1f = structure.get("marker_policy_1f")
+    _marker_policies = extract_marker_policies(paragraphs_info, marker_policy_1f=_marker_policy_1f)
     _marker_rewrite_log = []
     REWRITE_ALLOWED_POLICIES = {"arabic_sequence", "circled_sequence", "fixed_char"}
 

@@ -3600,6 +3600,188 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
     return paragraphs
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 1f: Marker policy induction (role-level, post-clustering)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**을 판별하는 전문가입니다.
+
+## 임무
+
+각 role에 대해, 해당 role의 text samples를 보고 **일관된 leading marker가 있는지** 판별하세요.
+
+## 판별 기준
+
+1. **각 sample의 텍스트 앞부분**에서 marker 후보를 찾으세요.
+   - marker: 텍스트 시작 부분의 기호·번호 (□, ◈, Ⅰ, ➊, 1., 가., *, (1) 등)
+   - marker 뒤에는 보통 공백이나 구분자(`. `, ` `)가 옴
+   - marker가 없는 sample도 있을 수 있음 (no_marker)
+
+2. **role 전체에서 일관성 확인**:
+   - 모든 sample이 같은 marker → `fixed_char` (예: □, ◈)
+   - 순차적 marker 시퀀스 → sequence 타입 (예: Ⅰ→Ⅱ→Ⅲ, 1→2→3, ➊→➋→➌)
+   - marker 없음 → `no_marker`
+   - 일부만 있거나 일관성 없음 → `ambiguous`
+
+3. **separator**: marker와 content 사이의 구분자 (공백, `. `, `) ` 등)
+
+## 출력 형식 (JSON만)
+
+```json
+{
+  "roles": [
+    {
+      "role": "role_cluster_4",
+      "marker_policy_status": "explicit_marker_detected",
+      "policy_type": "roman_sequence",
+      "marker_family": "roman",
+      "separator": " . ",
+      "confidence": 0.95,
+      "uncertainty_reason": null,
+      "evidence": [
+        {"sample_idx": 4, "detected_marker": "Ⅰ", "remaining_text": "추진성과 및 평가"},
+        {"sample_idx": 21, "detected_marker": "Ⅱ", "remaining_text": "2024년 업무추진 여건 및 방향"}
+      ]
+    }
+  ]
+}
+```
+
+## policy_type 목록 (이 중에서만 선택)
+
+- `fixed_char`: 모든 sample이 같은 기호 (□, ◈, ◇, ▪, ㅇ 등)
+- `arabic_sequence`: 1, 2, 3, ...
+- `roman_sequence`: Ⅰ, Ⅱ, Ⅲ, ...
+- `circled_sequence`: ➊, ➋, ➌, ...
+- `circled_num_sequence`: ①, ②, ③, ...
+- `circled_pua_sequence`: 󰊱, 󰊲, 󰊳, ... (PUA 영역)
+- `num_paren_sequence`: 1), 2), 3), ...
+- `star_depth`: *, **, *** (반복 깊이)
+- `korean_sequence`: 가., 나., 다., ...
+- `unknown_sequence`: 위에 해당 안 되는 순차 패턴
+- `no_marker`: marker 없음
+
+## 규칙
+
+- **모든 role에 대해 빠짐없이 출력**
+- marker가 확실하지 않으면 `ambiguous`로 표시하세요. 억지로 분류하지 마세요.
+- confidence는 0~1. sample 수가 적으면 낮게 (1개: 0.5 이하, 2개: 0.6~0.7, 3개+: 0.7~0.95)
+- evidence에 각 sample별로 detected_marker를 남기세요 (없으면 null)
+- 반드시 JSON만 출력
+"""
+
+
+def build_marker_policy_prompt(
+    paragraphs: list[dict],
+    idx_texts: dict,
+    max_samples_per_role: int = 5,
+) -> list[dict]:
+    """
+    1f: role별 sample text preview → marker policy induction prompt 생성.
+    """
+    from collections import defaultdict
+
+    # role → sample indices 수집
+    role_samples = defaultdict(list)
+    for p in paragraphs:
+        role = p.get("role", "")
+        if role:
+            role_samples[role].append(p.get("idx"))
+
+    # role별 text preview 구성
+    role_entries = []
+    for role, idxs in sorted(role_samples.items()):
+        samples = []
+        for idx in idxs[:max_samples_per_role]:
+            text = idx_texts.get(str(idx), idx_texts.get(idx, ""))
+            samples.append({
+                "idx": idx,
+                "text_preview": text[:80] if text else "(빈 문단)",
+            })
+        role_entries.append({
+            "role": role,
+            "sample_count": len(idxs),
+            "samples": samples,
+        })
+
+    user_msg = (
+        "## role별 text samples\n\n"
+        + json.dumps(role_entries, ensure_ascii=False, indent=2)
+        + "\n\n위 role들의 marker policy를 판별하세요. 반드시 JSON만 출력."
+    )
+
+    return [
+        {"role": "system", "content": MARKER_POLICY_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_marker_policy_from_llm(llm_response: str) -> dict:
+    """1f LLM 응답 파싱."""
+    text = llm_response.strip()
+
+    # JSON 추출
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0].strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(_repair_json(text))
+        except Exception as e:
+            log.warning(f"1f marker policy JSON 파싱 실패: {e}")
+            return {"roles": [], "parse_error": str(e)}
+
+    roles = parsed.get("roles", [])
+    return {"roles": roles}
+
+
+def verify_marker_policy_evidence(
+    policy_result: dict,
+    idx_texts: dict,
+) -> dict:
+    """
+    1f AI 결과의 evidence를 idx_texts와 교차검증.
+
+    각 role entry에 verification 필드 추가:
+    - "consistent": claimed marker가 실제 text에 존재
+    - "marker_not_found": claimed marker가 text에 없음
+    - "no_evidence": evidence가 비어있음
+    """
+    for role_entry in policy_result.get("roles", []):
+        status = role_entry.get("marker_policy_status", "")
+        evidence = role_entry.get("evidence", [])
+
+        if status == "no_marker" or status == "ambiguous":
+            role_entry["verification"] = "not_applicable"
+            continue
+
+        if not evidence:
+            role_entry["verification"] = "no_evidence"
+            continue
+
+        all_consistent = True
+        for ev in evidence:
+            idx = ev.get("sample_idx")
+            claimed = ev.get("detected_marker", "")
+            actual = idx_texts.get(str(idx), idx_texts.get(idx, ""))
+
+            if claimed and actual:
+                ev["_actual_starts_with"] = actual.lstrip().startswith(claimed)
+                if not ev["_actual_starts_with"]:
+                    all_consistent = False
+            elif claimed and not actual:
+                ev["_actual_starts_with"] = False
+                all_consistent = False
+
+        role_entry["verification"] = "consistent" if all_consistent else "marker_not_found"
+
+    return policy_result
+
+
 def _validate_selected_index(p: dict) -> dict:
     """
     1c가 정한 selected_index 검증. 다음 조건 위반 시 index 0으로 fallback:
@@ -4807,7 +4989,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 
 
 def compute_template_hash(template_path: str) -> str:
@@ -6841,13 +7023,21 @@ def build_validation_summary(
     }
 
 
-def extract_marker_policies(paragraphs: list[dict]) -> dict:
+def extract_marker_policies(
+    paragraphs: list[dict],
+    marker_policy_1f: dict | None = None,
+) -> dict:
     """
-    paragraphs의 observed markers에서 role별 marker_policy를 추출.
+    role별 marker_policy를 추출.
+
+    우선순위:
+    1. marker_policy_1f (1f AI 결과, verified) — explicit + consistent인 것만
+    2. 기존 1a marker field 기반 (fallback)
 
     Returns:
-        {role: {"markers": [...], "family": str, "style": "fixed"|"sequence",
-                "separator": str}}
+        {role: {"markers": [...], "family": str, "policy_type": str,
+                "style": "fixed"|"sequence", "separator": str,
+                "source": "1f"|"1a"}}
     """
     from collections import defaultdict
 
@@ -6904,7 +7094,67 @@ def extract_marker_policies(paragraphs: list[dict]) -> dict:
             "policy_type": policy_type,
             "style": style,
             "separator": role_separators.get(role, " "),
+            "source": "1a",
         }
+
+    # 1f 결과 병합: verified + explicit인 것만 우선 사용
+    if marker_policy_1f:
+        for role_entry in marker_policy_1f.get("roles", []):
+            role = role_entry.get("role", "")
+            status = role_entry.get("marker_policy_status", "")
+            verification = role_entry.get("verification", "")
+
+            if status == "explicit_marker_detected" and verification == "consistent":
+                observed = role_entry.get("evidence", [])
+                markers_1f = [
+                    e["detected_marker"] for e in observed
+                    if e.get("detected_marker")
+                ]
+                # 중복 제거하면서 순서 보존
+                seen = set()
+                unique_markers = []
+                for m in markers_1f:
+                    if m not in seen:
+                        seen.add(m)
+                        unique_markers.append(m)
+
+                if not unique_markers:
+                    continue
+
+                policy_type_1f = role_entry.get("policy_type", "")
+                family_1f = role_entry.get("marker_family", "")
+                separator_1f = role_entry.get("separator", " ")
+                style_1f = "fixed" if len(unique_markers) == 1 else "sequence"
+
+                # 기존 1a 결과와 충돌 감지
+                if role in result and result[role]["source"] == "1a":
+                    old = result[role]
+                    if old["policy_type"] != policy_type_1f or old["markers"] != unique_markers:
+                        log.info(
+                            f"[MARKER-POLICY] 1f overrides 1a for {role}: "
+                            f"1a={old['policy_type']}:{old['markers']} → "
+                            f"1f={policy_type_1f}:{unique_markers}"
+                        )
+
+                result[role] = {
+                    "markers": unique_markers,
+                    "family": family_1f,
+                    "policy_type": policy_type_1f,
+                    "style": style_1f,
+                    "separator": separator_1f,
+                    "source": "1f",
+                }
+
+            elif status == "no_marker" and verification == "not_applicable":
+                # 1f가 no_marker로 판정 + 1a에도 없음 → 확정
+                if role not in result:
+                    pass  # 이미 없으므로 추가할 것 없음
+                # 1a에는 있지만 1f가 no_marker → conflict
+                elif role in result:
+                    log.warning(
+                        f"[MARKER-POLICY] conflict: 1a has markers for {role} "
+                        f"but 1f says no_marker"
+                    )
 
     return result
 
@@ -7986,6 +8236,15 @@ def write_stage_debug_files(
         })
     else:
         _skip("05b_cache_validation.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 05c. Marker policy induction (1f)
+    # ═══════════════════════════════════════════════════════════════
+    _mp1f = debug_payload.get("marker_policy_1f")
+    if _mp1f:
+        _write("05c_marker_policy_induction.json", _mp1f)
+    else:
+        _skip("05c_marker_policy_induction.json")
 
     # ═══════════════════════════════════════════════════════════════
     # 06. Type catalog for 2a prompt
