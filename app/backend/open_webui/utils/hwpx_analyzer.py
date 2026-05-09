@@ -8499,6 +8499,7 @@ def write_stage_debug_files(
             "section_count": _si.get("section_count", 0),
             "append_target_section": _si.get("append_target_section", 0),
             "secpr_carrier_warning_count": len(_si.get("secpr_carrier_warnings", [])),
+            "secpr_conflict_warning_count": len(_si.get("secpr_conflict_warnings", [])),
             "residual_candidate_count": len(_si.get("residual_candidates", [])),
         }
 

@@ -974,6 +974,34 @@ def assemble_hwpx_hybrid(
             if 0 <= ridx < len(doc.paragraphs):
                 _header_role_indices.add(ridx)
 
+    # 9.1b: secPr carrier 보존 — section layout 경계 유지
+    _secpr_preserved_count = 0
+    _secpr_conflict_warnings = []
+    for pidx in sorted(_secpr_carriers):
+        if pidx in header_indices:
+            continue  # already preserved by other rules
+        p_info = _real_idx_to_info.get(pidx, {})
+        role = p_info.get("role", "")
+        text = (p_info.get("text", "") or "").strip()
+
+        header_indices.add(pidx)
+        _secpr_preserved_count += 1
+
+        if text or role:
+            _secpr_conflict_warnings.append({
+                "para_idx": pidx,
+                "section_idx": _para_to_sec_idx.get(pidx, -1),
+                "role": role,
+                "text_preview": text[:60],
+                "conflict": "secPr_body_conflict_candidate",
+            })
+
+    if _secpr_preserved_count:
+        log.info(
+            f"assemble: {_secpr_preserved_count} secPr carrier(s) preserved "
+            f"({len(_secpr_conflict_warnings)} with body conflict)"
+        )
+
     body_elements = []
     _remove_per_section: dict[int, int] = {}  # section_idx → remove count
     _body_para_indices: set[int] = set()
@@ -1067,13 +1095,35 @@ def assemble_hwpx_hybrid(
     else:
         _target_sec_idx = 0
     section_elem = _all_sections[_target_sec_idx].element
+
+    # 9.2a: append target candidate 관측
+    _body_sections = sorted(si for si, cnt in _remove_per_section.items() if cnt > 0)
+    _multi_body_section = len(_body_sections) > 1
+    _append_target_candidates = []
+    for si in _body_sections:
+        _append_target_candidates.append({
+            "section_idx": si,
+            "removed_count": _remove_per_section[si],
+            "is_current_target": si == _target_sec_idx,
+        })
+    if _multi_body_section:
+        log.info(
+            f"assemble: multi-body-section detected — "
+            f"body_sections={_body_sections}, append_target={_target_sec_idx}"
+        )
+
     structure["_section_info"] = {
         "section_count": _section_count,
         "remove_per_section": _remove_per_section,
         "append_target_section": _target_sec_idx,
+        "current_append_policy": "max_remove_section",
+        "body_sections": _body_sections,
+        "append_target_candidates": _append_target_candidates,
+        "multi_body_section_warning": _multi_body_section,
         "preserved_per_section": _preserved_per_section,
         "residual_candidates": _residual_candidates,
         "secpr_carrier_warnings": _secpr_carrier_warnings,
+        "secpr_conflict_warnings": _secpr_conflict_warnings,
     }
     body_items = content.get("body", [])
     prev_role = None
