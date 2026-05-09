@@ -1047,6 +1047,139 @@ def assemble_hwpx_hybrid(
     # fallback counter (no tree): key = role → count
     _fallback_counter: dict[str, int] = {}
 
+    # total chapter title count (arabic fallback strip cap)
+    _total_chapter_titles = sum(
+        1 for item in body_items if item.get("role", "") in _chapter_title_roles
+    )
+
+    # title_role이 grammar에도 등장하는지 (안전장치)
+    _title_role_in_grammar = False
+    _per_type_grammar = structure.get("template_grammar", {}).get("per_type", {})
+    for _tg in _per_type_grammar.values():
+        for _tr in _chapter_title_roles:
+            if _tr in _tg.get("grammar", {}):
+                _title_role_in_grammar = True
+                break
+
+    _chapter_title_counter = 0
+
+    def _generate_chapter_title_marker(policy_type: str, idx: int, markers: list) -> str:
+        """chapter title 전용 marker 생성. roman_sequence 포함."""
+        if policy_type == "roman_sequence":
+            # Ⅰ=0x2160 ... Ⅻ=0x216B (1~12)
+            if 1 <= idx <= 12:
+                return chr(0x215F + idx)
+        if policy_type == "arabic_sequence":
+            return str(idx)
+        # 기타 sequence: markers 배열 범위 내면 사용
+        if idx <= len(markers):
+            return markers[idx - 1]
+        log.warning(
+            f"chapter_title_marker: {policy_type} index={idx} "
+            f"exceeds generatable range, falling back to last observed"
+        )
+        return markers[-1] if markers else str(idx)
+
+    def _normalize_chapter_title(text: str, role: str, chapter_idx: int,
+                                  policy: dict | None) -> tuple[str, dict]:
+        """chapter title leading marker를 strip하고 template marker로 교체."""
+        import re as _re
+
+        base_log = {
+            "is_chapter_title": True,
+            "chapter_title_index": chapter_idx,
+            "original_text": text[:80],
+            "role": role,
+        }
+
+        # 안전장치: title_role이 grammar에도 등장
+        if _title_role_in_grammar:
+            return text, {**base_log,
+                "strip_strategy": "skipped_title_role_in_grammar",
+                "rewrite_applied": False,
+                "detected_leading_marker": "", "expected_marker": "",
+                "stripped_content": text[:80], "rewritten_text": text[:80],
+                "marker_policy_type": "", "separator_used": "",
+                "possible_marker_duplication": False,
+            }
+
+        # policy 없거나 non-sequence
+        if not policy:
+            return text, {**base_log,
+                "strip_strategy": "skipped_no_policy",
+                "rewrite_applied": False,
+                "detected_leading_marker": "", "expected_marker": "",
+                "stripped_content": text[:80], "rewritten_text": text[:80],
+                "marker_policy_type": "", "separator_used": "",
+                "possible_marker_duplication": False,
+            }
+
+        policy_type = policy.get("policy_type", "")
+        if policy.get("style") != "sequence":
+            return text, {**base_log,
+                "strip_strategy": "skipped_not_sequence",
+                "rewrite_applied": False,
+                "detected_leading_marker": "", "expected_marker": "",
+                "stripped_content": text[:80], "rewritten_text": text[:80],
+                "marker_policy_type": policy_type, "separator_used": "",
+                "possible_marker_duplication": False,
+            }
+
+        markers = policy.get("markers", [])
+        sep = policy.get("separator", " ")
+
+        # expected marker
+        if chapter_idx <= len(markers):
+            expected = markers[chapter_idx - 1]
+        else:
+            expected = _generate_chapter_title_marker(policy_type, chapter_idx, markers)
+
+        # strip
+        stripped = text.lstrip()
+        content = stripped
+        detected = ""
+        strip_strategy = "none"
+
+        # 1순위: template known marker
+        for m in sorted(markers, key=len, reverse=True):
+            if stripped.startswith(m):
+                detected = m
+                content = stripped[len(m):].lstrip(". \t")
+                strip_strategy = "template_marker"
+                break
+
+        # 2순위: arabic fallback (number <= total_chapter_titles)
+        if not detected:
+            m_dot = _re.match(r'^(\d+)\s*[.)]\s*', stripped)
+            m_space = _re.match(r'^(\d+)\s+', stripped)
+            match = m_dot or m_space
+            if match:
+                num = int(match.group(1))
+                if 1 <= num <= _total_chapter_titles:
+                    detected = match.group(1)
+                    content = stripped[match.end():]
+                    strip_strategy = "arabic_cap_limited"
+
+        # possible_marker_duplication: strip 실패 + 앞이 숫자
+        possible_dup = False
+        if not detected and stripped and stripped[0].isdigit():
+            possible_dup = True
+
+        rewritten = f"{expected}{sep}{content}" if content else f"{expected}{sep}{stripped}"
+        applied = rewritten != text
+
+        return rewritten, {**base_log,
+            "strip_strategy": strip_strategy,
+            "detected_leading_marker": detected,
+            "expected_marker": expected,
+            "stripped_content": content[:80],
+            "rewritten_text": rewritten[:80],
+            "rewrite_applied": applied,
+            "marker_policy_type": policy_type,
+            "separator_used": sep,
+            "possible_marker_duplication": possible_dup,
+        }
+
     def _generate_sequence_marker(policy_type: str, sib_idx: int, markers: list) -> str:
         """markers 배열을 초과한 sibling_index에 대해 규칙형 마커를 직접 생성."""
         if policy_type == "arabic_sequence":
@@ -1073,10 +1206,17 @@ def assemble_hwpx_hybrid(
         node = _node_lookup.get(body_item_idx)
         ch_idx = _chapter_idx_lookup.get(body_item_idx)
 
-        # chapter title → skip (marker policy 대상 아님) + fallback counter 리셋
+        # chapter title → 전용 normalization + fallback counter 리셋
         if role in _chapter_title_roles:
             _fallback_counter.clear()
-            return text
+            nonlocal _chapter_title_counter
+            _chapter_title_counter += 1
+            rewritten, log_entry = _normalize_chapter_title(
+                text, role, _chapter_title_counter,
+                _marker_policies.get(role),
+            )
+            _marker_rewrite_log.append(log_entry)
+            return rewritten
 
         policy = _marker_policies.get(role)
         if not policy:
