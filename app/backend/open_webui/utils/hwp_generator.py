@@ -1149,6 +1149,8 @@ def assemble_hwpx_hybrid(
     _node_lookup: dict[int, dict] = {}  # body_items index → tree node
     _chapter_idx_lookup: dict[int, int] = {}  # body_items index → chapter_idx
     _tree_available = False
+    _tree_split_projection = None  # 9.3
+    _tree_scan_agreement = None  # 9.3
 
     # rewrite alignment tracking (C2/C3 structured logging)
     _rewrite_alignment = {
@@ -1178,6 +1180,55 @@ def assemble_hwpx_hybrid(
             chapters_split.append((current_start, current_indices))
 
         _rewrite_alignment["body_split_count"] = len(chapters_split)
+
+        # 9.3: tree split projection — tree node count 기반 순차 분할과 title-scan 비교
+        _tree_proj_indices = []
+        _offset = 0
+        for _ci, _nodes in enumerate(chapter_trees):
+            _n = len(_nodes)
+            _tree_proj_indices.append(list(range(_offset, _offset + _n)))
+            _offset += _n
+        _tree_split_projection = _tree_proj_indices
+
+        _title_scan_indices = []
+        for _ts_title, _ts_body in chapters_split:
+            _title_scan_indices.append([_ts_title] + _ts_body)
+
+        _ts_ch_match = len(_tree_proj_indices) == len(_title_scan_indices)
+        _ts_per_ch = []
+        _ts_fully = _ts_ch_match
+        if _ts_ch_match:
+            for _ci in range(len(_tree_proj_indices)):
+                _t_idx = _tree_proj_indices[_ci]
+                _s_idx = _title_scan_indices[_ci]
+                _idx_match = _t_idx == _s_idx
+
+                _title_role_ok = False
+                if _t_idx and _t_idx[0] < len(body_items):
+                    _title_role_ok = body_items[_t_idx[0]].get("role", "") in _chapter_title_roles
+
+                _title_text_ok = False
+                if _t_idx and _ci < len(chapter_trees) and chapter_trees[_ci]:
+                    _tree_title = chapter_trees[_ci][0].get("text", "")
+                    _body_title = body_items[_t_idx[0]].get("text", "") if _t_idx[0] < len(body_items) else ""
+                    _title_text_ok = _tree_title == _body_title
+
+                _ts_per_ch.append({
+                    "chapter_idx": _ci,
+                    "index_sequence_match": _idx_match,
+                    "title_role_match": _title_role_ok,
+                    "title_text_match": _title_text_ok,
+                    "tree_count": len(_t_idx),
+                    "scan_count": len(_s_idx),
+                })
+                if not _idx_match:
+                    _ts_fully = False
+
+        _tree_scan_agreement = {
+            "chapter_count_match": _ts_ch_match,
+            "per_chapter": _ts_per_ch,
+            "fully_agreed": _ts_fully,
+        }
 
         # 매칭: chapter_trees[ci]의 nodes vs chapters_split[ci]
         # 8.0b: title node가 chapter_trees에 포함되므로 title_bi도 매핑
@@ -1613,6 +1664,30 @@ def assemble_hwpx_hybrid(
 
     # marker rewrite log + alignment를 structure에 저장 (debug용)
     changed = sum(1 for r in _marker_rewrite_log if r.get("changed"))
+
+    # 9.5: chapter_split / marker_rewrite nested keys (기존 top-level key 유지)
+    _rewrite_alignment["chapter_split"] = {
+        "split_method": "title_scan",
+        "tree_split_available": _tree_split_projection is not None,
+        "tree_scan_agreement": _tree_scan_agreement,
+    }
+    _mr_total = len(_marker_rewrite_log)
+    _mr_title = sum(1 for r in _marker_rewrite_log if r.get("is_chapter_title"))
+    _mr_applied = sum(1 for r in _marker_rewrite_log if r.get("rewrite_applied"))
+    _mr_skip = {}
+    for r in _marker_rewrite_log:
+        sr = r.get("skip_reason")
+        if sr:
+            _mr_skip[sr] = _mr_skip.get(sr, 0) + 1
+    _rewrite_alignment["marker_rewrite"] = {
+        "total_entries": _mr_total,
+        "chapter_title_entries": _mr_title,
+        "body_entries": _mr_total - _mr_title,
+        "applied_count": _mr_applied,
+        "not_applied_count": _mr_total - _mr_applied,
+        "skip_reason_counts": _mr_skip,
+    }
+
     structure["_marker_rewrite_log"] = _marker_rewrite_log
     structure["_rewrite_alignment"] = _rewrite_alignment
     log.info(
