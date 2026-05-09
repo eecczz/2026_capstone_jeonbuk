@@ -6324,11 +6324,12 @@ def validate_text_quality(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 _VALIDATION_CHECKS = [
-    # --- blocker (gate_ready=True) ---
+    # --- blocker (gate_ready=True, gate_enabled=False for contract phase) ---
     {
         "check_id": "A1", "name": "wrong_type_assignment",
         "source_file": "09", "owner_stage": "2a_type_selection",
         "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "gate_enabled": False,
         "false_positive_risk": "low",
         "violation_type": "wrong_type_assignment",
         "suggested_action": "inspect_type_selection",
@@ -6338,6 +6339,7 @@ _VALIDATION_CHECKS = [
         "check_id": "A2", "name": "empty_role",
         "source_file": "09", "owner_stage": "2b_generation",
         "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "gate_enabled": False,
         "false_positive_risk": "none",
         "violation_type": "empty_role",
         "suggested_action": "fix_generation",
@@ -6347,6 +6349,7 @@ _VALIDATION_CHECKS = [
         "check_id": "A3", "name": "unknown_role",
         "source_file": "09", "owner_stage": "2b_generation",
         "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "gate_enabled": False,
         "false_positive_risk": "low",
         "violation_type": "unknown_role",
         "suggested_action": "fix_generation",
@@ -6356,6 +6359,7 @@ _VALIDATION_CHECKS = [
         "check_id": "A5", "name": "no_valid_parent",
         "source_file": "09", "owner_stage": "2b_generation",
         "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "gate_enabled": False,
         "false_positive_risk": "low",
         "violation_type": "no_valid_parent",
         "suggested_action": "fix_generation",
@@ -6365,16 +6369,29 @@ _VALIDATION_CHECKS = [
         "check_id": "A7", "name": "invalid_root_child",
         "source_file": "09", "owner_stage": "2b_generation",
         "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "gate_enabled": False,
         "false_positive_risk": "low",
         "violation_type": "invalid_root_child",
         "suggested_action": "fix_generation",
         "notes": "ROOT 직속에 부적절한 role",
+    },
+    # --- blocker (assemble) ---
+    {
+        "check_id": "C1", "name": "assemble_command_fail",
+        "source_file": "10", "owner_stage": "assemble",
+        "severity": "blocker", "gate_candidate": True, "gate_ready": True,
+        "gate_enabled": False,
+        "false_positive_risk": "none",
+        "violation_type": None,
+        "suggested_action": "assemble_fix",
+        "notes": "assemble 명령 실행 실패 → 출력 손상 가능",
     },
     # --- warning ---
     {
         "check_id": "A4", "name": "singleton_duplicate",
         "source_file": "09", "owner_stage": "2b_generation",
         "severity": "warning", "gate_candidate": True, "gate_ready": False,
+        "gate_enabled": False,
         "false_positive_risk": "medium",
         "violation_type": "singleton_duplicate",
         "suggested_action": "inspect_grammar",
@@ -6384,6 +6401,7 @@ _VALIDATION_CHECKS = [
         "check_id": "A6", "name": "missing_required_role",
         "source_file": "09", "owner_stage": "2b_generation",
         "severity": "warning", "gate_candidate": True, "gate_ready": False,
+        "gate_enabled": False,
         "false_positive_risk": "high",
         "violation_type": "missing_required_role",
         "suggested_action": "inspect_grammar",
@@ -6391,27 +6409,21 @@ _VALIDATION_CHECKS = [
     },
 ]
 
-# Check definitions that are NOT grammar-violation based
-_CHECK_C1 = {
-    "check_id": "C1", "name": "assemble_command_fail",
-    "source_file": "10", "owner_stage": "assemble",
-    "severity": "warning", "gate_candidate": True, "gate_ready": True,
-    "false_positive_risk": "none",
-    "suggested_action": "assemble_fix",
-    "notes": "전멸=exception 이미 있음. 부분 실패 gate 추가 가능",
-}
+# Check definitions that are NOT in _VALIDATION_CHECKS (different collection logic)
 _CHECK_E1 = {
     "check_id": "E1", "name": "heading_too_long",
     "source_file": "09", "owner_stage": "2b_generation",
     "severity": "warning", "gate_candidate": False, "gate_ready": False,
+    "gate_enabled": False,
     "false_positive_risk": "high",
     "suggested_action": "inspect_text_type_classification",
-    "notes": "rc11 오분류 문제 — text_type 보정 필요",
+    "notes": "heading text_type 분류 role 중 장문 statement 성격 가능성 — role semantics 기반 재검토 필요",
 }
 _CHECK_B1 = {
     "check_id": "B1", "name": "marker_wrong_sequence_pre",
     "source_file": "09b", "owner_stage": "2b_generation",
     "severity": "watch", "gate_candidate": False, "gate_ready": False,
+    "gate_enabled": False,
     "false_positive_risk": "high",
     "suggested_action": "observe",
     "notes": "rewrite 전 분석. 대량 발생이 정상. B3 구현 후 비교 기준",
@@ -6420,6 +6432,7 @@ _CHECK_C2 = {
     "check_id": "C2", "name": "chapter_count_mismatch",
     "source_file": "10", "owner_stage": "assemble",
     "severity": "watch", "gate_candidate": False, "gate_ready": False,
+    "gate_enabled": False,
     "false_positive_risk": "low",
     "suggested_action": "observe",
     "notes": "body_split vs tree chapter count 불일치",
@@ -6428,6 +6441,7 @@ _CHECK_C3 = {
     "check_id": "C3", "name": "node_count_mismatch",
     "source_file": "10", "owner_stage": "assemble",
     "severity": "watch", "gate_candidate": False, "gate_ready": False,
+    "gate_enabled": False,
     "false_positive_risk": "low",
     "suggested_action": "observe",
     "notes": "chapter 내 body vs tree node count 불일치",
@@ -6436,9 +6450,10 @@ _CHECK_B3 = {
     "check_id": "B3", "name": "marker_post_rewrite_mismatch",
     "source_file": "(미구현)", "owner_stage": "marker_rewrite",
     "severity": "later", "gate_candidate": True, "gate_ready": False,
+    "gate_enabled": False,
     "false_positive_risk": "low",
     "suggested_action": "implement",
-    "notes": "placeholder — rewrite 후 검증. 구현 시 가장 유력한 gate 후보",
+    "notes": "placeholder — rewrite 후 marker 검증 후보. 구현 후 false positive 평가 필요",
 }
 
 
@@ -6461,7 +6476,7 @@ def build_validation_summary(
 
     checks = []
 
-    # ── A-group: grammar violations (09) ──
+    # ── A-group + C1: grammar violations (09) + assemble fail (10) ──
     all_violations = []
     chapters_checked = 0
     total_items_checked = 0
@@ -6476,39 +6491,33 @@ def build_validation_summary(
 
     for check_def in _VALIDATION_CHECKS:
         vtype = check_def["violation_type"]
+
+        # C1 (assemble_command_fail) — violation_type=None, 별도 수집
+        if vtype is None and check_def["check_id"] == "C1":
+            c1_fail = 0
+            c1_checked = 0
+            if assemble_result:
+                c1_fail = assemble_result.get("fail_count", 0)
+                c1_checked = assemble_result.get("success_count", 0) + c1_fail
+            checks.append({
+                **{k: v for k, v in check_def.items() if k != "violation_type"},
+                "observed_count": c1_fail,
+                "checked_count": c1_checked,
+                "affected_chapters": [],
+                "evidence_fields": ["fail_count", "errors[]"],
+            })
+            continue
+
         matched = [v for v in all_violations if v.get("type") == vtype]
         affected = sorted({v["_chapter_idx"] for v in matched if v.get("_chapter_idx") is not None})
         is_item_level = vtype not in ("wrong_type_assignment", "missing_required_role")
         checks.append({
-            "check_id": check_def["check_id"],
-            "name": check_def["name"],
-            "source_file": check_def["source_file"],
-            "owner_stage": check_def["owner_stage"],
-            "severity": check_def["severity"],
-            "gate_candidate": check_def["gate_candidate"],
-            "gate_ready": check_def["gate_ready"],
-            "false_positive_risk": check_def["false_positive_risk"],
+            **{k: v for k, v in check_def.items() if k != "violation_type"},
             "observed_count": len(matched),
             "checked_count": total_items_checked if is_item_level else chapters_checked,
             "affected_chapters": affected,
             "evidence_fields": [f"chapters[].violations[?type=='{vtype}']"],
-            "suggested_action": check_def["suggested_action"],
-            "notes": check_def["notes"],
         })
-
-    # ── C1: assemble command fail (10) ──
-    c1_fail = 0
-    c1_checked = 0
-    if assemble_result:
-        c1_fail = assemble_result.get("fail_count", 0)
-        c1_checked = assemble_result.get("success_count", 0) + c1_fail
-    checks.append({
-        **{k: v for k, v in _CHECK_C1.items()},
-        "observed_count": c1_fail,
-        "checked_count": c1_checked,
-        "affected_chapters": [],
-        "evidence_fields": ["fail_count", "errors[]"],
-    })
 
     # ── E1: heading_too_long (09) ──
     e1_count = 0
@@ -6520,7 +6529,7 @@ def build_validation_summary(
                     e1_count += 1
                     e1_chapters.add(ch.get("idx"))
     checks.append({
-        **{k: v for k, v in _CHECK_E1.items()},
+        **_CHECK_E1,
         "observed_count": e1_count,
         "checked_count": total_items_checked,
         "affected_chapters": sorted(e1_chapters),
@@ -6539,7 +6548,7 @@ def build_validation_summary(
                     b1_count += 1
                     b1_chapters.add(ch.get("idx"))
     checks.append({
-        **{k: v for k, v in _CHECK_B1.items()},
+        **_CHECK_B1,
         "observed_count": b1_count,
         "checked_count": b1_checked,
         "affected_chapters": sorted(b1_chapters),
@@ -6548,35 +6557,38 @@ def build_validation_summary(
 
     # ── C2/C3: rewrite alignment (10) ──
     alignment = {}
+    has_alignment_data = False
     if assemble_result:
         alignment = assemble_result.get("rewrite_alignment", {})
+        has_alignment_data = bool(alignment)
 
     c2_observed = 0 if alignment.get("chapter_count_match", True) else 1
     checks.append({
-        **{k: v for k, v in _CHECK_C2.items()},
-        "observed_count": c2_observed,
-        "checked_count": 1,
+        **_CHECK_C2,
+        "check_status": "checked" if has_alignment_data else "skipped_no_data",
+        "observed_count": c2_observed if has_alignment_data else None,
+        "checked_count": 1 if has_alignment_data else 0,
         "affected_chapters": [],
         "evidence_fields": ["rewrite_alignment.chapter_count_match",
                             "rewrite_alignment.body_split_count",
                             "rewrite_alignment.tree_chapter_count"],
     })
 
-    c3_mismatched = [
-        pc for pc in alignment.get("per_chapter", [])
-        if not pc.get("aligned", True)
-    ]
+    per_chapter = alignment.get("per_chapter", [])
+    c3_mismatched = [pc for pc in per_chapter if not pc.get("aligned", True)]
     checks.append({
-        **{k: v for k, v in _CHECK_C3.items()},
-        "observed_count": len(c3_mismatched),
-        "checked_count": len(alignment.get("per_chapter", [])) or total_chapters,
+        **_CHECK_C3,
+        "check_status": "checked" if per_chapter else "skipped_no_data",
+        "observed_count": len(c3_mismatched) if per_chapter else None,
+        "checked_count": len(per_chapter) if per_chapter else 0,
         "affected_chapters": [pc["chapter_idx"] for pc in c3_mismatched],
         "evidence_fields": ["rewrite_alignment.per_chapter[?aligned==false]"],
     })
 
     # ── B3: placeholder ──
     checks.append({
-        **{k: v for k, v in _CHECK_B3.items()},
+        **_CHECK_B3,
+        "check_status": "not_implemented",
         "observed_count": None,
         "checked_count": None,
         "affected_chapters": None,
