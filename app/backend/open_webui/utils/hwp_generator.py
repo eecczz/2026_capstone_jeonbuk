@@ -943,11 +943,61 @@ def assemble_hwpx_hybrid(
         for child in list(sec_el):
             _elem_to_section[child] = sec_el
 
+    # paragraph index → section index 매핑 (preserved/residual 분류용)
+    _para_to_sec_idx: dict[int, int] = {}
+    for i, p in enumerate(doc.paragraphs):
+        owning = _elem_to_section.get(p.element)
+        if owning is not None:
+            for si, sec in enumerate(_all_sections):
+                if sec.element is owning:
+                    _para_to_sec_idx[i] = si
+                    break
+
+    # secPr carrier 감지 (section layout 경계)
+    _secpr_carriers: set[int] = set()
+    for i, p in enumerate(doc.paragraphs):
+        if p.element.find(f".//{NS}secPr") is not None:
+            _secpr_carriers.add(i)
+
+    # real_idx → para_info 역매핑 (preserved 분류 시 O(1) 조회)
+    _real_idx_to_info: dict[int, dict] = {}
+    for pi in paragraphs_info:
+        ridx = _to_real_idx(pi.get("idx", -1))
+        if ridx >= 0:
+            _real_idx_to_info[ridx] = pi
+
+    # header role indices (header_data에서 text 배정된 role의 real idx)
+    _header_role_indices: set[int] = set()
+    for rn, txt in header_data.items():
+        if txt:
+            ridx = role_to_first_idx.get(rn, -1)
+            if 0 <= ridx < len(doc.paragraphs):
+                _header_role_indices.add(ridx)
+
     body_elements = []
     _remove_per_section: dict[int, int] = {}  # section_idx → remove count
+    _body_para_indices: set[int] = set()
     for i, p in enumerate(doc.paragraphs):
         if i not in header_indices:
             body_elements.append(p.element)
+            _body_para_indices.add(i)
+
+    # secPr carrier warning: body로 분류되어 삭제될 secPr carrier
+    _secpr_carrier_warnings = []
+    for pidx in sorted(_secpr_carriers & _body_para_indices):
+        _w_info = _real_idx_to_info.get(pidx, {})
+        _secpr_carrier_warnings.append({
+            "para_idx": pidx,
+            "section_idx": _para_to_sec_idx.get(pidx, -1),
+            "role": _w_info.get("role", ""),
+            "text_preview": (_w_info.get("text", "") or "")[:60],
+            "status": "will_be_removed",
+        })
+    if _secpr_carrier_warnings:
+        log.warning(
+            f"assemble: {len(_secpr_carrier_warnings)} secPr carrier(s) "
+            f"in body_elements — section layout may be lost"
+        )
 
     for elem in body_elements:
         owning_section = _elem_to_section.get(elem)
@@ -972,9 +1022,46 @@ def assemble_hwpx_hybrid(
         f"sections={_section_count}, remove_per_section={dict(_remove_per_section)}"
     )
 
+    # preserved/residual candidate 분류 (section별, remove 후 남은 문단)
+    _preserved_per_section: dict[str, list] = {}
+    _residual_candidates: list[dict] = []
+    for i in sorted(header_indices):
+        if i >= len(doc.paragraphs):
+            continue
+        sec_idx = _para_to_sec_idx.get(i, 0)
+        p_info = _real_idx_to_info.get(i, {})
+        role = p_info.get("role", "")
+        text_preview = (p_info.get("text", "") or "")[:60]
+        has_secpr = i in _secpr_carriers
+
+        if i in _header_role_indices:
+            reason = "preserved_header"
+        elif has_secpr:
+            reason = "preserved_secPr_carrier"
+        elif not text_preview.strip():
+            reason = "spacer_candidate"
+        else:
+            reason = "body_residual_candidate"
+
+        entry = {
+            "para_idx": i,
+            "section_idx": sec_idx,
+            "role": role,
+            "text_preview": text_preview,
+            "has_secPr": has_secpr,
+            "is_level0_skip": _is_skip(p_info) if p_info else False,
+            "is_first_para": i == 0,
+            "reason": reason,
+        }
+        sec_key = str(sec_idx)
+        if sec_key not in _preserved_per_section:
+            _preserved_per_section[sec_key] = []
+        _preserved_per_section[sec_key].append(entry)
+        if reason in ("spacer_candidate", "body_residual_candidate"):
+            _residual_candidates.append(entry)
+
     # ── 5단계: body 항목으로 문서 재조립 (format_rules 기반 indent + blank_rules 기반 blank) ──
     # append target: remove가 가장 많이 발생한 section (=원래 body가 있던 section)
-    # TODO(8.0b+): section-aware append — chapter/role별로 원래 소속 section에 append
     if _remove_per_section:
         _target_sec_idx = max(_remove_per_section, key=_remove_per_section.get)
     else:
@@ -984,6 +1071,9 @@ def assemble_hwpx_hybrid(
         "section_count": _section_count,
         "remove_per_section": _remove_per_section,
         "append_target_section": _target_sec_idx,
+        "preserved_per_section": _preserved_per_section,
+        "residual_candidates": _residual_candidates,
+        "secpr_carrier_warnings": _secpr_carrier_warnings,
     }
     body_items = content.get("body", [])
     prev_role = None

@@ -8413,6 +8413,7 @@ def write_stage_debug_files(
             "output_size": assembly.get("output_size", 0),
             "marker_rewrite_log": assembly.get("marker_rewrite_log", []),
             "rewrite_alignment": assembly.get("rewrite_alignment", {}),
+            "section_info": assembly.get("section_info"),
         })
     else:
         _skip("10_assemble_result.json")
@@ -8469,7 +8470,7 @@ def write_stage_debug_files(
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
         1 for sf in section_fill
-        if sf.get("grammar_validation", {}).get("success")
+        if (sf.get("grammar_validation") or {}).get("success")
     )
     sf_fail = sum(
         1 for sf in section_fill
@@ -8490,6 +8491,17 @@ def write_stage_debug_files(
     else:
         _cv_summary = {"cache_validation_present": False}
 
+    # section_info 요약
+    _si = assembly.get("section_info") if assembly else None
+    _si_summary = {}
+    if _si:
+        _si_summary = {
+            "section_count": _si.get("section_count", 0),
+            "append_target_section": _si.get("append_target_section", 0),
+            "secpr_carrier_warning_count": len(_si.get("secpr_carrier_warnings", [])),
+            "residual_candidate_count": len(_si.get("residual_candidates", [])),
+        }
+
     _write("99_debug_summary.json", {
         "timestamp": datetime.now().isoformat(),
         "model": debug_payload.get("model", ""),
@@ -8504,6 +8516,7 @@ def write_stage_debug_files(
         "assembly_success": assembly.get("success_count", 0),
         "assembly_fail": assembly.get("fail_count", 0),
         **_cv_summary,
+        **_si_summary,
     })
 
     log.info(
