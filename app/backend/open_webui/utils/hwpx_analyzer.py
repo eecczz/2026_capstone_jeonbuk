@@ -9360,11 +9360,9 @@ def normalize_section_items(
     2b parse 결과를 시스템이 소비 가능한 구조로 정규화합니다.
 
     Mechanical transform만 수행합니다:
-    - id: 0-based sequential 재부여
-    - parent_id: int | None 으로 타입 정리
-    - 누락 필드 기본값 설정
-    - chapter_context 부착
-    - normalize_diff 생성 (AI raw vs normalized 차이)
+    - Pass 1: AI id → 0-based sequential 재부여 + parent_id remap
+    - Pass 2: parent_id 타입 정리, 누락 필드 기본값
+    - Pass 3 (8.0b): title node 주입 (id=0), body id +1 shift, parent_id null→0
 
     판단/교정은 하지 않습니다 (validate_ai_parent_ids 책임).
 
@@ -9377,7 +9375,7 @@ def normalize_section_items(
 
     Returns:
         {
-            "items": [...],           # normalized items
+            "items": [...],           # normalized items (title node 포함)
             "raw_items": [...],       # AI original (deepcopy)
             "chapter_context": {...}, # chapter root context
             "normalize_diff": {...},  # AI raw vs normalized 차이
@@ -9393,11 +9391,11 @@ def normalize_section_items(
     parent_id_missing = 0
     parent_id_type_error = 0
     parent_id_remapped = 0
+    parent_id_null_to_title = 0
     has_ai_ids = False
     has_ai_parent_ids = False
 
-    # --- Pass 1: AI id → new id 매핑 구축 ---
-    # AI가 비순차 id를 주면 parent_id도 remap 필요
+    # --- Pass 1: AI id → 0-based sequential 매핑 구축 ---
     old_to_new: dict[int, int] = {}
     for i, item in enumerate(raw_items):
         ai_id = item.get("id")
@@ -9413,13 +9411,12 @@ def normalize_section_items(
 
     needs_remap = len(old_to_new) > 0
 
-    # --- Pass 2: normalize ---
-    normalized = []
+    # --- Pass 2: normalize body items (0-based) ---
+    body_normalized = []
     for i, item in enumerate(raw_items):
         out = {"role": item.get("role", ""), "text": item.get("text", "")}
-        out["id"] = i
+        out["id"] = i  # 0-based (Pass 3에서 +1 shift)
 
-        # --- parent_id ---
         raw_pid = item.get("parent_id", "_MISSING_")
         if raw_pid == "_MISSING_":
             parent_id_missing += 1
@@ -9429,7 +9426,6 @@ def normalize_section_items(
             has_ai_parent_ids = True
             pid, coerce_error = _coerce_parent_id(raw_pid)
             if coerce_error:
-                # int 변환 불가능한 값 (e.g. "abc") → 타입 오류로 기록
                 parent_id_type_error += 1
                 out["parent_id"] = None
                 out["_parent_id_type_error"] = True
@@ -9437,7 +9433,6 @@ def normalize_section_items(
             else:
                 if pid != raw_pid and raw_pid is not None:
                     parent_id_coerced += 1
-                # remap: AI의 old parent_id → new sequential id
                 if needs_remap and pid is not None:
                     new_pid = old_to_new.get(pid, pid)
                     if new_pid != pid:
@@ -9446,15 +9441,39 @@ def normalize_section_items(
                 else:
                     out["parent_id"] = pid
 
-        normalized.append(out)
+        body_normalized.append(out)
+
+    # --- Pass 3 (8.0b): title node 주입 + id shift + null→0 remap ---
+    # title node: id=0, parent_id=null, is_chapter_title=true
+    title_node = {
+        "id": 0,
+        "parent_id": None,
+        "role": title_role,
+        "text": chapter_title,
+        "is_chapter_title": True,
+    }
+
+    # body items: id +1 shift, parent_id도 +1 (non-null), null→0 (title child)
+    for item in body_normalized:
+        item["id"] = item["id"] + 1
+        pid = item["parent_id"]
+        if pid is None:
+            # null → 0 (title의 child) — mechanical convention 적용
+            # _parent_id_missing이나 _parent_id_type_error인 경우에도 0으로
+            item["parent_id"] = 0
+            parent_id_null_to_title += 1
+        else:
+            item["parent_id"] = pid + 1
+
+    normalized = [title_node] + body_normalized
 
     chapter_context = {
         "chapter_idx": chapter_idx,
         "chapter_title": chapter_title,
         "chapter_type": chapter_type,
         "title_role": title_role,
-        "root_mode": "implicit_title_context",
-        "title_node_in_tree": False,
+        "root_mode": "explicit_title_root",
+        "title_node_in_tree": True,
     }
 
     normalize_diff = {
@@ -9463,9 +9482,11 @@ def normalize_section_items(
         "parent_id_missing_count": parent_id_missing,
         "parent_id_type_error_count": parent_id_type_error,
         "parent_id_remapped_count": parent_id_remapped,
+        "parent_id_null_to_title_count": parent_id_null_to_title,
         "has_ai_ids": has_ai_ids,
         "has_ai_parent_ids": has_ai_parent_ids,
         "item_count": len(normalized),
+        "ai_body_item_count": len(body_normalized),
     }
 
     return {
@@ -9506,18 +9527,22 @@ def validate_ai_parent_ids(
     title_role: str = "",
 ) -> dict:
     """
-    AI가 제공한 parent_id를 grammar 기반으로 검증합니다.
+    AI가 제공한 parent_id를 grammar 기반으로 검증합니다 (8.0b).
 
-    각 item의 parent_id에 대해:
+    items[0]은 normalize가 주입한 title node (is_chapter_title=True).
+    title node는 AI 지표에서 분리합니다.
+
+    Body items에 대해:
     - structural checks: self_parent, out_of_range, cycle
     - grammar checks: parent의 allowed_children에 이 role이 있는지
-    - convention checks: root_role↔parent_id=null 일치
+    - convention checks (8.0b): parent_id=null은 title만 허용,
+      root_role은 parent_id=0 (title) 기대
 
     invalid item은 마킹만 합니다 (교정은 fallback 책임).
     기존 reconstruct_tree_from_flat 결과와 agreement도 비교합니다.
 
     Args:
-        items: normalize_section_items 반환의 "items"
+        items: normalize_section_items 반환의 "items" (title node 포함)
         type_grammar: {role: {"allowed_children": [...], ...}}
         root_roles: chapter title 직속 자식으로 허용되는 role 목록
         title_role: chapter title role
@@ -9530,26 +9555,38 @@ def validate_ai_parent_ids(
         }
     """
     n = len(items)
+    # body items = title 제외
+    body_items_list = [it for it in items if not it.get("is_chapter_title")]
+    n_body = len(body_items_list)
 
-    # --- reconstruct 결과 생성 (agreement 비교용) ---
+    # --- reconstruct 결과 생성 (agreement 비교용, body-only) ---
     # Phase 1 한정: 매 호출마다 reconstruct도 실행하여 diff.
     # Phase 2에서 fallback 졸업 후 제거 대상.
-    flat_for_recon = [{"role": it["role"], "text": it["text"]} for it in items]
+    flat_for_recon = [{"role": it["role"], "text": it["text"]} for it in body_items_list]
     recon_result = reconstruct_tree_from_flat(
         flat_for_recon, type_grammar, root_roles, title_role
     )
-    recon_parent_map = {}  # item_id → reconstructed parent_id
+    # reconstruct body-only: id=0~N-1, root parent=None
+    # normalized body: id=1~N, root parent=0 (title)
+    # compare transform: recon id K → norm id K+1, recon parent None → 0, K → K+1
+    recon_parent_map = {}  # norm_id → recon parent (offset-adjusted)
     for node in recon_result.nodes:
-        recon_parent_map[node["id"]] = node.get("parent_id")
+        norm_id = node["id"] + 1  # offset
+        recon_pid = node.get("parent_id")
+        recon_pid_adjusted = 0 if recon_pid is None else recon_pid + 1
+        recon_parent_map[norm_id] = recon_pid_adjusted
 
     # --- parent_id graph 구축 ---
     id_to_role = {it["id"]: it["role"] for it in items}
 
     stats = {
-        "total_items": n,
+        "total_nodes": n,
+        "injected_title_nodes": 0,
+        "ai_body_items": n_body,
         "ai_parent_provided": 0,
         "ai_parent_valid": 0,
         "ai_parent_invalid": 0,
+        "title_parent_valid": 0,
         "fallback_used": 0,
         "fallback_reasons": {
             "missing_parent_id": 0,
@@ -9559,20 +9596,28 @@ def validate_ai_parent_ids(
             "grammar_violation": 0,
             "root_with_parent": 0,
             "non_root_without_parent": 0,
+            "parent_id_type_error": 0,
         },
         "recovered_by_fallback": 0,
         "agreement_with_reconstruct": 0,
         "disagreement_with_reconstruct": 0,
         "orphan_count": 0,
+        "empty_chapter": n_body == 0,
     }
-
-    # fallback_reasons에 type_error 추가
-    stats["fallback_reasons"]["parent_id_type_error"] = 0
 
     for it in items:
         item_id = it["id"]
         role = it["role"]
         pid = it["parent_id"]
+
+        # --- title node: 별도 검증, AI 지표에서 제외 ---
+        if it.get("is_chapter_title"):
+            stats["injected_title_nodes"] += 1
+            if pid is None:
+                stats["title_parent_valid"] += 1
+            # title node는 AI가 만든 게 아니므로 ai_* 지표 건너뜀
+            continue
+
         is_missing = it.pop("_parent_id_missing", False)
         is_type_error = it.pop("_parent_id_type_error", False)
 
@@ -9597,15 +9642,14 @@ def validate_ai_parent_ids(
                 invalid_reason = "out_of_range"
                 stats["fallback_reasons"]["out_of_range"] += 1
             elif pid >= item_id:
-                # forward reference — parent_id는 자신보다 앞에 와야 함
                 invalid_reason = "out_of_range"
                 stats["fallback_reasons"]["out_of_range"] += 1
             else:
-                # cycle check (follow parent chain)
+                # cycle check
                 visited = {item_id}
                 cur = pid
                 has_cycle = False
-                while cur is not None and cur >= 0 and cur < n:
+                while cur is not None and 0 <= cur < n:
                     if cur in visited:
                         has_cycle = True
                         break
@@ -9616,51 +9660,58 @@ def validate_ai_parent_ids(
                     stats["fallback_reasons"]["cycle"] += 1
 
             # grammar check (only if structural OK)
+            # 8.0b: parent=0 (title) → root_role 검증
             if invalid_reason is None:
-                parent_role = id_to_role.get(pid, "")
-                parent_grammar = type_grammar.get(parent_role, {})
-                allowed = parent_grammar.get("allowed_children", [])
-                if role not in allowed:
-                    invalid_reason = "grammar_violation"
-                    stats["fallback_reasons"]["grammar_violation"] += 1
-
-            # convention: root_role이면 parent=null이어야
-            if invalid_reason is None and role in root_roles:
-                invalid_reason = "root_with_parent"
-                stats["fallback_reasons"]["root_with_parent"] += 1
+                if pid == 0 and items[0].get("is_chapter_title"):
+                    # parent is title → role must be root_role
+                    if role not in root_roles:
+                        invalid_reason = "non_root_as_title_child"
+                        stats["fallback_reasons"].setdefault(
+                            "non_root_as_title_child", 0
+                        )
+                        stats["fallback_reasons"]["non_root_as_title_child"] += 1
+                else:
+                    parent_role = id_to_role.get(pid, "")
+                    parent_grammar = type_grammar.get(parent_role, {})
+                    allowed = parent_grammar.get("allowed_children", [])
+                    if role not in allowed:
+                        invalid_reason = "grammar_violation"
+                        stats["fallback_reasons"]["grammar_violation"] += 1
 
         else:
-            # parent_id = null
+            # parent_id = null — 8.0b: title만 허용, body item은 안 됨
+            # normalize에서 null→0으로 바꿨으므로 여기 오면 normalize 오류
             stats["ai_parent_provided"] += 1
-            if role not in root_roles and role != title_role:
-                invalid_reason = "non_root_without_parent"
-                stats["fallback_reasons"]["non_root_without_parent"] += 1
+            invalid_reason = "non_title_null_parent"
+            stats["fallback_reasons"].setdefault("non_title_null_parent", 0)
+            stats["fallback_reasons"]["non_title_null_parent"] += 1
 
         if invalid_reason:
             it["_invalid_reason"] = invalid_reason
-            it["_ai_parent_id"] = pid  # AI original 보존
+            it["_ai_parent_id"] = pid
             stats["ai_parent_invalid"] += 1
         else:
             stats["ai_parent_valid"] += 1
 
-        # agreement 비교
-        recon_pid = recon_parent_map.get(item_id)
-        if pid == recon_pid:
+        # agreement 비교 (body items만, title 제외)
+        recon_pid_adjusted = recon_parent_map.get(item_id)
+        if pid == recon_pid_adjusted:
             stats["agreement_with_reconstruct"] += 1
         else:
             stats["disagreement_with_reconstruct"] += 1
 
-    # orphan = parent_id=null인 non-root (invalid이든 아니든)
+    # orphan = parent_id=null인 body item (8.0b에서는 발생하면 안 됨)
     stats["orphan_count"] = sum(
         1 for it in items
-        if it["parent_id"] is None and it["role"] not in root_roles
-        and it["role"] != title_role
+        if it["parent_id"] is None and not it.get("is_chapter_title")
     )
 
-    # needs_full_fallback: AI parent가 전혀 없거나 대부분(>50%) invalid
+    # needs_full_fallback: AI parent가 전혀 없거나 body items의 >50% invalid
     ai_provided = stats["ai_parent_provided"]
     ai_invalid = stats["ai_parent_invalid"]
-    needs_full = (ai_provided == 0) or (ai_invalid > n * 0.5)
+    needs_full = (ai_provided == 0 and n_body > 0) or (
+        n_body > 0 and ai_invalid > n_body * 0.5
+    )
 
     stats["fallback_used"] = (
         stats["fallback_reasons"]["missing_parent_id"] + ai_invalid
@@ -9834,11 +9885,12 @@ def process_section_fill_result(
                 parent_id_stats=_pid_stats,
             )
 
-    # 5. grammar validation (기존 호환 — reconstruct 기반)
+    # 5. grammar validation (body-only — reconstruct는 title 불포함)
+    _body_only = [it for it in _norm_items if not it.get("is_chapter_title")]
     _grammar_result = None
-    if _type_grammar:
+    if _type_grammar and _body_only:
         _grammar_result = reconstruct_tree_from_flat(
-            [{"role": it["role"], "text": it["text"]} for it in _norm_items],
+            [{"role": it["role"], "text": it["text"]} for it in _body_only],
             _type_grammar, _root_roles, title_role,
         )
         validate_reconstruction(_grammar_result, _type_grammar, _root_roles)
@@ -9857,17 +9909,41 @@ def process_section_fill_result(
                     f"{_v.role}: {_v.detail[:60]}"
                 )
 
-    # 6. 결과 구성
-    chapter_tree_nodes = (
-        _grammar_result.nodes
-        if _grammar_result and _grammar_result.nodes
-        else None
-    )
+    # 6. 결과 구성 (8.0b: title node 포함)
+    # chapter_tree_nodes: title(id=0) + grammar nodes(id shifted +1)
+    _title_tree_node = {
+        "id": 0, "parent_id": None, "role": title_role,
+        "text": ch_title, "is_chapter_title": True,
+    }
+    if _grammar_result and _grammar_result.nodes:
+        # grammar nodes는 body-only (id=0~N-1) → +1 shift, parent null→0
+        _shifted_grammar_nodes = []
+        for gn in _grammar_result.nodes:
+            shifted = {
+                "id": gn["id"] + 1,
+                "parent_id": (
+                    0 if gn.get("parent_id") is None
+                    else gn["parent_id"] + 1
+                ),
+                "role": gn["role"],
+                "text": gn["text"],
+            }
+            if gn.get("violation"):
+                shifted["violation"] = gn["violation"]
+            _shifted_grammar_nodes.append(shifted)
+        chapter_tree_nodes = [_title_tree_node] + _shifted_grammar_nodes
+    else:
+        # empty chapter 또는 grammar 없음 → title only
+        chapter_tree_nodes = [_title_tree_node]
 
-    items = [{"role": it["role"], "text": it["text"]} for it in _norm_items]
+    # body_items: normalized items에서 role/text 추출 (title 포함, 별도 prepend 없음)
+    body_items = [{"role": it["role"], "text": it["text"]} for it in _norm_items]
 
-    body_items = [{"role": title_role, "text": ch_title}]
-    body_items.extend(items)
+    # debug용 items (body only, title 제외)
+    debug_body_items = [
+        {"role": it["role"], "text": it["text"]}
+        for it in _norm_items if not it.get("is_chapter_title")
+    ]
 
     debug_entry = {
         "idx": ch_idx,
@@ -9876,15 +9952,15 @@ def process_section_fill_result(
         "pattern_roles": list(pattern_roles) if pattern_roles else [],
         "section_pdf_text_len": section_pdf_text_len,
         "llm_raw_response": llm_response,
-        "items_count": len(items),
-        "items": items,
+        "items_count": len(debug_body_items),
+        "items": debug_body_items,
         "grammar_validation": (
             _grammar_result.to_dict() if _grammar_result else None
         ),
         "text_quality_warnings": validate_text_quality(
-            items, role_text_types=role_text_types,
+            debug_body_items, role_text_types=role_text_types,
         ),
-        # 8.0a: parent_id 지표
+        # 8.0a/8.0b: parent_id 지표
         "raw_items": _norm_result.get("raw_items"),
         "normalize_diff": _norm_result.get("normalize_diff"),
         "chapter_context": _norm_result.get("chapter_context"),
@@ -9898,5 +9974,5 @@ def process_section_fill_result(
         "grammar_passed": (
             _grammar_result.success if _grammar_result else True
         ),
-        "items_count": len(items),
+        "items_count": len(debug_body_items),
     }

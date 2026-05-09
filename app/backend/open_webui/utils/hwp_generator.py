@@ -1038,24 +1038,26 @@ def assemble_hwpx_hybrid(
 
         _rewrite_alignment["body_split_count"] = len(chapters_split)
 
-        # 매칭: chapter_trees[ci]의 nodes vs chapters_split[ci]의 body indices
+        # 매칭: chapter_trees[ci]의 nodes vs chapters_split[ci]
+        # 8.0b: title node가 chapter_trees에 포함되므로 title_bi도 매핑
         if len(chapters_split) == len(chapter_trees):
             _rewrite_alignment["chapter_count_match"] = True
             _tree_available = True
             for ci, (title_bi, body_indices) in enumerate(chapters_split):
                 nodes = chapter_trees[ci]
-                aligned = len(body_indices) == len(nodes)
+                # 8.0b: all_indices = title + body → nodes 1:1
+                all_indices = [title_bi] + body_indices
+                aligned = len(all_indices) == len(nodes)
                 _rewrite_alignment["per_chapter"].append({
                     "chapter_idx": ci,
-                    "body_count": len(body_indices),
+                    "body_count": len(all_indices),
                     "tree_count": len(nodes),
                     "aligned": aligned,
                 })
                 if aligned:
-                    for node_idx, bi in enumerate(body_indices):
+                    for node_idx, bi in enumerate(all_indices):
                         _node_lookup[bi] = nodes[node_idx]
                         _chapter_idx_lookup[bi] = ci
-                    _chapter_idx_lookup[title_bi] = ci
                 else:
                     log.warning(
                         f"marker_rewrite: chapter {ci} node count mismatch "
