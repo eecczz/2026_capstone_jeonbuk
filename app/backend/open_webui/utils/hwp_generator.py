@@ -1856,6 +1856,8 @@ def _set_cloned_element_text(elem, text: str, NS: str, is_table_box: bool):
 
 def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
     """XML paragraph 요소 내부의 텍스트를 교체합니다. 첫 run만 남기고 나머지 run 제거."""
+    from lxml import etree
+
     runs = p_elem.findall(f"{NS}run")
     if not runs:
         return
