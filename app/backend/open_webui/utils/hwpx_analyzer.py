@@ -1129,76 +1129,106 @@ def pdf_to_text(pdf_path: str, max_chars: int = 50000) -> str:
 def split_source_by_chapters(
     pdf_text: str,
     chapter_titles: list[str],
-) -> list[str]:
+) -> tuple[list[str], dict]:
     """
     소스 텍스트를 대제목 기준으로 섹션별로 분할합니다.
 
-    각 대제목의 위치를 찾아 그 사이 텍스트를 잘라냅니다.
-    대제목을 찾지 못하면 전체 텍스트를 반환합니다.
-
-    Args:
-        pdf_text: 전체 소스 텍스트
-        chapter_titles: 2a에서 추출한 대제목 리스트 (순서대로)
-
     Returns:
-        각 대제목에 해당하는 텍스트 조각 리스트 (chapter_titles와 같은 길이)
+        (sections, decision_log) 튜플
+        - sections: 각 대제목에 해당하는 텍스트 조각 리스트
+        - decision_log: split 결정 상세 로그 (07b debug용)
     """
+    _src_len = len(pdf_text) if pdf_text else 0
+    _empty_log = {
+        "chapter_count": len(chapter_titles),
+        "source_length": _src_len,
+        "per_chapter": [],
+        "titles_found": 0, "titles_not_found": len(chapter_titles),
+        "fallback_used": False,
+        "source_concentration_ratio": 0,
+    }
     if not chapter_titles or not pdf_text:
-        return [pdf_text] * max(len(chapter_titles), 1)
+        return [pdf_text] * max(len(chapter_titles), 1), _empty_log
 
     # 각 대제목의 소스 텍스트 내 위치 찾기
-    positions = []
+    decisions = []
     for title in chapter_titles:
-        pos = _find_title_in_text(pdf_text, title)
-        positions.append(pos)
+        d = _find_title_in_text(pdf_text, title)
+        d["searched_title"] = title
+        decisions.append(d)
 
     # 위치 기반으로 텍스트 분할
+    positions = [d["position"] for d in decisions]
     sections = []
     for i, pos in enumerate(positions):
         if pos < 0:
-            # 대제목을 못 찾은 경우 → 빈 문자열 (2b에서 전체 소스 fallback 가능)
             sections.append("")
             continue
-
-        # 끝 위치: 다음 대제목의 시작 또는 텍스트 끝
         end_pos = len(pdf_text)
         for j in range(i + 1, len(positions)):
             if positions[j] >= 0:
                 end_pos = positions[j]
                 break
-
         sections.append(pdf_text[pos:end_pos].strip())
 
     # 못 찾은 섹션에 전체 텍스트 할당 (fallback)
+    fallback_used = False
     for i, sec in enumerate(sections):
         if not sec:
             sections[i] = pdf_text
+            fallback_used = True
             log.warning(
                 f"대제목 '{chapter_titles[i]}' 위치를 찾지 못함 → 전체 텍스트 사용"
             )
 
+    # decision log 구성
+    chunk_lengths = [len(s) for s in sections]
+    for i, d in enumerate(decisions):
+        d["chunk_length"] = chunk_lengths[i]
+        d["fallback_applied"] = d["position"] < 0
+
+    titles_found = sum(1 for d in decisions if d["position"] >= 0)
+    max_chunk = max(chunk_lengths) if chunk_lengths else 0
+
+    decision_log = {
+        "chapter_count": len(chapter_titles),
+        "source_length": _src_len,
+        "per_chapter": decisions,
+        "titles_found": titles_found,
+        "titles_not_found": len(chapter_titles) - titles_found,
+        "fallback_used": fallback_used,
+        "source_concentration_ratio": round(max_chunk / _src_len, 3) if _src_len > 0 else 0,
+        "chunk_lengths": chunk_lengths,
+    }
+
     log.info(
         f"소스 텍스트 분할: {len(sections)}개 섹션, "
-        f"길이: {[len(s) for s in sections]}"
+        f"길이: {chunk_lengths}"
     )
-    return sections
+    return sections, decision_log
 
 
-def _find_title_in_text(text: str, title: str) -> int:
+def _find_title_in_text(text: str, title: str) -> dict:
     """
     소스 텍스트에서 대제목 위치를 찾습니다.
     정확 매칭 → 공백 무시 매칭 → 핵심 키워드 매칭 순으로 시도합니다.
 
     Returns:
-        찾은 위치 (0-based), 못 찾으면 -1
+        {"position": int, "match_method": str, "core_form": str, "context_preview": str}
     """
+    result = {"position": -1, "match_method": "none", "core_form": "", "context_preview": ""}
+
+    def _ctx(pos: int) -> str:
+        s, e = max(0, pos - 20), min(len(text), pos + 60)
+        return text[s:e].replace("\n", "\\n")
+
     # 1) 정확한 부분 문자열 매칭
     pos = text.find(title)
     if pos >= 0:
-        return pos
+        result.update(position=pos, match_method="exact", context_preview=_ctx(pos))
+        return result
 
     # 2) 공백/줄바꿈 무시 매칭
-    #    title의 각 문자 사이에 \s* 허용
     escaped_chars = []
     for ch in title.strip():
         if ch in r'\.^$*+?{}[]|()':
@@ -1207,7 +1237,6 @@ def _find_title_in_text(text: str, title: str) -> int:
             escaped_chars.append(r'\s+')
         else:
             escaped_chars.append(re.escape(ch))
-    # 연속 \s+ 합치기
     pattern_parts = []
     for part in escaped_chars:
         if part == r'\s+' and pattern_parts and pattern_parts[-1] == r'\s+':
@@ -1220,21 +1249,23 @@ def _find_title_in_text(text: str, title: str) -> int:
     try:
         m = re.search(ws_pattern, text)
         if m:
-            return m.start()
+            result.update(position=m.start(), match_method="whitespace", context_preview=_ctx(m.start()))
+            return result
     except re.error:
         pass
 
     # 3) 핵심 키워드 매칭 — 마커 제거 후 키워드로 검색
-    #    "Ⅰ. 추진 배경 및 필요성" → "추진 배경 및 필요성"
     core = re.sub(r'^[\sⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ\d.)\-–—]+', '', title).strip()
+    result["core_form"] = core
     if core and len(core) >= 4:
         pos = text.find(core)
         if pos >= 0:
-            # 마커 포함 가능성 → 앞쪽으로 약간 확장
             line_start = text.rfind('\n', max(0, pos - 30), pos)
-            return line_start + 1 if line_start >= 0 else max(0, pos - 20)
+            final_pos = line_start + 1 if line_start >= 0 else max(0, pos - 20)
+            result.update(position=final_pos, match_method="keyword", context_preview=_ctx(final_pos))
+            return result
 
-    return -1
+    return result
 
 
 def pdf_to_base64(pdf_path: str) -> str:
@@ -8291,6 +8322,32 @@ def write_stage_debug_files(
         })
     else:
         _skip("07_2a_type_selection_result.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 07b. Source split decision log
+    # ═══════════════════════════════════════════════════════════════
+    _source_split = debug_payload.get("source_split_decision")
+    if _source_split:
+        # underfill/overfill candidate 집계 (section_fill과 결합)
+        _ss_per_ch = _source_split.get("per_chapter", [])
+        _ss_src_len = _source_split.get("source_length", 0)
+        _underfill = []
+        for _si, _ch_d in enumerate(_ss_per_ch):
+            _sf_entry = section_fill[_si] if _si < len(section_fill) else {}
+            _gen_items = _sf_entry.get("items_count", 0)
+            _ch_d["generated_items"] = _gen_items
+            _chunk = _ch_d.get("chunk_length", 0)
+            if _chunk < 500 and _gen_items == 0:
+                _ch_d["allocation_status"] = "underfill_candidate"
+                _underfill.append(_si)
+            elif _ss_src_len > 0 and _chunk / _ss_src_len > 0.8:
+                _ch_d["allocation_status"] = "overfill_candidate"
+            else:
+                _ch_d["allocation_status"] = "normal"
+        _source_split["underfill_chapters"] = _underfill
+        _write("07b_source_split_decision.json", _source_split)
+    else:
+        _skip("07b_source_split_decision.json")
 
     # ═══════════════════════════════════════════════════════════════
     # 08. 2b generation by chapter

@@ -1284,7 +1284,7 @@ async def generate_hwpx_dynamic_endpoint(
 
     chapter_titles_list = [ch.get("title", "") for ch in chapters]
     if pdf_text_content:
-        source_sections = split_source_by_chapters(pdf_text_content, chapter_titles_list)
+        source_sections, _ = split_source_by_chapters(pdf_text_content, chapter_titles_list)
     else:
         source_sections = [""] * len(chapters)
 
