@@ -7649,7 +7649,7 @@ type의 최상위 role 이름에서 성격 유추:
   "chapters": [
     {
       "type": "type_X",
-      "title": "소스의 chapter 제목",
+      "title": "이 chapter에 배치할 내용의 순수 제목 텍스트 (번호·마커 제외)",
       "optimal_structure": {
         "rationale": "이 chapter 내용이 OOO한 성격이라 XXX 구조가 최적 (소스 근거 언급)",
         "hierarchy": {
