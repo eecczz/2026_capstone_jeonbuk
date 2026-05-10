@@ -9698,6 +9698,7 @@ def build_section_fill_prompt(
     format_rules: dict = None,
     role_text_types: dict | None = None,
     per_type_role_semantics: dict | None = None,
+    content_only_mode: bool = False,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -9887,8 +9888,58 @@ def build_section_fill_prompt(
         text_block += f"{content_text}\n\n반드시 JSON만 출력하세요.\n"
         user_parts = text_block
 
+    system_prompt = SECTION_FILL_PROMPT
+    if content_only_mode:
+        # Phase 2: 마커 규칙 교체 — AI에게 content만 출력하도록 지시
+        _old_marker_block = """## 마커 규칙 (format_rules 참조)
+
+프롬프트에 주어진 **"포맷 규칙"** 섹션을 확인하고 role별 marker_style에 따라:
+
+- `marker_style: fixed` — markers_sample의 **첫 마커**를 매번 사용
+- `marker_style: enumerate` — markers_sample의 **순서**를 유지하고, 샘플 길이를 넘어가면 **자연스럽게 확장**:
+  - 마커 시퀀스 패턴 (유니코드 +1, 반복 확장, 번호 증가 등) 보고 일관 유지
+  - 예: 첫 3개 sample 보면 4번째가 어떻게 와야 할지 추론 가능
+  - **절대 다시 sample의 첫 마커로 돌아가지 마세요** (단조 증가)
+
+## 들여쓰기 — 신경 쓰지 마세요
+
+출력 text에 **앞 공백/탭 넣지 마세요**. 조립 단계에서 자동 부착됩니다.
+
+text 구성: marker (해당 role의 markers_sample 참고) + separator + 본문 내용
+- 마커 있는 role: 마커 + 공백 + 본문
+- 마커 없는 role: 본문만
+
+## 텍스트 작성 규칙
+- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요** — description은 role 선택의 참고용이며 출력 텍스트에 포함하면 안 됩니다
+- 소스의 실제 내용만 작성하세요
+- 소스의 원래 마커는 제거하고 양식 role의 markers_sample을 사용하세요"""
+
+        _new_marker_block = """## 마커 규칙
+
+**마커는 자동으로 부착됩니다. text에 마커를 넣지 마세요.**
+
+- text에는 순수 본문 내용만 작성하세요.
+- 마커(□, ○, Ⅰ., 1., 가., ➊ 등)를 text 앞에 붙이지 마세요.
+- 들여쓰기(공백/탭)도 넣지 마세요.
+- 소스의 원래 마커(※, □, ⇒, - 등)도 제거하세요.
+
+text 구성: 본문 내용만
+- 올바른 예: "과제 추진 현황"
+- 잘못된 예: "□ 과제 추진 현황", "Ⅰ. 추진 현황", "  과제"
+
+각 role의 markers_sample은 해당 role의 성격을 이해하기 위한 참고 정보입니다.
+마커 자체는 후처리에서 자동 부착됩니다.
+
+## 텍스트 작성 규칙
+- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요**
+- 소스의 실제 내용만 작성하세요
+- 소스의 원래 마커는 모두 제거하세요 — 양식 마커도, 소스 마커도 넣지 마세요"""
+
+        if _old_marker_block in system_prompt:
+            system_prompt = system_prompt.replace(_old_marker_block, _new_marker_block)
+
     return [
-        {"role": "system", "content": SECTION_FILL_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_parts},
     ]
 

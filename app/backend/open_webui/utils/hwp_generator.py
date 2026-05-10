@@ -749,6 +749,7 @@ def assemble_hwpx_hybrid(
     idx_map: dict = None,
     enable_marker_rewrite: bool = True,
     chapter_trees: list[list[dict]] | None = None,
+    content_only_mode: bool = False,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -1551,8 +1552,10 @@ def assemble_hwpx_hybrid(
         stripped = text.lstrip()
         stripped_content = stripped
         detected = ""
-        for m in sorted(markers, key=len, reverse=True):
-            if stripped.startswith(m):
+        # markers list + expected (overflow 대응)
+        _detect_candidates = sorted(set(markers + [expected]), key=len, reverse=True)
+        for m in _detect_candidates:
+            if m and stripped.startswith(m):
                 detected = m
                 after = stripped[len(m):]
                 if after and after[0] in (" ", "\t"):
@@ -1615,6 +1618,10 @@ def assemble_hwpx_hybrid(
 
         return rewritten if applied else text
 
+    # Phase 2: content_only_mode reattach + rewrite safety net
+    _phase2_rewrite_conflicts = []
+    _phase2_ai_marker_residuals = 0
+
     for bi_idx, item in enumerate(body_items):
         role = item.get("role", "")
         text = item.get("text", "")
@@ -1623,8 +1630,50 @@ def assemble_hwpx_hybrid(
             errors.append(f"unknown role '{role}', skipping: {text[:50]}")
             continue
 
-        # marker rewrite 적용
-        text = _rewrite_marker(bi_idx, role, text)
+        if content_only_mode:
+            # Phase 2: sibling_index 계산 → reattach → rewrite safety net
+            from open_webui.utils.marker_separator import (
+                generate_expected_marker_normalized, reattach_marker, strip_marker,
+            )
+            policy = _marker_policies.get(role, {})
+            policy_type = policy.get("policy_type", "") if policy else ""
+
+            # chapter title은 기존 rewrite에 위임 (title normalization 유지)
+            if role in _chapter_title_roles:
+                text = _rewrite_marker(bi_idx, role, text)
+            elif policy_type == "star_depth":
+                # star_depth: skip reattach, 기존 rewrite 동작
+                text = _rewrite_marker(bi_idx, role, text)
+            else:
+                sib_idx, _, _, _, _, _ = _next_sibling_index(bi_idx, role)
+
+                # AI marker residual 감지 + strip
+                strip_check = strip_marker(text, role, policy)
+                if strip_check["detected_marker"]:
+                    text = strip_check["content"]
+                    _phase2_ai_marker_residuals += 1
+
+                # Normalized reattach
+                expected = generate_expected_marker_normalized(role, policy, sib_idx)
+                text_with_marker = reattach_marker(text, expected["marker"], expected["separator"])
+
+                # Rewrite safety net (same sibling_index)
+                rewritten = _rewrite_marker(bi_idx, role, text_with_marker, sibling_index_override=sib_idx)
+
+                # Conflict detection
+                if rewritten != text_with_marker:
+                    _phase2_rewrite_conflicts.append({
+                        "item_idx": bi_idx,
+                        "role": role,
+                        "sibling_index": sib_idx,
+                        "reattached": text_with_marker[:80],
+                        "after_rewrite": rewritten[:80],
+                    })
+
+                text = rewritten
+        else:
+            # Phase 1: 기존 marker rewrite만
+            text = _rewrite_marker(bi_idx, role, text)
 
         cur_level = role_level.get(role, 0)
 
@@ -1719,9 +1768,17 @@ def assemble_hwpx_hybrid(
 
     structure["_marker_rewrite_log"] = _marker_rewrite_log
     structure["_rewrite_alignment"] = _rewrite_alignment
+    if content_only_mode:
+        structure["_phase2_reattach_result"] = {
+            "content_only_mode": True,
+            "rewrite_conflict_count": len(_phase2_rewrite_conflicts),
+            "ai_marker_residual_count": _phase2_ai_marker_residuals,
+            "rewrite_conflicts": _phase2_rewrite_conflicts[:20],
+        }
     log.info(
         f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
         f"body 항목 {len(body_items)}개, marker rewrite {changed}/{len(_marker_rewrite_log)}"
+        + (f", phase2: conflicts={len(_phase2_rewrite_conflicts)}, residuals={_phase2_ai_marker_residuals}" if content_only_mode else "")
     )
 
     return HwpxResult(

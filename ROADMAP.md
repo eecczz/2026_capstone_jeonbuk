@@ -382,7 +382,7 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 2. **semantic_role / display_role 필드**: 11단계 semantic_tag 기반, granularity 재검토 후 확정
 3. **source_refs**: 12에서 interface만 열기. 14(Open Notebook)에서 source block 구조 설계. 15에서 실제 coverage validation
 4. **run_policy / emphasis**: 7.5A 관측 기반, emphasis_spans 등
-5. **style_policy**: 11.2 style_profile을 2b에 넣을지 A/B 비교
+5. **style_policy**: 11.2 style_profile을 2b에 넣을지 A/B 비교 — **현재 style profile AI 호출 비활성화됨 (latency 절감). 이 작업 진입 시 DB tool에서 재활성화 필요.**
 6. **2a/2b contract redesign**: output schema + validation contract 업데이트
 
 ### 기억할 것 (다른 단계에서 옮긴 것)
