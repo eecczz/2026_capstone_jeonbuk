@@ -5726,6 +5726,7 @@ def build_per_type_role_semantics(
     # type_role_data[type_name][role] = {descriptions, parent_roles, evidence_idx}
     type_role_data = defaultdict(lambda: defaultdict(lambda: {
         "descriptions": [], "parent_roles": set(), "evidence_idx": [],
+        "levels": [],
     }))
     idx_role = {p.get("idx"): p.get("role", "") for p in paragraphs}
 
@@ -5746,6 +5747,7 @@ def build_per_type_role_semantics(
             if parent_role:
                 entry["parent_roles"].add(parent_role)
             entry["evidence_idx"].append(p.get("idx"))
+            entry["levels"].append(p.get("level", 0))
 
     # ── 4. 결과 구성 ──
     # text_type 추론 keywords
@@ -5785,8 +5787,13 @@ def build_per_type_role_semantics(
     for role in sorted(all_roles):
         has_ch_global = bool(global_grammar.get(role, {}).get("allowed_children"))
         all_descs = []
+        all_levels = []
+        all_parents = set()
         for trd in type_role_data.values():
-            all_descs.extend(trd.get(role, {}).get("descriptions", []))
+            rd = trd.get(role, {})
+            all_descs.extend(rd.get("descriptions", []))
+            all_levels.extend(rd.get("levels", []))
+            all_parents |= rd.get("parent_roles", set())
         default_desc = all_descs[0] if all_descs else ""
 
         per_type = {}
@@ -5798,20 +5805,53 @@ def build_per_type_role_semantics(
             # per_type grammar로 has_children 판단 (type context별로 다를 수 있음)
             type_g = per_type_grammar.get(type_name, {}).get("grammar", {})
             has_ch_in_type = bool(type_g.get(role, {}).get("allowed_children"))
+            _rep_level = entry["levels"][0] if entry["levels"] else 0
+            _sorted_parents = sorted(entry["parent_roles"])
+            _rep_parent = _sorted_parents[0] if _sorted_parents else ""
+            _sem = infer_semantic_tag(
+                rep_desc, has_ch_in_type, _rep_level, _rep_parent, "grammar",
+            )
             per_type[type_name] = {
                 "representative_description": rep_desc,
                 "description_examples": entry["descriptions"][:3],
-                "parent_roles": sorted(entry["parent_roles"]),
+                "parent_roles": _sorted_parents,
                 "evidence_idx": entry["evidence_idx"][:10],
                 "has_children_in_type": has_ch_in_type,
                 "inferred_text_type": _infer_text_type(rep_desc, has_ch_in_type),
+                "semantic_tag": _sem["semantic_tag"],
+                "semantic_inference": {
+                    "mode": _sem["inference_mode"],
+                    "source": "description_keyword",
+                    "matched_keywords": _sem["matched_keywords"],
+                    "representative_level": _rep_level,
+                    "representative_parent_role": _rep_parent,
+                    "parent_role_count": len(_sorted_parents),
+                    "children_signal_source": "grammar",
+                },
             }
 
+        _def_level = all_levels[0] if all_levels else 0
+        _sorted_all_parents = sorted(all_parents)
+        _def_parent = _sorted_all_parents[0] if _sorted_all_parents else ""
+        _def_sem = infer_semantic_tag(
+            default_desc, has_ch_global, _def_level, _def_parent, "grammar",
+        )
         result[role] = {
             "default": {
                 "representative_description": default_desc,
                 "has_children_global": has_ch_global,
                 "inferred_text_type": _infer_text_type(default_desc, has_ch_global),
+                "semantic_tag": _def_sem["semantic_tag"],
+                "semantic_inference": {
+                    "mode": _def_sem["inference_mode"],
+                    "source": "description_keyword",
+                    "matched_keywords": _def_sem["matched_keywords"],
+                    "representative_level": _def_level,
+                    "representative_parent_role": _def_parent,
+                    "parent_roles": _sorted_all_parents,
+                    "parent_role_count": len(_sorted_all_parents),
+                    "children_signal_source": "grammar",
+                },
             },
             "per_type": per_type,
         }
@@ -5916,6 +5956,97 @@ def classify_role_text_types(
         }
 
     return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stage 11: Structural Intent — semantic_tag heuristic (관측용)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def infer_semantic_tag(
+    description: str,
+    has_children: bool,
+    level: int,
+    parent_role: str = "",
+    children_signal_source: str = "grammar",
+) -> dict:
+    """
+    description keyword 기반으로 semantic_tag를 heuristic 추론합니다.
+
+    11단계 관측용. pipeline decision (2b prompt, role selection, validation,
+    marker rewrite, assemble)에는 사용하지 않습니다. cached analysis 및
+    debug observation에 optional metadata로만 기록됩니다.
+
+    6종 initial taxonomy (관측용 가설, 12단계에서 확정/변경):
+      section_title, subsection_title, body_paragraph,
+      supporting_note, caution_note, summary_conclusion
+
+    Args:
+        has_children: children 보유 여부 signal.
+        children_signal_source: has_children 값의 출처
+            ("grammar" = allowed_children 기반, "actual" = template 실제 자식 존재).
+
+    Returns:
+        {"semantic_tag": str, "inference_mode": "heuristic",
+         "matched_keywords": list[str],
+         "evidence": {"source": ..., "has_children": ...,
+                      "children_signal_source": ..., "level": ...,
+                      "parent_role": ...}}
+    """
+    desc = description or ""
+
+    _caution_kw = {"유의", "주의", "경고", "금지", "제한", "예외"}
+    _summary_kw = {"요약", "기대효과", "마무리", "방향", "결론", "전환"}
+    _supporting_kw = {
+        "보충", "예시", "나열", "각주", "보충문",
+        "근거", "수치", "참고", "참조",
+    }
+    _heading_kw = {
+        "제목", "표지", "단원", "장 시작", "구분 제목",
+        "항목 제목", "소제목", "분류", "과제", "전략",
+    }
+    _body_kw = {
+        "설명", "본문", "서술", "실행 내용",
+        "성과 설명", "내용 제시", "진단",
+    }
+
+    def _find(kw_set):
+        return [kw for kw in kw_set if kw in desc]
+
+    m_caution = _find(_caution_kw)
+    m_summary = _find(_summary_kw)
+    m_supporting = _find(_supporting_kw)
+    m_heading = _find(_heading_kw)
+    m_body = _find(_body_kw)
+
+    # Priority: caution > summary > supporting > heading > body > default
+    if m_caution:
+        tag, matched = "caution_note", m_caution
+    elif m_summary:
+        tag, matched = "summary_conclusion", m_summary
+    elif m_supporting:
+        tag, matched = "supporting_note", m_supporting
+    elif m_heading or has_children:
+        tag = "section_title" if level <= 1 else "subsection_title"
+        matched = m_heading
+    elif m_body:
+        tag, matched = "body_paragraph", m_body
+    else:
+        tag = "subsection_title" if has_children else "body_paragraph"
+        matched = []
+
+    return {
+        "semantic_tag": tag,
+        "inference_mode": "heuristic",
+        "matched_keywords": matched,
+        "evidence": {
+            "source": "description_keyword",
+            "has_children": has_children,
+            "children_signal_source": children_signal_source,
+            "level": level,
+            "parent_role": parent_role,
+        },
+    }
 
 
 def _build_chapter_types(paragraphs: list[dict]) -> dict:
@@ -8521,6 +8652,91 @@ def write_stage_debug_files(
     except Exception as e:
         log.warning(f"[DEBUG-HWPX] 11_validation_summary 생성 실패: {e}")
         results["11_validation_summary.json"] = f"error: {e}"
+
+    # ═══════════════════════════════════════════════════════════════
+    # 12. Structural intent observation (Stage 11)
+    # ═══════════════════════════════════════════════════════════════
+    if paras_after:
+        _si_global_grammar = template_grammar.get("global", {}) if template_grammar else {}
+        _si_idx_to_role = {p.get("idx"): p.get("role", "") for p in paras_after}
+
+        # actual children: idx가 다른 문단의 parent_idx로 참조되는지
+        _si_actual_parent_idxs = set()
+        for p in paras_after:
+            _pidx = p.get("parent_idx")
+            if _pidx is not None:
+                _si_actual_parent_idxs.add(_pidx)
+
+        _si_per_para = []
+        for p in paras_after:
+            _si_role = p.get("role", "")
+            if not _si_role:
+                continue
+            _si_desc = p.get("description", "")
+            _si_level = p.get("level", 0)
+            _si_has_ch_grammar = bool(
+                _si_global_grammar.get(_si_role, {}).get("allowed_children")
+            )
+            _si_has_ch_actual = p.get("idx") in _si_actual_parent_idxs
+            _si_pidx = p.get("parent_idx")
+            _si_prole = _si_idx_to_role.get(_si_pidx, "") if _si_pidx is not None else ""
+
+            _si_tag = infer_semantic_tag(
+                _si_desc, _si_has_ch_grammar, _si_level, _si_prole, "grammar",
+            )
+            _si_per_para.append({
+                "idx": p.get("idx"),
+                "role": _si_role,
+                "description": _si_desc[:80],
+                "level": _si_level,
+                "has_children_by_grammar": _si_has_ch_grammar,
+                "has_actual_children": _si_has_ch_actual,
+                "parent_role": _si_prole,
+                "semantic_tag": _si_tag["semantic_tag"],
+                "inference_mode": _si_tag["inference_mode"],
+                "matched_keywords": _si_tag["matched_keywords"],
+                "children_signal_source": "grammar",
+            })
+
+        # cluster distribution
+        from collections import defaultdict as _ddict
+        _si_ctags = _ddict(lambda: _ddict(int))
+        _si_ctotals = _ddict(int)
+        for _e in _si_per_para:
+            _si_ctags[_e["role"]][_e["semantic_tag"]] += 1
+            _si_ctotals[_e["role"]] += 1
+
+        _si_dist = {}
+        _si_poly = []
+        _si_mono = []
+        for _r in sorted(_si_ctags.keys()):
+            _tags = dict(_si_ctags[_r])
+            _total = _si_ctotals[_r]
+            _is_poly = len(_tags) >= 2
+            _dom = max(_tags, key=_tags.get) if _tags else ""
+            _dom_ratio = round(_tags[_dom] / _total, 3) if _total else 0
+            _si_dist[_r] = {
+                "total": _total,
+                "tags": _tags,
+                "is_polysemous": _is_poly,
+                "dominant_tag": _dom,
+                "dominant_ratio": _dom_ratio,
+            }
+            (_si_poly if _is_poly else _si_mono).append(_r)
+
+        _write("12_structural_intent.json", {
+            "template_semantics": {
+                "per_paragraph": _si_per_para,
+                "cluster_semantic_distribution": _si_dist,
+                "polysemous_clusters": _si_poly,
+                "monomorphic_clusters": _si_mono,
+                "total_clusters": len(_si_dist),
+                "polysemous_count": len(_si_poly),
+                "monomorphic_count": len(_si_mono),
+            },
+        })
+    else:
+        _skip("12_structural_intent.json")
 
     # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
