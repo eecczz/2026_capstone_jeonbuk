@@ -211,6 +211,104 @@ def reattach_marker(content: str, marker: str, separator: str) -> str:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Phase 2: Normalized Marker Rendering
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def normalize_marker_for_reattach(policy: dict) -> dict:
+    """
+    policy의 marker + separator를 normalized form으로 변환.
+    원본 policy는 변경하지 않음.
+
+    원칙:
+    - punctuation(. ) : ;)이 separator에 있으면 → marker suffix로 이동
+    - separator → whitespace만
+    - 판단 애매하면 원본 유지 (억지로 일반화 안 함)
+    """
+    markers = policy.get("markers", [])
+    separator = policy.get("separator", " ")
+    policy_type = policy.get("policy_type", "")
+
+    if not separator or separator.isspace():
+        return {
+            "markers_normalized": list(markers),
+            "separator_normalized": separator or " ",
+            "suffix_detected": "",
+            "normalization_applied": False,
+        }
+
+    sep_stripped = separator.strip()
+    suffix = ""
+
+    if sep_stripped in (".", ")", ":", ";"):
+        suffix = sep_stripped
+    elif sep_stripped.startswith("."):
+        suffix = "."
+    elif sep_stripped.startswith(")"):
+        suffix = ")"
+
+    if suffix:
+        return {
+            "markers_normalized": [m + suffix for m in markers],
+            "separator_normalized": " ",
+            "suffix_detected": suffix,
+            "normalization_applied": True,
+        }
+
+    # 판단 애매 → 원본 유지
+    return {
+        "markers_normalized": list(markers),
+        "separator_normalized": separator,
+        "suffix_detected": "",
+        "normalization_applied": False,
+    }
+
+
+def generate_expected_marker_normalized(role: str, policy: dict, sibling_index: int) -> dict:
+    """
+    Phase 2 reattach용: normalized marker + separator 생성.
+
+    Args:
+        sibling_index: 1-based
+    """
+    if not policy:
+        return {"marker": "", "separator": " ", "success": True,
+                "normalization_applied": False, "suffix": ""}
+
+    policy_type = policy.get("policy_type", "")
+    style = policy.get("style", "")
+
+    if policy_type in ("no_marker", "star_depth"):
+        return {"marker": "", "separator": " ", "success": True,
+                "normalization_applied": False, "suffix": ""}
+
+    norm = normalize_marker_for_reattach(policy)
+    markers = norm["markers_normalized"]
+    suffix = norm["suffix_detected"]
+
+    if not markers and not policy.get("markers"):
+        return {"marker": "", "separator": " ", "success": False,
+                "normalization_applied": norm["normalization_applied"], "suffix": suffix}
+
+    if style == "fixed":
+        marker = markers[0] if markers else ""
+    elif sibling_index <= len(markers):
+        marker = markers[sibling_index - 1]
+    else:
+        # sequence formula + suffix
+        base = _generate_sequence_marker(policy_type, sibling_index, policy.get("markers", []))
+        marker = base + suffix if suffix else base
+
+    return {
+        "marker": marker,
+        "separator": norm["separator_normalized"],
+        "success": bool(marker),
+        "normalization_applied": norm["normalization_applied"],
+        "suffix": suffix,
+    }
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Roundtrip Comparison
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

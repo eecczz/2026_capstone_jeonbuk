@@ -1434,8 +1434,38 @@ def assemble_hwpx_hybrid(
         )
         return markers[-1] if markers else ""
 
-    def _rewrite_marker(body_item_idx: int, role: str, text: str) -> str:
-        """marker_policy에 따라 text의 leading marker를 교체."""
+    def _next_sibling_index(body_item_idx: int, role: str) -> tuple:
+        """
+        sibling_index를 계산하고 counter를 1회 증가. Single source of truth.
+        Returns: (sib_idx, parent_id, parent_role, sibling_group_key, ch_idx, node)
+        """
+        node = _node_lookup.get(body_item_idx)
+        ch_idx = _chapter_idx_lookup.get(body_item_idx)
+        parent_id = None
+        parent_role = None
+        sibling_group_key = None
+
+        if _tree_available and node is not None and ch_idx is not None:
+            parent_id = node.get("parent_id")
+            if parent_id is not None and ch_idx < len(_chapter_node_maps):
+                parent_node = _chapter_node_maps[ch_idx].get(parent_id)
+                if parent_node:
+                    parent_role = parent_node.get("role")
+            sibling_group_key = f"{ch_idx}_{parent_id}_{role}"
+            counter_key = (ch_idx, parent_id, role)
+            _sibling_counter[counter_key] = _sibling_counter.get(counter_key, 0) + 1
+            sib_idx = _sibling_counter[counter_key]
+        else:
+            _fallback_counter[role] = _fallback_counter.get(role, 0) + 1
+            sib_idx = _fallback_counter[role]
+            sibling_group_key = f"fallback_{role}"
+
+        return sib_idx, parent_id, parent_role, sibling_group_key, ch_idx, node
+
+    def _rewrite_marker(body_item_idx: int, role: str, text: str,
+                        sibling_index_override: int | None = None) -> str:
+        """marker_policy에 따라 text의 leading marker를 교체.
+        sibling_index_override가 주어지면 내부 counter를 사용하지 않음."""
         node = _node_lookup.get(body_item_idx)
         ch_idx = _chapter_idx_lookup.get(body_item_idx)
 
@@ -1486,27 +1516,26 @@ def assemble_hwpx_hybrid(
             })
             return text
 
-        # sibling index 계산
-        parent_id = None
-        parent_role = None
-        sibling_group_key = None
-
-        if _tree_available and node is not None and ch_idx is not None:
-            parent_id = node.get("parent_id")
-            # parent role lookup
-            if parent_id is not None and ch_idx < len(_chapter_node_maps):
-                parent_node = _chapter_node_maps[ch_idx].get(parent_id)
-                if parent_node:
-                    parent_role = parent_node.get("role")
-            sibling_group_key = f"{ch_idx}_{parent_id}_{role}"
-            counter_key = (ch_idx, parent_id, role)
-            _sibling_counter[counter_key] = _sibling_counter.get(counter_key, 0) + 1
-            sib_idx = _sibling_counter[counter_key]
+        # sibling index: override가 있으면 사용, 없으면 직접 계산
+        if sibling_index_override is not None:
+            sib_idx = sibling_index_override
+            # metadata는 node/ch_idx에서 직접 가져옴
+            parent_id = None
+            parent_role = None
+            sibling_group_key = None
+            if _tree_available and node is not None and ch_idx is not None:
+                parent_id = node.get("parent_id")
+                if parent_id is not None and ch_idx < len(_chapter_node_maps):
+                    parent_node = _chapter_node_maps[ch_idx].get(parent_id)
+                    if parent_node:
+                        parent_role = parent_node.get("role")
+                sibling_group_key = f"{ch_idx}_{parent_id}_{role}"
+            else:
+                sibling_group_key = f"fallback_{role}"
         else:
-            # fallback: role별 global counter (chapter title에서 리셋)
-            _fallback_counter[role] = _fallback_counter.get(role, 0) + 1
-            sib_idx = _fallback_counter[role]
-            sibling_group_key = f"fallback_{role}"
+            # 기존 동작: 내부에서 counter 계산
+            sib_idx, parent_id, parent_role, sibling_group_key, ch_idx, node = \
+                _next_sibling_index(body_item_idx, role)
 
         # expected marker 결정
         if policy.get("style") == "sequence":
