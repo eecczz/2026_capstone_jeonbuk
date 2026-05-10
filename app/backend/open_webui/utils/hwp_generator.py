@@ -1641,11 +1641,24 @@ def assemble_hwpx_hybrid(
             # chapter title은 기존 rewrite에 위임 (title normalization 유지)
             if role in _chapter_title_roles:
                 text = _rewrite_marker(bi_idx, role, text)
-            elif policy_type == "star_depth":
-                # star_depth: skip reattach, 기존 rewrite 동작
-                text = _rewrite_marker(bi_idx, role, text)
             else:
-                sib_idx, _, _, _, _, _ = _next_sibling_index(bi_idx, role)
+                # star_depth 포함 모든 policy: 일반 marker policy 경로로 reattach
+                sib_idx, _p2_parent_id, _p2_parent_role, _p2_sgk, _p2_ch_idx, _p2_node = \
+                    _next_sibling_index(bi_idx, role)
+
+                # Debug: per-item reattach context
+                _p2_debug_entry = {
+                    "bi_idx": bi_idx, "role": role, "policy_type": policy_type,
+                    "text_preview": text[:40],
+                    "node_exists": _p2_node is not None,
+                    "node_id": _p2_node.get("id") if _p2_node else None,
+                    "node_parent_id": _p2_node.get("parent_id") if _p2_node else None,
+                    "ch_idx": _p2_ch_idx,
+                    "parent_id": _p2_parent_id, "parent_role": _p2_parent_role,
+                    "sibling_group_key": _p2_sgk, "sibling_index": sib_idx,
+                    "used_tree": _p2_node is not None,
+                    "used_fallback": _p2_node is None,
+                }
 
                 # AI marker residual 감지 + strip
                 strip_check = strip_marker(text, role, policy)
@@ -1657,8 +1670,13 @@ def assemble_hwpx_hybrid(
                 expected = generate_expected_marker_normalized(role, policy, sib_idx)
                 text_with_marker = reattach_marker(text, expected["marker"], expected["separator"])
 
+                _p2_debug_entry["marker_selected"] = expected.get("marker", "")
+                _p2_debug_entry["reattached_preview"] = text_with_marker[:50]
+
                 # Rewrite safety net (same sibling_index)
                 rewritten = _rewrite_marker(bi_idx, role, text_with_marker, sibling_index_override=sib_idx)
+
+                _p2_debug_entry["rewrite_changed"] = rewritten != text_with_marker
 
                 # Conflict detection
                 if rewritten != text_with_marker:
@@ -1668,6 +1686,14 @@ def assemble_hwpx_hybrid(
                         "sibling_index": sib_idx,
                         "reattached": text_with_marker[:80],
                         "after_rewrite": rewritten[:80],
+                    })
+
+                # Log star_depth items specifically
+                if policy_type == "star_depth":
+                    _phase2_rewrite_conflicts.append({
+                        "item_idx": bi_idx,
+                        "type": "star_depth_debug",
+                        "debug": _p2_debug_entry,
                     })
 
                 text = rewritten

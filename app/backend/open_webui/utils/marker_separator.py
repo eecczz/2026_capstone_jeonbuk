@@ -50,16 +50,7 @@ def strip_marker(text: str, role: str, policy: dict) -> dict:
 
     policy_type = policy.get("policy_type", "") if policy else ""
 
-    # star_depth: skip
-    if policy_type == "star_depth":
-        return {
-            "original": text,
-            "content": text,
-            "detected_marker": "",
-            "separator": "",
-            "strip_method": "not_applicable",
-            "content_preserved": True,
-        }
+    # star_depth: sibling_index 기반이므로 일반 strip과 동일하게 처리
 
     # no_marker role: should NOT strip anything
     if policy_type == "no_marker" or not policy:
@@ -157,7 +148,7 @@ def generate_expected_marker(role: str, policy: dict, sibling_index: int) -> dic
     markers = policy.get("markers", [])
     style = policy.get("style", "")
 
-    if policy_type in ("no_marker", "star_depth"):
+    if policy_type == "no_marker":
         return {
             "marker": "",
             "policy_type": policy_type,
@@ -165,6 +156,7 @@ def generate_expected_marker(role: str, policy: dict, sibling_index: int) -> dic
             "generation_method": "not_applicable",
             "success": True,
         }
+    # star_depth: markers=["*","**"], sequence와 동일 로직으로 처리
 
     if not markers:
         return {
@@ -278,9 +270,12 @@ def generate_expected_marker_normalized(role: str, policy: dict, sibling_index: 
     policy_type = policy.get("policy_type", "")
     style = policy.get("style", "")
 
-    if policy_type in ("no_marker", "star_depth"):
+    if policy_type == "no_marker":
         return {"marker": "", "separator": " ", "success": True,
                 "normalization_applied": False, "suffix": ""}
+
+    # star_depth: 일반 marker policy 경로로 reattach (markers list + sibling_index로 선택)
+    # normalize 불필요 (separator가 space이므로), 일반 sequence와 동일 처리
 
     norm = normalize_marker_for_reattach(policy)
     markers = norm["markers_normalized"]

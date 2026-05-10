@@ -9049,6 +9049,15 @@ def write_stage_debug_files(
         _skip("14_marker_roundtrip_readiness.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 15. Target unit planning (12.2)
+    # ═══════════════════════════════════════════════════════════════
+    _tup = debug_payload.get("target_unit_planning")
+    if _tup:
+        _write("15_target_unit_planning.json", _tup)
+    else:
+        _skip("15_target_unit_planning.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
