@@ -6056,6 +6056,234 @@ def infer_semantic_tag(
     }
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stage 11.2: Style Profile Observation (관측용)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문가입니다.
+
+아래에 role별 실제 paragraph 샘플이 주어집니다.
+각 role의 문체/서술 스타일 특징을 분석하여 **고정 JSON schema**로 출력하세요.
+
+## 핵심 규칙
+
+1. **제공된 샘플 텍스트에서 직접 관찰 가능한 패턴만** 기술하세요.
+2. **샘플에 없는 문체 특징을 추측하거나 일반화하지 마세요.**
+3. **일반적인 행정문서 규칙을 추가하지 마세요** — 이 양식의 실제 샘플만 기준.
+4. **이 role만의 고유 특징**에 집중하세요. 모든 role에 해당하는 공통점은 쓰지 마세요.
+5. evidence_samples에는 각 주장의 근거가 되는 **실제 텍스트 발췌**를 포함하세요.
+6. do/avoid는 이 role의 생성 텍스트가 양식과 **같은 느낌**이 나도록 하는 지침입니다.
+
+## confidence 기준
+- high: 샘플 5개 이상이고 문체가 일관됨
+- medium: 샘플 3~4개이거나 문체에 편차가 있음
+- low: 샘플 부족이거나 문체가 매우 이질적
+
+## 출력 형식
+
+반드시 아래 JSON만 출력하세요.
+
+```json
+{
+  "profiles": [
+    {
+      "role": "<role_cluster 이름>",
+      "sample_count": <제공된 샘플 수>,
+      "style_summary": "<1~2문장: 이 role의 문체 핵심 특징>",
+      "tone": "<어조 설명 (공식적/간결함/나열형 등)>",
+      "sentence_shape": "<문장 구조 설명 (단문/복문/명사구/괄호 수치 등)>",
+      "ending_patterns": ["<관찰된 어미 패턴>"],
+      "typical_expressions": ["<빈번한 표현/구문>"],
+      "do": ["<이 role처럼 쓰려면 해야 할 것>"],
+      "avoid": ["<이 role처럼 쓰려면 피해야 할 것>"],
+      "confidence": "high|medium|low",
+      "notes": "<semantic_tag별 차이, 특이 패턴 등 추가 관찰>",
+      "evidence_samples": ["<주장 근거 텍스트 발췌 (200자 이내)>"]
+    }
+  ]
+}
+```
+"""
+
+
+def _collect_style_samples(
+    paragraphs: list[dict],
+    idx_full_texts: dict,
+    semantic_tags: dict | None = None,
+    min_samples: int = 3,
+    max_samples: int = 8,
+) -> list[dict]:
+    """
+    role_cluster별 style analysis용 샘플을 수집합니다.
+
+    Returns:
+        [{role, marker, description, level, sample_count, samples: [str],
+          char_lengths: [int], frequent_endings: [str],
+          semantic_tag_distribution: {tag: count}}, ...]
+    """
+    import re
+    from collections import defaultdict
+
+    # role별 paragraph idx 수집
+    role_idxs = defaultdict(list)
+    role_meta = {}
+    for p in paragraphs:
+        role = p.get("role", "")
+        if not role:
+            continue
+        role_idxs[role].append(p.get("idx"))
+        if role not in role_meta:
+            role_meta[role] = {
+                "marker": p.get("marker", ""),
+                "description": p.get("description", "")[:80],
+                "level": p.get("level", 0),
+            }
+
+    # semantic_tag 분포 (12_structural_intent에서 가져옴)
+    tag_dist = defaultdict(lambda: defaultdict(int))
+    if semantic_tags:
+        for entry in semantic_tags:
+            tag_dist[entry.get("role", "")][entry.get("semantic_tag", "")] += 1
+
+    # 어미 패턴 추출
+    _ending_re = re.compile(r"([\uAC00-\uD7A3]{1,4})[.!?\s]*$")
+
+    result = []
+    for role in sorted(role_idxs.keys()):
+        idxs = role_idxs[role]
+        texts = [
+            idx_full_texts.get(str(idx), idx_full_texts.get(idx, ""))
+            for idx in idxs
+        ]
+        texts = [t for t in texts if t.strip()]
+
+        if len(texts) < min_samples:
+            continue
+
+        # raw stats
+        char_lengths = [len(t) for t in texts]
+
+        # frequent endings
+        endings = []
+        for t in texts:
+            t_stripped = t.rstrip()
+            m = _ending_re.search(t_stripped)
+            if m:
+                endings.append(m.group(1))
+        ending_counts = defaultdict(int)
+        for e in endings:
+            ending_counts[e] += 1
+        frequent_endings = sorted(
+            ending_counts.keys(), key=lambda e: -ending_counts[e]
+        )[:5]
+
+        # 대표 샘플 선택
+        if len(texts) <= max_samples:
+            samples = texts
+        else:
+            by_len = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+            selected = {by_len[0], by_len[-1]}  # shortest, longest
+            step = len(texts) / (max_samples - 2)
+            for i in range(max_samples - 2):
+                idx_pick = int(i * step)
+                selected.add(idx_pick)
+            samples = [texts[i] for i in sorted(selected)][:max_samples]
+
+        meta = role_meta.get(role, {})
+        result.append({
+            "role": role,
+            "marker": meta.get("marker", ""),
+            "description": meta.get("description", ""),
+            "level": meta.get("level", 0),
+            "sample_count": len(texts),
+            "samples": samples,
+            "char_lengths": char_lengths,
+            "char_length_range": [min(char_lengths), max(char_lengths)],
+            "frequent_endings": frequent_endings,
+            "semantic_tag_distribution": dict(tag_dist.get(role, {})),
+        })
+
+    return result
+
+
+def build_style_profile_prompt(
+    role_batch: list[dict],
+) -> list[dict]:
+    """
+    role batch에 대한 style profile AI prompt를 생성합니다.
+
+    Args:
+        role_batch: _collect_style_samples 결과의 subset (8~10 roles)
+
+    Returns:
+        [{"role": "system", ...}, {"role": "user", ...}]
+    """
+    user_parts = []
+    for entry in role_batch:
+        role = entry["role"]
+        marker = entry.get("marker", "")
+        desc = entry.get("description", "")
+        level = entry.get("level", 0)
+        sc = entry["sample_count"]
+        endings = entry.get("frequent_endings", [])
+        lengths = entry.get("char_length_range", [0, 0])
+        tag_dist = entry.get("semantic_tag_distribution", {})
+
+        header = f"### {role}"
+        if marker:
+            header += f" (마커: {marker})"
+        header += f" — level {level}, {sc}개 샘플"
+        if desc:
+            header += f"\n설명: {desc}"
+        if tag_dist:
+            tag_str = ", ".join(f"{t}:{n}" for t, n in sorted(tag_dist.items()))
+            header += f"\nsemantic_tag 분포: {tag_str}"
+        header += f"\n길이 범위: {lengths[0]}~{lengths[1]}자"
+        if endings:
+            header += f"\n빈출 어미: {endings}"
+
+        samples_text = "\n".join(
+            f"  [{i+1}] {s}" for i, s in enumerate(entry["samples"])
+        )
+        user_parts.append(f"{header}\n샘플:\n{samples_text}")
+
+    user_content = (
+        f"아래 {len(role_batch)}개 role의 문체를 분석하세요.\n\n"
+        + "\n\n".join(user_parts)
+        + "\n\n반드시 JSON만 출력하세요."
+    )
+
+    return [
+        {"role": "system", "content": STYLE_PROFILE_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def parse_style_profile_from_llm(llm_response: str) -> list[dict]:
+    """AI 응답에서 style profile JSON을 파싱합니다."""
+    import re
+    text = llm_response.strip()
+    # ```json ... ``` 블록 추출
+    m = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # 배열 직접 시도
+        try:
+            data = json.loads(f'{{"profiles": {text}}}')
+        except json.JSONDecodeError:
+            log.warning("[STYLE-PROFILE] JSON 파싱 실패")
+            return []
+
+    if isinstance(data, dict):
+        return data.get("profiles", [])
+    if isinstance(data, list):
+        return data
+    return []
+
+
 def _build_chapter_types(paragraphs: list[dict]) -> dict:
     """
     paragraphs의 level/role 순서를 분석하여 chapter_types를 코드로 생성.
@@ -8744,6 +8972,15 @@ def write_stage_debug_files(
         })
     else:
         _skip("12_structural_intent.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 12b. Style profile observation (Stage 11.2)
+    # ═══════════════════════════════════════════════════════════════
+    _sp_data = debug_payload.get("style_profiles")
+    if _sp_data:
+        _write("12b_style_profile.json", _sp_data)
+    else:
+        _skip("12b_style_profile.json")
 
     # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
