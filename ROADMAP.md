@@ -339,7 +339,7 @@ format_role(role_cluster)과 semantic_role(structural intent)을 분리 관측�
 - style_profile → 12단계에서 style_policy로 전환 여부 판단
 - format_observations → marker_policy와 보완 관계, 12단계 schema에서 활용 가능
 - content_style_do/avoid → 2b prompt에 넣을지 12단계에서 A/B 비교
-- source_refs → 12단계에서 interface만 열기 (coverage validation은 14(Open Notebook) 이후 15에서)
+- source_refs → 12에서 interface만 열기, 14(Open Notebook)에서 source block 구조 설계, 15에서 실제 coverage validation
 - role_cluster만으로 generation 제어하면 안 됨 → role + semantic + style evidence 함께
 
 ### 조건부 완료 이유
@@ -372,14 +372,15 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 - marker/content 분리 원칙: 11.2에서 실측 검증됨
 
 ### 첫 작업: marker/content 분리 schema 설계 + transition plan
-- AI는 content만 출력, marker는 format_role + sibling_index 기반 자동 부착
-- **transition plan 필수**: marker 재부여/validation/debug가 준비되기 전에 AI에게 marker를 빼라고 하면 최종 문서에서 marker 소실. 단계적 전환 설계 필요
+- **목표**: AI가 content만 출력하고, marker는 format_role + sibling_index 기반으로 자동 부착하는 구조
+- **단, 초기에는 transition plan / dual debug / validation을 거쳐 marker 소실이 없음을 확인한 뒤 content-only로 전환**
+- marker 재부여/validation/debug가 준비되기 전에 AI에게 marker를 빼라고 하면 최종 문서에서 marker 소실 → hard switch 금지
 - marker rewrite(6.5)가 이미 code-driven이므로 전환 기반은 있음
 
 ### 예상 작업
-1. **marker/content 분리 + transition plan**: 단계적 전환 (schema 설계 → validation 준비 → hard switch)
+1. **marker/content 분리 + transition plan**: 단계적 전환 (schema 설계 → dual debug → validation 확인 → content-only 전환)
 2. **semantic_role / display_role 필드**: 11단계 semantic_tag 기반, granularity 재검토 후 확정
-3. **source_refs**: interface만 열기 (실제 coverage validation은 15단계 이후)
+3. **source_refs**: 12에서 interface만 열기. 14(Open Notebook)에서 source block 구조 설계. 15에서 실제 coverage validation
 4. **run_policy / emphasis**: 7.5A 관측 기반, emphasis_spans 등
 5. **style_policy**: 11.2 style_profile을 2b에 넣을지 A/B 비교
 6. **2a/2b contract redesign**: output schema + validation contract 업데이트
@@ -549,10 +550,10 @@ source text가 chapter에 할당되는 전체 경로.
 |------|-------------|
 | 6.5 | marker rewrite (allowlist 기반, code-driven) |
 | 7.1 | chapter title marker normalization |
-| **11** | **marker vs semantic_intent 관계 확인 (관측)** |
-| **12** | **AI는 content만 출력, marker 완전 자동 부착** |
+| **11** | **marker vs semantic_intent 관계 확인 (관측), format/content 분리 실측 검증** |
+| **12** | **marker/content 분리 schema 설계 + transition plan → 검증 후 content-only 전환** |
 
-**현재 상태**: AI가 marker를 포함해서 출력 → rewrite로 교정. 12단계에서 분리 완성 목표.
+**현재 상태**: AI가 marker를 포함해서 출력 → rewrite로 교정. 12단계에서 transition plan을 거쳐 단계적 전환. hard switch 금지.
 
 ### CC5: Role Cluster Ambiguity
 
