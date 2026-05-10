@@ -1771,8 +1771,12 @@ CONTENT_MAPPING_PROMPT = """당신은 HWPX 문서 작성 전문가입니다.
 """
 
 
-def _extract_texts_by_idx(truncated_xml: str) -> dict:
-    """축소된 XML에서 각 _idx의 텍스트를 추출합니다."""
+def _extract_texts_by_idx(truncated_xml: str, max_chars: int = 80) -> dict:
+    """축소된 XML에서 각 _idx의 텍스트를 추출합니다.
+
+    Args:
+        max_chars: 텍스트 최대 길이. None이면 truncation 없이 전체 반환.
+    """
     root = etree.fromstring(truncated_xml.encode("utf-8"))
     texts = {}
     sections = [root] if root.tag == f"{NS_HP}sec" else root.findall(f".//{NS_HP}sec")
@@ -1789,7 +1793,8 @@ def _extract_texts_by_idx(truncated_xml: str) -> dict:
             for t in p.iter(f"{NS_HP}t"):
                 if t.text and t.text.strip():
                     all_text.append(t.text.strip())
-            texts[idx] = " ".join(all_text)[:80]  # 80자 제한
+            joined = " ".join(all_text)
+            texts[idx] = joined[:max_chars] if max_chars is not None else joined
     return texts
 
 
@@ -5016,7 +5021,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 3
+CACHE_SCHEMA_VERSION = 4
 
 
 def compute_template_hash(template_path: str) -> str:
