@@ -6071,8 +6071,13 @@ STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문�
 2. **샘플에 없는 문체 특징을 추측하거나 일반화하지 마세요.**
 3. **일반적인 행정문서 규칙을 추가하지 마세요** — 이 양식의 실제 샘플만 기준.
 4. **이 role만의 고유 특징**에 집중하세요. 모든 role에 해당하는 공통점은 쓰지 마세요.
-5. evidence_samples에는 각 주장의 근거가 되는 **실제 텍스트 발췌**를 포함하세요.
-6. do/avoid는 이 role의 생성 텍스트가 양식과 **같은 느낌**이 나도록 하는 지침입니다.
+5. **format과 content를 분리하세요:**
+   - format_observations: 마커, 번호, 들여쓰기, 물리적 서식 관련 관찰
+   - content_style_do/avoid: 어미, 문체, 문장 구조, 어조 관련 지침
+   - content_style_do/avoid에 마커/번호/서식 관련 내용을 넣지 마세요.
+6. **evidence는 제공된 sample_id만 사용하세요.** 각 샘플에 [s0], [s1] 등의 ID가 붙어 있습니다.
+   evidence_sample_ids에는 주장의 근거가 되는 sample_id 목록만 넣으세요.
+   제공되지 않은 텍스트를 인용하지 마세요.
 
 ## confidence 기준
 - high: 샘플 5개 이상이고 문체가 일관됨
@@ -6089,16 +6094,17 @@ STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문�
     {
       "role": "<role_cluster 이름>",
       "sample_count": <제공된 샘플 수>,
-      "style_summary": "<1~2문장: 이 role의 문체 핵심 특징>",
-      "tone": "<어조 설명 (공식적/간결함/나열형 등)>",
-      "sentence_shape": "<문장 구조 설명 (단문/복문/명사구/괄호 수치 등)>",
+      "style_summary": "<1~2문장: 이 role의 content 문체 핵심 특징>",
+      "tone": "<어조 (공식적/간결함/나열형 등)>",
+      "sentence_shape": "<문장 구조 (단문/복문/명사구/괄호 수치 등)>",
       "ending_patterns": ["<관찰된 어미 패턴>"],
       "typical_expressions": ["<빈번한 표현/구문>"],
-      "do": ["<이 role처럼 쓰려면 해야 할 것>"],
-      "avoid": ["<이 role처럼 쓰려면 피해야 할 것>"],
+      "format_observations": ["<마커/번호/서식 관련 관찰>"],
+      "content_style_do": ["<이 role의 content 문체를 재현하려면 해야 할 것>"],
+      "content_style_avoid": ["<이 role의 content 문체에서 피해야 할 것>"],
       "confidence": "high|medium|low",
       "notes": "<semantic_tag별 차이, 특이 패턴 등 추가 관찰>",
-      "evidence_samples": ["<주장 근거 텍스트 발췌 (200자 이내)>"]
+      "evidence_sample_ids": ["s0", "s2", "s5"]
     }
   ]
 }
@@ -6109,29 +6115,37 @@ STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문�
 def _collect_style_samples(
     paragraphs: list[dict],
     idx_full_texts: dict,
-    semantic_tags: dict | None = None,
+    semantic_tags: list[dict] | None = None,
     min_samples: int = 3,
     max_samples: int = 8,
 ) -> list[dict]:
     """
     role_cluster별 style analysis용 샘플을 수집합니다.
 
+    샘플 선택 기준 (max_samples 이내):
+      shortest 1, longest 1, semantic_tag별 최소 1, 나머지 균등 간격.
+
     Returns:
-        [{role, marker, description, level, sample_count, samples: [str],
-          char_lengths: [int], frequent_endings: [str],
-          semantic_tag_distribution: {tag: count}}, ...]
+        [{role, marker, description, level, sample_count,
+          samples: [{sample_id, idx, text}],
+          raw_measurements: {char_lengths, char_length_range,
+                             text_endings_raw, semantic_tag_distribution}}, ...]
     """
     import re
     from collections import defaultdict
 
-    # role별 paragraph idx 수집
-    role_idxs = defaultdict(list)
+    # role별 (paragraph_idx, text) 수집
+    role_entries = defaultdict(list)  # role → [(para_idx, text)]
     role_meta = {}
     for p in paragraphs:
         role = p.get("role", "")
         if not role:
             continue
-        role_idxs[role].append(p.get("idx"))
+        pidx = p.get("idx")
+        text = idx_full_texts.get(str(pidx), idx_full_texts.get(pidx, ""))
+        if not text.strip():
+            continue
+        role_entries[role].append((pidx, text))
         if role not in role_meta:
             role_meta[role] = {
                 "marker": p.get("marker", ""),
@@ -6139,55 +6153,84 @@ def _collect_style_samples(
                 "level": p.get("level", 0),
             }
 
-    # semantic_tag 분포 (12_structural_intent에서 가져옴)
+    # semantic_tag: role → {para_idx → tag}
+    idx_to_tag = {}
     tag_dist = defaultdict(lambda: defaultdict(int))
     if semantic_tags:
         for entry in semantic_tags:
-            tag_dist[entry.get("role", "")][entry.get("semantic_tag", "")] += 1
+            r = entry.get("role", "")
+            tag = entry.get("semantic_tag", "")
+            idx_val = entry.get("idx")
+            if r and tag:
+                tag_dist[r][tag] += 1
+                if idx_val is not None:
+                    idx_to_tag[idx_val] = tag
 
     # 어미 패턴 추출
     _ending_re = re.compile(r"([\uAC00-\uD7A3]{1,4})[.!?\s]*$")
 
     result = []
-    for role in sorted(role_idxs.keys()):
-        idxs = role_idxs[role]
-        texts = [
-            idx_full_texts.get(str(idx), idx_full_texts.get(idx, ""))
-            for idx in idxs
-        ]
-        texts = [t for t in texts if t.strip()]
-
-        if len(texts) < min_samples:
+    for role in sorted(role_entries.keys()):
+        entries = role_entries[role]
+        if len(entries) < min_samples:
             continue
 
-        # raw stats
-        char_lengths = [len(t) for t in texts]
+        texts = [t for _, t in entries]
+        idxs = [i for i, _ in entries]
 
-        # frequent endings
-        endings = []
+        # raw measurements
+        char_lengths = [len(t) for t in texts]
+        endings_raw = []
         for t in texts:
-            t_stripped = t.rstrip()
-            m = _ending_re.search(t_stripped)
+            m = _ending_re.search(t.rstrip())
             if m:
-                endings.append(m.group(1))
+                endings_raw.append(m.group(1))
         ending_counts = defaultdict(int)
-        for e in endings:
+        for e in endings_raw:
             ending_counts[e] += 1
         frequent_endings = sorted(
             ending_counts.keys(), key=lambda e: -ending_counts[e]
         )[:5]
 
-        # 대표 샘플 선택
-        if len(texts) <= max_samples:
-            samples = texts
+        # ── 대표 샘플 선택 (semantic_tag diversity 반영) ──
+        if len(entries) <= max_samples:
+            selected_indices = list(range(len(entries)))
         else:
-            by_len = sorted(range(len(texts)), key=lambda i: len(texts[i]))
-            selected = {by_len[0], by_len[-1]}  # shortest, longest
-            step = len(texts) / (max_samples - 2)
-            for i in range(max_samples - 2):
-                idx_pick = int(i * step)
-                selected.add(idx_pick)
-            samples = [texts[i] for i in sorted(selected)][:max_samples]
+            selected = set()
+            by_len = sorted(range(len(entries)), key=lambda i: len(texts[i]))
+            selected.add(by_len[0])   # shortest
+            selected.add(by_len[-1])  # longest
+
+            # semantic_tag별 최소 1개
+            tag_groups = defaultdict(list)
+            for ei, (pidx, _) in enumerate(entries):
+                tag = idx_to_tag.get(pidx, "")
+                if tag:
+                    tag_groups[tag].append(ei)
+            for tag, group_indices in tag_groups.items():
+                if not any(gi in selected for gi in group_indices):
+                    selected.add(group_indices[0])
+
+            # 나머지 균등 간격
+            remaining = max_samples - len(selected)
+            if remaining > 0:
+                step = len(entries) / (remaining + 1)
+                for i in range(1, remaining + 1):
+                    candidate = int(i * step)
+                    if candidate < len(entries):
+                        selected.add(candidate)
+
+            selected_indices = sorted(selected)[:max_samples]
+
+        # 샘플에 sample_id + idx 부착
+        samples = []
+        for si, ei in enumerate(selected_indices):
+            pidx, text = entries[ei]
+            samples.append({
+                "sample_id": f"s{si}",
+                "idx": pidx,
+                "text": text,
+            })
 
         meta = role_meta.get(role, {})
         result.append({
@@ -6195,12 +6238,14 @@ def _collect_style_samples(
             "marker": meta.get("marker", ""),
             "description": meta.get("description", ""),
             "level": meta.get("level", 0),
-            "sample_count": len(texts),
+            "sample_count": len(entries),
             "samples": samples,
-            "char_lengths": char_lengths,
-            "char_length_range": [min(char_lengths), max(char_lengths)],
-            "frequent_endings": frequent_endings,
-            "semantic_tag_distribution": dict(tag_dist.get(role, {})),
+            "raw_measurements": {
+                "char_lengths": char_lengths,
+                "char_length_range": [min(char_lengths), max(char_lengths)],
+                "text_endings_raw": frequent_endings,
+                "semantic_tag_distribution": dict(tag_dist.get(role, {})),
+            },
         })
 
     return result
@@ -6225,9 +6270,10 @@ def build_style_profile_prompt(
         desc = entry.get("description", "")
         level = entry.get("level", 0)
         sc = entry["sample_count"]
-        endings = entry.get("frequent_endings", [])
-        lengths = entry.get("char_length_range", [0, 0])
-        tag_dist = entry.get("semantic_tag_distribution", {})
+        raw = entry.get("raw_measurements", {})
+        endings = raw.get("text_endings_raw", [])
+        lengths = raw.get("char_length_range", [0, 0])
+        tag_dist = raw.get("semantic_tag_distribution", {})
 
         header = f"### {role}"
         if marker:
@@ -6242,8 +6288,10 @@ def build_style_profile_prompt(
         if endings:
             header += f"\n빈출 어미: {endings}"
 
+        # sample_id 기반 출력
         samples_text = "\n".join(
-            f"  [{i+1}] {s}" for i, s in enumerate(entry["samples"])
+            f"  [{s['sample_id']}] {s['text']}"
+            for s in entry.get("samples", [])
         )
         user_parts.append(f"{header}\n샘플:\n{samples_text}")
 
