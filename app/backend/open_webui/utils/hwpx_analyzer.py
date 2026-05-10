@@ -9040,6 +9040,15 @@ def write_stage_debug_files(
         _skip("13_template_unit_observation.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 14. Marker roundtrip readiness (12.1 Phase 1)
+    # ═══════════════════════════════════════════════════════════════
+    _mrt = debug_payload.get("marker_roundtrip_readiness")
+    if _mrt:
+        _write("14_marker_roundtrip_readiness.json", _mrt)
+    else:
+        _skip("14_marker_roundtrip_readiness.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
