@@ -3298,6 +3298,8 @@ def parse_canonical_clustering_from_llm(
 
     # cluster_id를 0부터 연속 정수로 normalize
     # 정렬 기준: 각 cluster의 minimum paragraph_idx
+    # 빈 paragraph_idxs를 가진 cluster 제거 (AI가 빈 배열 반환 시)
+    raw_clusters = [c for c in raw_clusters if c.get("paragraph_idxs")]
     clusters_sorted = sorted(
         raw_clusters,
         key=lambda c: min(c.get("paragraph_idxs", [10**9]))
