@@ -9031,6 +9031,15 @@ def write_stage_debug_files(
         _skip("12b_style_profile.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 13. Template unit observation (12.0)
+    # ═══════════════════════════════════════════════════════════════
+    _tuo = debug_payload.get("template_unit_observation")
+    if _tuo:
+        _write("13_template_unit_observation.json", _tuo)
+    else:
+        _skip("13_template_unit_observation.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
