@@ -1856,7 +1856,7 @@ def _set_cloned_element_text(elem, text: str, NS: str, is_table_box: bool):
 
 def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
     """XML paragraph 요소 내부의 텍스트를 교체합니다. 첫 run만 남기고 나머지 run 제거."""
-    from lxml import etree
+    import xml.etree.ElementTree as _stdlib_ET
 
     runs = p_elem.findall(f"{NS}run")
     if not runs:
@@ -1871,7 +1871,8 @@ def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
         for child in list(t_elem):
             t_elem.remove(child)
     else:
-        t_elem = etree.SubElement(first_run, f"{NS}t")
+        # python-hwpx는 stdlib ElementTree 사용 → lxml SubElement 불가
+        t_elem = _stdlib_ET.SubElement(first_run, f"{NS}t")
         t_elem.text = text
 
     # ctrl 요소가 있는 run은 보존 (header, footer, pageNum 등)
