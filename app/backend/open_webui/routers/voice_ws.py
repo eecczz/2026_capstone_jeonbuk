@@ -237,17 +237,36 @@ def _build_rag_processor(request: Request, websocket=None):
                 # AudioStartCaptionObserver 가 다음 TTSAudioRawFrame 받을 때 송출.
                 self._caption_observer.queue_reply(reply_text)
 
-                # TTS 길이는 디폴트 (140자/2문장) — 너무 짧으면 음성이 중간에
-                # 끝나버린 느낌. AudioStartCaptionObserver 가 자막을 첫 chunk
-                # 시점까지 holding 하므로 자막-음성 동기는 자동으로 맞춰짐.
-                try:
-                    from open_webui.routers.public_chatbot import _trim_text_for_tts
+                # Sentence-by-sentence TTS — pseudo streaming.
+                # 답변 전체를 한 번에 합성하지 않고 문장 단위로 잘라 순차 push.
+                # TTSService 가 sentence queue 로 처리해서 첫 문장 합성이 끝나기
+                # 전에 두 번째 문장도 준비 → 음성 끊김 없이 자연스럽게 이어짐.
+                # (진짜 LLM streaming 은 RAG 전체 await 후 분할이라 LLM 응답 시간
+                #  자체는 못 줄이지만, TTS pipeline 측면에서 부드러움 ↑)
+                import re as _re
 
-                    tts_text = _trim_text_for_tts(reply_text)
-                except Exception:
-                    tts_text = reply_text[:140]
-                log.info(f"[voice_ws] TTS text len={len(tts_text)}: {tts_text[:60]!r}")
-                await self.push_frame(TTSSpeakFrame(text=tts_text))
+                # 종결 어미 / 마침표 기준 문장 분할
+                parts = _re.split(r"(?<=[.!?。…])\s+|(?<=다)\s+|(?<=요)\s+", reply_text)
+                parts = [p.strip() for p in parts if p.strip()]
+                if not parts:
+                    parts = [reply_text]
+
+                # 너무 짧은 단편은 다음 문장과 합침 (TTS 호출 비용 절약 + 자연 흐름)
+                merged: list[str] = []
+                buf = ""
+                for p in parts:
+                    if len(buf) + len(p) + 1 < 80:
+                        buf = f"{buf} {p}".strip() if buf else p
+                    else:
+                        if buf:
+                            merged.append(buf)
+                        buf = p
+                if buf:
+                    merged.append(buf)
+
+                log.info(f"[voice_ws] TTS sentences ({len(merged)}): {[s[:30] for s in merged]}")
+                for sentence in merged:
+                    await self.push_frame(TTSSpeakFrame(text=sentence))
                 return
 
             # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
