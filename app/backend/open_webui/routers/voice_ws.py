@@ -111,34 +111,95 @@ def _make_raw_pcm_serializer(sample_rate: int = 16000, channels: int = 1):
 
 
 _KOR_DIGITS = {"0":"공","1":"일","2":"이","3":"삼","4":"사","5":"오","6":"육","7":"칠","8":"팔","9":"구"}
+_KOR_SINO = ["", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"]
+
+
+def _int_to_sino(n: int) -> str:
+    """정수 → 한자어 한국어 발음 (0~9999 범위, 그 이상은 단순 처리).
+
+    예: 45 → 사십오, 2114 → 이천일백일십사, 100 → 일백, 22 → 이십이
+    TTS 가 "45" 를 "포티 파이브" 또는 "사오" 로 어색하게 읽는 걸 자연스럽게 함.
+    """
+    if n == 0:
+        return "영"
+    if n < 10:
+        return _KOR_SINO[n]
+    if n < 100:
+        tens, ones = divmod(n, 10)
+        s = ("" if tens == 1 else _KOR_SINO[tens]) + "십"
+        if ones:
+            s += _KOR_SINO[ones]
+        return s
+    if n < 1000:
+        hundreds, rest = divmod(n, 100)
+        s = _KOR_SINO[hundreds] + "백"
+        if rest:
+            s += _int_to_sino(rest)
+        return s
+    if n < 10000:
+        thousands, rest = divmod(n, 1000)
+        s = _KOR_SINO[thousands] + "천"
+        if rest:
+            s += _int_to_sino(rest)
+        return s
+    if n < 10**8:
+        man, rest = divmod(n, 10000)
+        s = _int_to_sino(man) + "만"
+        if rest:
+            s += " " + _int_to_sino(rest)
+        return s
+    if n < 10**12:
+        eok, rest = divmod(n, 10**8)
+        s = _int_to_sino(eok) + "억"
+        if rest:
+            s += " " + _int_to_sino(rest)
+        return s
+    return str(n)  # 1조 이상은 그대로
 
 
 def _tts_text_postprocess(text: str) -> str:
     """TTS 입력 텍스트 후처리 — 자막은 원본 그대로, TTS 만 한국어 발음으로 변환.
 
     - 전화번호 (063-280-2114 → 공육삼에 이팔공에 이일일사)
-    - URL (https://...) → "홈페이지 주소"로 치환 (TTS 가 영어 알파벳 못 읽음)
-    - 단독 긴 숫자 (5자리 이상)도 한국어 자릿수 발음
+    - 백분율 (45% → 사십오 퍼센트)
+    - 콤마 숫자 (2,000 → 이천)
+    - URL (https://...) → "홈페이지"
+    - 5자리 이상 단독 숫자 → 자릿수 발음
+    - 단위 동반 숫자 (22억, 9만 4,800원 등) — 콤마 제거 후 자연 그대로 두면
+      Sohee 가 한자어 발음으로 읽음. 콤마만 제거.
+
+    참고: 너무 광범위하게 변환하면 LLM 답변 의도에서 멀어질 수 있어 자주 어색한
+    패턴만 명시적으로 처리.
     """
     import re as _re
 
     def _digits_to_kor(d: str) -> str:
         return "".join(_KOR_DIGITS.get(c, c) for c in d)
 
-    # 전화번호 패턴 (031-280-2114, 02-1234-5678 등)
+    # 1. 전화번호 (063-280-2114 등)
     def _repl_phone(m):
         groups = m.group(0).split("-")
         return "에 ".join(_digits_to_kor(g) for g in groups)
-
     text = _re.sub(r"\b\d{2,4}-\d{3,4}-\d{4}\b", _repl_phone, text)
-
-    # 짧은 숫자-숫자 패턴 (예: 22-3344) 도 변환
     text = _re.sub(r"\b\d{2,4}-\d{2,4}\b", _repl_phone, text)
 
-    # URL — 전체 발음 어색하므로 단순화
+    # 2. URL — Sohee 가 영어 알파벳 못 읽음
     text = _re.sub(r"https?://\S+", "홈페이지", text)
 
-    # 5자리 이상 연속 숫자 (예: 12345) → 자릿수 발음
+    # 3. 백분율 "45%" → "사십오 퍼센트" / "%" 단독은 "퍼센트"
+    def _repl_pct(m):
+        n = int(m.group(1))
+        return f"{_int_to_sino(n)} 퍼센트"
+    text = _re.sub(r"(\d{1,4})\s*%", _repl_pct, text)
+    text = _re.sub(r"%", " 퍼센트 ", text)
+
+    # 4. 콤마 숫자 (1,234,567) → 콤마 제거 후 한자어
+    # "9억 4,800만 원" → 콤마만 빼면 "9억 4800만 원" — Sohee 가 자연스럽게 읽음
+    def _repl_comma_num(m):
+        return m.group(0).replace(",", "")
+    text = _re.sub(r"\b\d{1,3}(?:,\d{3})+\b", _repl_comma_num, text)
+
+    # 5. 5자리 이상 단독 숫자 (자릿수 발음으로) — 코드/식별자 같은 거
     text = _re.sub(r"\b\d{5,}\b", lambda m: _digits_to_kor(m.group(0)), text)
 
     return text
