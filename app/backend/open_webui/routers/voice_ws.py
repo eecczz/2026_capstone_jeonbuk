@@ -346,12 +346,22 @@ async def voice_ws(websocket: WebSocket):
 
     class _JeonbukOpenAITTSService(OpenAITTSService):
         async def run_tts(self, text: str, context_id: str):
-            log.info(f"[voice_ws] TTS call len={len(text)}: {text[:60]!r}")
+            log.info(
+                f"[voice_ws] TTS call voice={self._settings.voice!r} model={self._settings.model!r} "
+                f"rate={self.sample_rate} len={len(text)}: {text[:60]!r}"
+            )
+            # Pipecat OpenAITTSService 의 chunk_size 디폴트가 0 이라 iter_bytes 가
+            # 임의 크기 chunk 를 반환한다. 24kHz 16-bit mono 에서 chunk 크기가
+            # 홀수면 한 sample 이 두 chunk 에 걸쳐서 클라이언트 측 Int16Array
+            # 변환 시 misalignment → 톤이 낮아지고 잡음 섞여 "느린 남성" 처럼 들림.
+            # → 명시적 4800 bytes (100ms @ 24kHz 16-bit mono) 로 yield + buffer 잔여.
+            FRAME_BYTES = 4800
+            buf = bytearray()
             try:
                 async with self._client.audio.speech.with_streaming_response.create(
                     input=text,
                     model=self._settings.model,
-                    voice=self._settings.voice,  # 화이트리스트 우회 — 그대로 전달
+                    voice=self._settings.voice,
                     response_format="pcm",
                 ) as r:
                     if r.status_code != 200:
@@ -360,13 +370,29 @@ async def voice_ws(websocket: WebSocket):
                         yield ErrorFrame(error=f"TTS HTTP {r.status_code}")
                         return
                     await self.start_tts_usage_metrics(text)
-                    async for chunk in r.iter_bytes(self.chunk_size):
-                        if chunk:
+                    total_bytes = 0
+                    async for chunk in r.iter_bytes(FRAME_BYTES):
+                        if not chunk:
+                            continue
+                        buf.extend(chunk)
+                        total_bytes += len(chunk)
+                        # 짝수 byte 단위로 잘라서 yield (16-bit sample 안 잘림)
+                        while len(buf) >= FRAME_BYTES:
+                            out = bytes(buf[:FRAME_BYTES])
+                            del buf[:FRAME_BYTES]
                             await self.stop_ttfb_metrics()
                             yield TTSAudioRawFrame(
-                                chunk, self.sample_rate, 1, context_id=context_id
+                                out, self.sample_rate, 1, context_id=context_id
                             )
-                log.info("[voice_ws] TTS streaming done")
+                    # 잔여 buffer 도 짝수 byte 로 맞춰 yield
+                    if buf:
+                        if len(buf) % 2 == 1:
+                            buf.pop()  # 마지막 1 byte 폐기
+                        if buf:
+                            yield TTSAudioRawFrame(
+                                bytes(buf), self.sample_rate, 1, context_id=context_id
+                            )
+                log.info(f"[voice_ws] TTS streaming done total={total_bytes}B")
             except Exception as e:
                 log.exception(f"[voice_ws] TTS exception: {e}")
                 yield ErrorFrame(error=f"TTS exception: {e}")
