@@ -9911,6 +9911,7 @@ def build_section_fill_prompt(
     role_text_types: dict | None = None,
     per_type_role_semantics: dict | None = None,
     content_only_mode: bool = False,
+    shallow_mode: bool = False,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -10149,6 +10150,16 @@ text 구성: 본문 내용만
 
         if _old_marker_block in system_prompt:
             system_prompt = system_prompt.replace(_old_marker_block, _new_marker_block)
+
+    if shallow_mode:
+        system_prompt += """
+
+## Shallow mode (이 섹션은 깊은 chapter가 아닌 얕은 보고서 양식입니다)
+
+1. **간결하게**: 양식 원본의 문장 밀도와 길이에 맞게 간결하게 작성하세요. 소스 내용을 길게 풀어 쓰지 마세요.
+2. **구조 반복 금지**: 소스에 큰 주제가 여러 개 있어도 위 패턴 구조 전체를 주제별로 반복하지 마세요. 여러 주제를 하나의 보고서 양식 안에 요약·통합하세요.
+3. **표·강조 블록 보존**: 표가 포함된 role은 template pattern이 허용하는 위치와 횟수 안에서만 생성하세요. 주제별로 표를 반복 복제하지 마세요.
+4. **하나의 shallow report body**: 이 영역 전체가 하나의 짧은 보고서 본문입니다. 여러 개의 독립 보고서처럼 작성하지 마세요."""
 
     return [
         {"role": "system", "content": system_prompt},
@@ -10687,6 +10698,7 @@ def process_section_fill_result(
     role_text_types: dict | None = None,
     pattern_roles: list | None = None,
     section_pdf_text_len: int = 0,
+    shallow_mode: bool = False,
 ) -> dict:
     """
     2b LLM 응답을 처리합니다: parse → normalize → validate → fallback → grammar validation.
@@ -10770,6 +10782,37 @@ def process_section_fill_result(
                 )
 
     # 6. 결과 구성 (8.0b: title node 포함)
+    # shallow_mode: title injection skip — title은 slot/preserve로 이미 보존됨
+    if shallow_mode:
+        chapter_tree_nodes = None
+        body_items = [{"role": it["role"], "text": it["text"]} for it in _norm_items
+                      if not it.get("is_chapter_title")]
+
+        debug_entry = {
+            "idx": ch_idx,
+            "chapter_title": ch_title,
+            "chapter_type": ch_type,
+            "shallow_mode": True,
+            "title_injection_skipped_for_shallow": True,
+            "pattern_roles": list(pattern_roles) if pattern_roles else [],
+            "section_pdf_text_len": section_pdf_text_len,
+            "items_count": len(body_items),
+            "items": body_items,
+            "grammar_validation": (
+                _grammar_result.to_dict() if _grammar_result else None
+            ),
+            "normalize_diff": _norm_result.get("normalize_diff"),
+            "parent_id_stats": _pid_stats,
+        }
+
+        return {
+            "body_items": body_items,
+            "chapter_tree_nodes": None,
+            "debug_entry": debug_entry,
+            "grammar_passed": (_grammar_result.success if _grammar_result else True),
+            "items_count": len(body_items),
+        }
+
     # chapter_tree_nodes: title(id=0) + grammar nodes(id shifted +1)
     _title_tree_node = {
         "id": 0, "parent_id": None, "role": title_role,
