@@ -1,5 +1,13 @@
 """대도민 음성 챗봇 WebSocket endpoint (Pipecat 1.1 기반).
 
+⚠️ 핵심 — Pipecat 1.1 의 FastAPIWebsocketTransport 는 serializer 가 None 이면
+   `_receive_messages` 에서 모든 WS 메시지를 그냥 skip 한다 (transport/websocket/
+   fastapi.py:305-306). 즉 별도 serializer 안 주면 클라이언트가 보낸 PCM 이
+   VAD 까지 도달도 못 한다. 그래서 본 모듈은 RawPcmSerializer 를 직접 정의해
+   binary frame ↔ InputAudioRawFrame, OutputAudioRawFrame ↔ binary frame
+   매핑을 처리한다.
+
+
 설계 의도:
 - 텍스트 챗봇 경로 (/api/v1/public/chat) 는 기존 그대로 유지.
 - 음성 모드는 turn-taking / interrupt handling 품질이 핵심이라
@@ -31,7 +39,75 @@ from open_webui.env import GLOBAL_LOG_LEVEL
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 
+# 워커 stdout 이 pipe 로 묶여 추적이 어려우므로 voice_ws 흐름을 별도 파일에도 기록.
+# 디버그 후 안정화되면 제거 또는 DEBUG 레벨로 낮춤.
+try:
+    _voice_fh = logging.FileHandler("/tmp/voice_ws.log", encoding="utf-8")
+    _voice_fh.setLevel(logging.DEBUG)
+    _voice_fh.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    log.addHandler(_voice_fh)
+    log.setLevel(logging.DEBUG)
+    # Pipecat 내부 로거도 같이 받기 — VAD / STT / Transport 진단 용이
+    for _other_name in (
+        "pipecat",
+        "pipecat.processors.audio.vad_processor",
+        "pipecat.transports.websocket.fastapi",
+        "pipecat.services.openai.stt",
+        "pipecat.services.openai.tts",
+    ):
+        _other = logging.getLogger(_other_name)
+        _other.addHandler(_voice_fh)
+        _other.setLevel(logging.DEBUG)
+except Exception:
+    pass
+
 router = APIRouter()
+
+
+def _make_raw_pcm_serializer(sample_rate: int = 16000, channels: int = 1):
+    """클라이언트와의 raw PCM 16-bit LE mono 양방향 매핑용 serializer.
+
+    Pipecat FastAPIWebsocketTransport 는 serializer 없이는 inbound 메시지를
+    버려서, audio frame 이 VAD 까지 도달 못 함. 가장 단순한 protocol 로 양방향
+    매핑한다: binary message <=> raw PCM bytes.
+    """
+    from pipecat.frames.frames import (
+        Frame,
+        InputAudioRawFrame,
+        OutputAudioRawFrame,
+        StartFrame,
+    )
+    from pipecat.serializers.base_serializer import FrameSerializer
+
+    class RawPcmSerializer(FrameSerializer):
+        """raw int16 LE mono PCM <=> InputAudioRawFrame / OutputAudioRawFrame.
+
+        FrameSerializer 의 abstract method 는 serialize / deserialize 두 개뿐이라
+        그 두 개만 구현. setup 은 base 의 no-op 사용.
+        """
+
+        async def serialize(self, frame: Frame):  # outbound: 봇 → 클라이언트
+            if isinstance(frame, OutputAudioRawFrame):
+                return frame.audio  # raw PCM bytes 그대로 송신
+            # 그 외 frame 은 무시 (text 자막은 별도 _send_caption 으로 push)
+            return None
+
+        async def deserialize(self, data):  # inbound: 클라이언트 → 서버
+            if isinstance(data, (bytes, bytearray)):
+                payload = bytes(data)
+                if not payload:
+                    return None
+                return InputAudioRawFrame(
+                    audio=payload,
+                    sample_rate=sample_rate,
+                    num_channels=channels,
+                )
+            # text 메시지 (자막 ack 등) 는 무시
+            return None
+
+    return RawPcmSerializer()
 
 
 def _build_rag_processor(request: Request, websocket=None):
@@ -113,14 +189,24 @@ def _build_rag_processor(request: Request, websocket=None):
                     reply_text = "죄송해요. 답변 준비 중에 문제가 생겼어요."
 
                 log.info(f"[voice_ws] reply: {reply_text[:80]!r}")
-                # 봇 답변 자막 push (TTS 합성 전에 — 시각적으론 즉시 보임)
+                # 자막은 전체 답변 (사용자가 화면에서 다 읽을 수 있게)
                 await _send_caption("reply", reply_text)
 
-                # 멀티턴 히스토리 누적
+                # 멀티턴 히스토리 누적 (TTS 잘림과 무관하게 전체 본문)
                 self._history.append({"role": "user", "content": user_text})
                 self._history.append({"role": "assistant", "content": reply_text})
 
-                await self.push_frame(TextFrame(reply_text))
+                # TTS 는 짧게 잘라 보냄 — Qwen3-TTS 가 200~300자 한국어를 합성하는 데
+                # 30~60초 걸려 사용자 체감 응답 시간이 길어지고 timeout 위험도 ↑.
+                # 텍스트 챗봇에서 검증된 같은 자르기 함수 재사용 (140자/2문장).
+                try:
+                    from open_webui.routers.public_chatbot import _trim_text_for_tts
+
+                    tts_text = _trim_text_for_tts(reply_text)
+                except Exception:
+                    tts_text = reply_text[:140]
+                log.info(f"[voice_ws] TTS text len={len(tts_text)}: {tts_text[:60]!r}")
+                await self.push_frame(TextFrame(tts_text))
                 return
 
             # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
@@ -138,11 +224,18 @@ async def voice_ws(websocket: WebSocket):
     await websocket.accept()
     # Pipecat 의 FastAPIWebsocketTransport 가 websocket 만 받으므로 우리는 app 컨텍스트
     # 를 별도 변수로 보관해 RAG processor 에 Request-like 프록시로 전달.
+    # Request 객체는 fastapi/starlette 에서 다음 attribute 들이 routinely 접근됨:
+    #   - request.app.state.config (PersistentConfig)
+    #   - request.state (per-request state — generate_chat_completion 에서 hasattr 체크)
+    #   - request.headers / cookies (익명 도민이라 거의 안 씀)
+    # 최소한 app + state 만 채워주면 RAG / TTS / STT 흐름 진행 가능.
     app = websocket.app
+    from types import SimpleNamespace as _NS
+
     owi_request_proxy: Any = type(
         "_OwiRequestProxy",
         (),
-        {"app": app},
+        {"app": app, "state": _NS(), "headers": {}, "cookies": {}},
     )()
 
     # ── Pipecat 의존성 lazy import (uvicorn warm-up 부담 최소화) ──
@@ -190,6 +283,9 @@ async def voice_ws(websocket: WebSocket):
             audio_in_channels=1,
             audio_out_channels=1,
             add_wav_header=False,
+            # serializer 미지정 시 Pipecat 가 inbound 메시지를 버린다. 자체 raw
+            # PCM serializer 로 양방향 매핑.
+            serializer=_make_raw_pcm_serializer(sample_rate=16000, channels=1),
             session_timeout=600,  # 10분 idle 시 자동 종료
         ),
     )
@@ -204,13 +300,21 @@ async def voice_ws(websocket: WebSocket):
     # - start_secs=0.18: 발화 시작 빠르게 포착.
     # - stop_secs=0.4: 사용자가 잠시 텀 두면 turn 끝났다고 판단. Smart Turn V3 가
     #   다시 한 번 "정말 발화 끝인지" 추가 판정하므로 0.4 로 짧게 두어도 안전.
+    # Silero VAD 파라미터 — 이전 자체 RMS-기반 VAD 에서 검증된 임계값 그대로 이식:
+    # - min_volume=0.02: public-chatbot.html 의 VAD_SPEECH_RMS=0.020 과 동일 스케일.
+    #   브라우저 ScriptProcessorNode 입력 RMS 가 일반 발화 시 0.02~0.1 범위라
+    #   default 0.6 은 거의 모든 발화를 컷오프. 0.02 가 실제로 동작한 값.
+    # - start_secs=0.10: SPEECH_HOLD_MS=100ms 와 매치.
+    # - stop_secs=0.5: 발화 텀 흡수. Smart Turn V3 가 추가 판단.
+    # - confidence=0.4: SileroVAD model 출력 (0~1) threshold. default 0.7 은 너무
+    #   보수적이라 한국어 + 작은 마이크 입력에서 못 잡음.
     vad_processor = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
             params=VADParams(
-                confidence=0.5,
-                start_secs=0.18,
-                stop_secs=0.4,
-                min_volume=0.3,
+                confidence=0.4,
+                start_secs=0.10,
+                stop_secs=0.5,
+                min_volume=0.02,
             )
         ),
     )
@@ -224,7 +328,41 @@ async def voice_ws(websocket: WebSocket):
 
     rag = _build_rag_processor(owi_request_proxy, websocket=websocket)
 
-    tts = OpenAITTSService(
+    # Pipecat OpenAITTSService 는 voice 를 OpenAI 표준 화이트리스트
+    # (alloy/echo/nova/...) 로 강제 검증해서 "Sohee" 입력 시 KeyError 가 난다.
+    # 우리는 Qwen3-TTS endpoint 라 임의 voice 이름 통과시켜야 하므로 subclass 로
+    # run_tts 만 override 해서 voice 를 그대로 endpoint 에 보낸다.
+    from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
+
+    class _JeonbukOpenAITTSService(OpenAITTSService):
+        async def run_tts(self, text: str, context_id: str):
+            log.info(f"[voice_ws] TTS call len={len(text)}: {text[:60]!r}")
+            try:
+                async with self._client.audio.speech.with_streaming_response.create(
+                    input=text,
+                    model=self._settings.model,
+                    voice=self._settings.voice,  # 화이트리스트 우회 — 그대로 전달
+                    response_format="pcm",
+                ) as r:
+                    if r.status_code != 200:
+                        error = await r.text()
+                        log.warning(f"[voice_ws] TTS HTTP {r.status_code}: {error[:200]}")
+                        yield ErrorFrame(error=f"TTS HTTP {r.status_code}")
+                        return
+                    await self.start_tts_usage_metrics(text)
+                    async for chunk in r.iter_bytes(self.chunk_size):
+                        if chunk:
+                            await self.stop_ttfb_metrics()
+                            yield TTSAudioRawFrame(
+                                chunk, self.sample_rate, 1, context_id=context_id
+                            )
+                log.info("[voice_ws] TTS streaming done")
+            except Exception as e:
+                log.exception(f"[voice_ws] TTS exception: {e}")
+                yield ErrorFrame(error=f"TTS exception: {e}")
+
+    # sample_rate=16000 — transport audio_out_sample_rate 와 정합 (재생 속도 정상).
+    tts = _JeonbukOpenAITTSService(
         base_url=tts_base,
         api_key=tts_key,
         model=tts_model,

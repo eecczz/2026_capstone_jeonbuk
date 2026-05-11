@@ -55,8 +55,13 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "행정",
         "crawler_engine": "playwright",
-        "max_pages": 800,
-        "max_depth": 3,
+        # 본청은 게시판 수십만 페이지가 잠재 대상.
+        # max_pages 는 사실상 무제한 (50만 — 안전망 수준).
+        # max_depth 는 BFS discover_urls 가 합리적 시간 안에 끝나는 범위.
+        # 도청 메뉴 트리는 5 depth 면 거의 모든 페이지 도달 가능.
+        # (max_depth 가 너무 크면 discover 단계만 며칠 걸려 첫 fetch 가 시작 안 됨)
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "tour_jb",

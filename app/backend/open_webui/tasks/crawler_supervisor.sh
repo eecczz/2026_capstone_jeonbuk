@@ -15,16 +15,30 @@ MAX_RESTART=50
 RESTART_INTERVAL_S=10
 COUNT=0
 
-# uvicorn master env 흡수 (없으면 동작 안 함)
+# uvicorn master env 흡수
+# - sprint 유저로 띄울 때는 /proc/61/environ 직접 읽기 권한 없음 (root 소유)
+# - sudo cat 으로 미리 dump 해 둔 /tmp/owi.env 를 fallback 으로 활용
+SOURCE_ENV=""
 if [ -r /proc/61/environ ]; then
+  SOURCE_ENV="/proc/61/environ"
+elif [ -r /tmp/owi.env ]; then
+  SOURCE_ENV="/tmp/owi.env"
+fi
+
+if [ -n "$SOURCE_ENV" ]; then
   while IFS= read -r line; do
     case "$line" in
       DATABASE_URL=*|VECTOR_DB=*|QDRANT*=*|PYTHONPATH=*|REDIS_URL=*|CRAWLER*=*|WEBUI*=*)
         export "$line"
         ;;
     esac
-  done < <(tr '\0' '\n' < /proc/61/environ)
+  done < <(tr '\0' '\n' < "$SOURCE_ENV")
 fi
+
+# 핵심 변수 미설정 시 명시 디폴트 (운영 인프라 fix)
+: "${VECTOR_DB:=qdrant}"
+: "${PYTHONPATH:=/app/backend}"
+export VECTOR_DB PYTHONPATH
 
 while [ "$COUNT" -lt "$MAX_RESTART" ]; do
   echo "[supervisor] $(date) starting crawler_worker (attempt $((COUNT+1)))" >> "$LOG"

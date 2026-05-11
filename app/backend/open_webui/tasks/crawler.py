@@ -58,10 +58,18 @@ _PHONE_REGEX = re.compile(r"0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}")
 
 
 async def _fetch_sitemap_urls(sitemap_url: str) -> list[str]:
-    """sitemap.xml에서 URL 목록 추출. sitemap index도 재귀 처리."""
+    """sitemap.xml에서 URL 목록 추출. sitemap index도 재귀 처리.
+
+    정부 사이트는 self-signed cert 체인이라 SSL 검증을 끈다 (페이지/첨부 fetch
+    경로와 동일 정책). 안 그러면 sitemap 단계에서 SSLCertVerificationError 로
+    URL discovery 자체가 실패해 전체 크롤이 0건으로 끝남.
+    """
     urls: list[str] = []
     try:
-        async with aiohttp.ClientSession(headers=_DEFAULT_HEADERS) as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(
+            headers=_DEFAULT_HEADERS, connector=connector
+        ) as session:
             async with session.get(
                 sitemap_url, timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
@@ -103,9 +111,17 @@ async def _fetch_sitemap_urls(sitemap_url: str) -> list[str]:
 async def _fetch_links_from_page(
     url: str, base_url: str
 ) -> tuple[list[str], Optional[str]]:
-    """페이지에서 내부 링크 추출. (links, html_content) 반환."""
+    """페이지에서 내부 링크 추출. (links, html_content) 반환.
+
+    정부 사이트 self-signed cert 대응 — ssl=False (sitemap 경로와 동일 정책).
+    이 함수가 SSL 검증 실패하면 BFS URL discovery 가 멈추고 풀크롤이 4건짜리
+    클린 종료로 끝나는 증상을 일으킨다.
+    """
     try:
-        async with aiohttp.ClientSession(headers=_DEFAULT_HEADERS) as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(
+            headers=_DEFAULT_HEADERS, connector=connector
+        ) as session:
             async with session.get(
                 url, timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
