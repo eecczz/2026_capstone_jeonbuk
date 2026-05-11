@@ -1,8 +1,8 @@
 """
-13.0 Source Block Adapter — debug-only source structure observation.
+13.0 Source Block Adapter + 13.3 Preserve Index Computation.
 
-Converts a source text blob into a list of source_blocks (minimal dict format).
-Does NOT affect generation output. Results are written to 16_source_blocks.json.
+- text_blob_to_source_blocks: source text → source_blocks (debug-only)
+- compute_preserve_indices: target_unit_plan → slot/attachment indices to preserve
 """
 
 import re
@@ -94,3 +94,57 @@ def _split_by_pattern(text: str, pattern: re.Pattern) -> list[dict]:
         )
 
     return blocks
+
+
+def compute_preserve_indices(
+    target_unit_plan: dict,
+    idx_map: dict | None = None,
+) -> tuple[set[int], dict]:
+    """
+    target_unit_plan에서 slot/attachment region의 paragraph indices를 추출.
+    shallow route에서 assemble의 preserve_indices로 전달하여 보존.
+
+    Args:
+        target_unit_plan: structure["target_unit_plan"] (cached)
+        idx_map: AI idx → real idx 변환 (있으면 적용)
+
+    Returns:
+        (preserve_set, debug_dict)
+    """
+    preserve = set()
+    debug_regions = []
+
+    regions = target_unit_plan.get("regions", [])
+    if not regions:
+        regions = target_unit_plan.get("ai_plan", {}).get("regions", [])
+
+    shallow_indices = set()
+
+    for r in regions:
+        ut = r.get("unit_type", "")
+        pi = r.get("paragraph_indices", [])
+
+        if ut in ("slot", "attachment"):
+            real_indices = set()
+            for idx in pi:
+                real_idx = idx_map.get(idx, idx) if idx_map else idx
+                real_indices.add(real_idx)
+            preserve |= real_indices
+            debug_regions.append({
+                "region_id": r.get("region_id"),
+                "unit_type": ut,
+                "paragraph_indices": sorted(real_indices),
+            })
+        elif ut == "shallow_block":
+            for idx in pi:
+                real_idx = idx_map.get(idx, idx) if idx_map else idx
+                shallow_indices.add(real_idx)
+
+    debug = {
+        "preserve_source": "target_unit_plan",
+        "preserved_regions": debug_regions,
+        "preserve_indices": sorted(preserve),
+        "shallow_region_indices": sorted(shallow_indices),
+    }
+
+    return preserve, debug

@@ -750,6 +750,7 @@ def assemble_hwpx_hybrid(
     enable_marker_rewrite: bool = True,
     chapter_trees: list[list[dict]] | None = None,
     content_only_mode: bool = False,
+    preserve_indices: set[int] | None = None,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -1003,6 +1004,22 @@ def assemble_hwpx_hybrid(
             f"({len(_secpr_conflict_warnings)} with body conflict)"
         )
 
+    # 13.3 preserve_indices: shallow route에서 slot/attachment paragraphs 보존
+    _preserve_applied = False
+    _preserve_debug = {}
+    if preserve_indices:
+        _before = len(header_indices)
+        header_indices |= preserve_indices
+        _added = len(header_indices) - _before
+        _preserve_applied = True
+        _preserve_debug = {
+            "preserve_indices": sorted(preserve_indices),
+            "preserve_indices_applied": True,
+            "new_preservations": _added,
+        }
+        if _added:
+            log.info(f"assemble: preserve_indices added {_added} paragraphs to header set")
+
     _orig_para_count = len(doc.paragraphs)  # remove 전 총 수 (분류용)
     body_elements = []
     _remove_per_section: dict[int, int] = {}  # section_idx → remove count
@@ -1126,6 +1143,8 @@ def assemble_hwpx_hybrid(
         "residual_candidates": _residual_candidates,
         "secpr_carrier_warnings": _secpr_carrier_warnings,
         "secpr_conflict_warnings": _secpr_conflict_warnings,
+        **(_preserve_debug if _preserve_debug else {}),
+        "removed_indices": sorted(_body_para_indices),
     }
     body_items = content.get("body", [])
     prev_role = None
