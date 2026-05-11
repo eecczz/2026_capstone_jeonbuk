@@ -202,14 +202,11 @@ def _build_rag_processor(request: Request, websocket=None):
                 # 답변 받았다는 신호를 빨리 인지하는 게 체감상 더 좋음.
                 await _send_caption("reply", reply_text)
 
-                try:
-                    from open_webui.routers.public_chatbot import _trim_text_for_tts
-
-                    tts_text = _trim_text_for_tts(reply_text)
-                except Exception:
-                    tts_text = reply_text[:140]
-                log.info(f"[voice_ws] TTS text len={len(tts_text)}: {tts_text[:60]!r}")
-                await self.push_frame(TTSSpeakFrame(text=tts_text))
+                # ── 음성 출력 일시 OFF (사용자 요청 — 텍스트 자막만 동작하던
+                #    상태로 롤백). 결정적 fix 들은 코드에 그대로 남겨둠. 음성 다시
+                #    켜려면 아래 두 줄 주석 해제 + Pipeline 에 tts 노드 복원.
+                # tts_text = _trim_text_for_tts(reply_text)
+                # await self.push_frame(TTSSpeakFrame(text=tts_text))
                 return
 
             # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
@@ -420,13 +417,16 @@ async def voice_ws(websocket: WebSocket):
         sample_rate=24000,
     )
 
+    # 음성 출력 일시 OFF — RAG processor 가 TTSSpeakFrame 안 보내므로 TTS 노드를
+    # pipeline 에서 빼도 동작 동일. (tts 객체 자체는 위에 정의돼 있어 음성 재개
+    # 시 한 줄만 다시 추가하면 됨)
+    _ = tts  # unused — 향후 음성 재개 시 pipeline 에 다시 끼움
     pipeline = Pipeline(
         [
             transport.input(),
-            vad_processor,  # VADUserStarted/StoppedSpeakingFrame push → STT 가 utterance 경계 인지
+            vad_processor,
             stt,
             rag,
-            tts,
             transport.output(),
         ]
     )
