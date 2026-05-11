@@ -113,9 +113,11 @@ _PUBLIC_STT_DOMAIN_PROMPT = (
 def _trim_text_for_tts(text: str, max_chars: int = 140, max_sentences: int = 2) -> str:
     """음성으로 들려줄 텍스트만 추출.
 
-    - 우선 첫 max_sentences 개 문장까지만 사용
-    - 그 결과가 max_chars 초과면 마지막 문장 경계에서 자름
-    - 길어서 잘릴 경우 끝에 안내 추가 ("자세한 내용은 화면을 참고해 주세요.")
+    - 첫 max_sentences 개 문장까지 사용
+    - max_chars 초과면 마지막 문장 경계에서 자름
+    - 끝에 별도 안내 멘트 추가 안 함 — 자막은 전체 답변, 음성은 일부 자른
+      거라 안내 문구를 음성에만 붙이면 자막/음성이 어긋나 보임. 자연스럽게
+      문장 끝에서 끊는 게 사용자 체감에도 깔끔.
     """
     s = (text or "").strip()
     if not s:
@@ -123,7 +125,6 @@ def _trim_text_for_tts(text: str, max_chars: int = 140, max_sentences: int = 2) 
     if len(s) <= max_chars:
         return s
 
-    # 문장 단위 분할 (한국어/영어 종결 동시 처리)
     parts = re.split(r"(?<=[.!?。…])\s+|(?<=다)\s+|(?<=요)\s+", s)
     parts = [p.strip() for p in parts if p.strip()]
     if not parts:
@@ -139,10 +140,7 @@ def _trim_text_for_tts(text: str, max_chars: int = 140, max_sentences: int = 2) 
     if not out:
         out = [parts[0][: max_chars - 1]]
 
-    short = " ".join(out).strip()
-    if len(short) < len(s):
-        short += " 자세한 내용은 화면을 참고해 주세요."
-    return short
+    return " ".join(out).strip()
 
 
 def _humanize_reply(text: str) -> str:
