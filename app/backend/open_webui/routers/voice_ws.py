@@ -125,6 +125,7 @@ def _build_rag_processor(request: Request, websocket=None):
     from pipecat.frames.frames import (
         TranscriptionFrame,
         TextFrame,
+        TTSSpeakFrame,
         VADUserStartedSpeakingFrame,
         VADUserStoppedSpeakingFrame,
     )
@@ -206,7 +207,10 @@ def _build_rag_processor(request: Request, websocket=None):
                 except Exception:
                     tts_text = reply_text[:140]
                 log.info(f"[voice_ws] TTS text len={len(tts_text)}: {tts_text[:60]!r}")
-                await self.push_frame(TextFrame(tts_text))
+                # TextFrame 으로 보내면 TTSService 의 text aggregator 가 sentence 모은 후
+                # LLMFullResponseEndFrame 을 기다린다. 우리는 LLM 응답 frame 흐름을 안
+                # 쓰니까 영원히 buffering 됨. → TTSSpeakFrame 으로 utterance 단위 즉시 합성.
+                await self.push_frame(TTSSpeakFrame(text=tts_text))
                 return
 
             # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
