@@ -8799,6 +8799,15 @@ def write_stage_debug_files(
         _skip("08_2b_generation_by_chapter.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 08b. Shallow generation result (13.3)
+    # ═══════════════════════════════════════════════════════════════
+    _shallow = debug_payload.get("shallow_generation")
+    if _shallow:
+        _write("08b_shallow_generation.json", _shallow)
+    else:
+        _skip("08b_shallow_generation.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 09. Grammar validation result
     # ═══════════════════════════════════════════════════════════════
     if section_fill:
@@ -9508,6 +9517,191 @@ def parse_chapter_classify_from_llm(llm_response: str) -> dict:
         f"header={list(data['header'].keys())}"
     )
     return data
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.3 Shallow Generator: flat region → content-only items
+# ──────────────────────────────────────────────────────────────────────
+
+SHALLOW_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다.
+하나의 **shallow region** (얕은 나열형 영역)에 대해, 주어진 role 목록에 따라 소스 내용을 배치합니다.
+
+## 핵심 규칙
+
+1. **주어진 role만 사용하세요** — 새 role 생성 금지
+2. **마커/번호를 텍스트에 넣지 마세요** — content만 출력. 마커는 자동 부착됩니다.
+3. **들여쓰기 넣지 마세요** — 앞 공백/탭 금지.
+4. **얕은 구조**: 이 영역은 깊은 계층이 아니라 항목 나열형입니다. 대분류 제목 아래 핵심 항목을 짧게 나열하세요.
+5. **소스 내용을 이 양식 구조에 맞게 재구성/요약하세요** — 소스의 주제가 양식과 달라도 양식 구조에 맞춰 배치합니다.
+
+## 출력 형식
+
+JSON 배열만 출력하세요:
+```json
+[
+  {"role": "role_cluster_X", "text": "내용"},
+  {"role": "role_cluster_Y", "text": "내용"},
+  ...
+]
+```
+
+- `role`: 아래 role 목록에 있는 것만 사용
+- `text`: content만 (마커/번호/들여쓰기 없이)
+"""
+
+
+def build_shallow_fill_prompt(
+    region_description: str,
+    region_roles: list[dict],
+    region_paragraph_count: int,
+    source_text: str,
+    content_only_mode: bool = True,
+) -> list[dict]:
+    """
+    13.3 shallow generator prompt.
+
+    Args:
+        region_description: region 설명 (target_unit_plan에서)
+        region_roles: [{role, description, marker_hint}, ...] per role in region
+        region_paragraph_count: template의 paragraph 수 (참고값)
+        source_text: broad source text
+        content_only_mode: always True
+
+    Returns:
+        [{"role": "system", ...}, {"role": "user", ...}]
+    """
+    # role list 텍스트
+    role_lines = []
+    for r in region_roles:
+        role_name = r.get("role", "")
+        desc = r.get("description", "")
+        marker = r.get("marker_hint", "")
+        marker_note = f" (마커: {marker} — 텍스트에 넣지 마세요)" if marker else ""
+        role_lines.append(f"- **{role_name}**: {desc}{marker_note}")
+    role_text = "\n".join(role_lines)
+
+    user_text = f"""## 영역 설명
+{region_description}
+
+## 사용 가능한 role 목록
+{role_text}
+
+## 참고: 양식의 이 영역에는 약 {region_paragraph_count}개 항목이 있습니다.
+정확한 개수는 자유이지만, 이 수를 참고하여 적절한 분량으로 생성하세요.
+
+## 소스 내용
+{source_text}
+
+위 소스 내용을 이 영역의 role 구조에 맞게 재구성하여 JSON 배열로 출력하세요.
+반드시 JSON만 출력하세요.
+"""
+
+    return [
+        {"role": "system", "content": SHALLOW_FILL_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
+
+
+def parse_shallow_fill_from_llm(raw: str) -> list[dict]:
+    """Parse shallow generator AI output. Returns [{role, text}, ...]."""
+    text = raw.strip()
+    # Strip markdown code fence
+    if text.startswith("```"):
+        first_nl = text.index("\n") if "\n" in text else 3
+        text = text[first_nl + 1:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    try:
+        items = json.loads(text)
+    except json.JSONDecodeError:
+        # Try to find JSON array in text
+        start = text.find("[")
+        end = text.rfind("]")
+        if start >= 0 and end > start:
+            items = json.loads(text[start:end + 1])
+        else:
+            raise ValueError(f"shallow output is not valid JSON: {text[:200]}")
+    if not isinstance(items, list):
+        raise ValueError(f"shallow output is not a list: {type(items)}")
+    # Normalize field names
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role", "")
+        # Accept both "text" and "content" field names
+        txt = item.get("text", item.get("content", ""))
+        if role:
+            result.append({"role": role, "text": str(txt)})
+    return result
+
+
+def validate_shallow_output(
+    items: list[dict],
+    allowed_roles: set[str],
+) -> dict:
+    """Validate shallow generator output. Returns validation dict."""
+    invalid_roles = []
+    empty_items = 0
+    for item in items:
+        if item.get("role", "") not in allowed_roles:
+            invalid_roles.append(item.get("role", ""))
+        if not (item.get("text", "") or "").strip():
+            empty_items += 1
+    return {
+        "role_membership_pass": len(invalid_roles) == 0,
+        "invalid_roles": invalid_roles,
+        "empty_items": empty_items,
+        "total_items": len(items),
+        "pass": len(invalid_roles) == 0 and len(items) > 0,
+    }
+
+
+def should_use_shallow_route(target_unit_plan: dict) -> tuple[bool, dict]:
+    """
+    target_unit_plan 기반 shallow route 판단.
+    조건: chapter region 없음 + shallow_block region 있음.
+
+    Returns:
+        (use_shallow, route_debug)
+    """
+    regions = target_unit_plan.get("regions", [])
+    if not regions:
+        regions = target_unit_plan.get("ai_plan", {}).get("regions", [])
+
+    has_chapter = any(r.get("unit_type") == "chapter" for r in regions)
+    has_shallow = any(r.get("unit_type") == "shallow_block" for r in regions)
+
+    shallow_para_count = sum(
+        len(r.get("paragraph_indices", []))
+        for r in regions if r.get("unit_type") == "shallow_block"
+    )
+    total_body_count = sum(
+        len(r.get("paragraph_indices", []))
+        for r in regions if r.get("unit_type") not in ("slot", "attachment")
+    )
+
+    shallow_is_primary = (
+        shallow_para_count > 0
+        and total_body_count > 0
+        and shallow_para_count / total_body_count > 0.5
+    )
+    use_shallow = not has_chapter and has_shallow and shallow_is_primary
+
+    debug = {
+        "has_chapter_regions": has_chapter,
+        "has_shallow_regions": has_shallow,
+        "shallow_is_primary_body": shallow_is_primary,
+        "shallow_para_count": shallow_para_count,
+        "total_body_para_count": total_body_count,
+        "route_reason": (
+            "shallow: no chapter regions, shallow_block is primary body"
+            if use_shallow
+            else f"chapter: has_chapter={has_chapter}, has_shallow={has_shallow}"
+        ),
+    }
+    return use_shallow, debug
 
 
 # ──────────────────────────────────────────────────────────────────────
