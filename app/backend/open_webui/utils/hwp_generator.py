@@ -1021,6 +1021,7 @@ def assemble_hwpx_hybrid(
             log.info(f"assemble: preserve_indices added {_added} paragraphs to header set")
 
     _orig_para_count = len(doc.paragraphs)  # remove 전 총 수 (분류용)
+    _table_text_skipped = 0  # 13.3 table policy: text replacement skip 횟수
     body_elements = []
     _remove_per_section: dict[int, int] = {}  # section_idx → remove count
     _body_para_indices: set[int] = set()
@@ -1145,6 +1146,7 @@ def assemble_hwpx_hybrid(
         "secpr_conflict_warnings": _secpr_conflict_warnings,
         **(_preserve_debug if _preserve_debug else {}),
         "removed_indices": sorted(_body_para_indices),
+        "table_text_replacement_skipped_count": _table_text_skipped,
     }
     body_items = content.get("body", [])
     prev_role = None
@@ -1762,9 +1764,13 @@ def assemble_hwpx_hybrid(
         # 텍스트 교체 (공백 prefix 포함)
         try:
             is_tbl_box = role_is_table_box.get(role, False)
-            # table_box + preserve_indices 경로: 표 원본 cell 구조 보존 (cell filling은 14-table)
+            # 13.3 table policy: shallow route(preserve_indices 있음)에서
+            # table-like role은 structural placeholder — content generation 대상 아님.
+            # exemplar clone으로 표 구조만 보존, cell text replacement skip.
+            # table cell filling은 별도 table stage(14-table)에서 처리.
+            # chapter route(preserve_indices=None)에서는 기존 동작 유지.
             if is_tbl_box and preserve_indices:
-                pass  # exemplar clone만, text replacement skip
+                _table_text_skipped += 1
             else:
                 _set_cloned_element_text(new_elem, space_prefix + clean_text, NS, is_tbl_box)
 
