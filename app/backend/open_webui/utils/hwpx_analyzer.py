@@ -9705,6 +9705,281 @@ def should_use_shallow_route(target_unit_plan: dict) -> tuple[bool, dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 13.3b-1: Shallow Section Plan Seed
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _clean_heading_text(raw_text: str, marker: str = "") -> str:
+    """heading raw text에서 marker를 strip하고 whitespace를 정규화."""
+    text = raw_text.strip()
+    if marker and text.startswith(marker):
+        text = text[len(marker):].strip()
+    return " ".join(text.split())
+
+
+def extract_shallow_section_plan_seed(
+    target_unit_plan: dict,
+    structure: dict,
+    idx_full_texts: dict,
+    marker_policies: dict | None = None,
+    template_observation: dict | None = None,
+) -> dict | None:
+    """
+    13.3b-1: template evidence 기반 shallow section plan seed 추출.
+
+    template의 shallow_block region에서 top-level heading 후보를 code-driven facts로
+    수집하고, evidence scoring을 거쳐 seed로 선별한다.
+
+    이 결과는 완성형 planner가 아닌 "관측 기반 seed"이며,
+    source content는 고려하지 않는다 (template_only).
+
+    Returns:
+        seed dict or None (fallback 시)
+    """
+    # ── 1. shallow_block region 찾기 ──
+    regions = target_unit_plan.get("regions", [])
+    if not regions:
+        regions = target_unit_plan.get("ai_plan", {}).get("regions", [])
+
+    shallow_region = None
+    for r in regions:
+        if r.get("unit_type") == "shallow_block":
+            shallow_region = r
+            break
+
+    if not shallow_region:
+        return {
+            "seed": None,
+            "fallback_reason": "no_shallow_block_region",
+            "extracted_heading_candidates": [],
+            "skipped_heading_candidates": [],
+        }
+
+    shallow_indices = set(shallow_region.get("paragraph_indices", []))
+    if not shallow_indices:
+        return {
+            "seed": None,
+            "fallback_reason": "empty_shallow_block_paragraph_indices",
+            "extracted_heading_candidates": [],
+            "skipped_heading_candidates": [],
+        }
+
+    # ── 2. template facts 수집 ──
+    paragraphs = structure.get("paragraphs", [])
+    para_by_idx = {p["idx"]: p for p in paragraphs}
+
+    # role_text_types: text_type (heading/body/supporting/summary)
+    role_text_types = structure.get("role_text_types", {})
+
+    # grammar: has_children 판단
+    global_grammar = structure.get("template_grammar", {}).get("global", {})
+
+    # subregion_candidates from target_unit_plan (12.2 AI judgment)
+    internal = shallow_region.get("internal_structure", {})
+    ai_heading_roles = set()
+    for cand in internal.get("subregion_candidates", []):
+        if cand.get("candidate_type") == "heading":
+            ai_heading_roles.add(cand.get("role_id", ""))
+
+    # marker lookup: role → marker string
+    marker_lookup = {}
+    if marker_policies:
+        for role_key, policy in marker_policies.items():
+            if isinstance(policy, dict):
+                samples = policy.get("markers", policy.get("markers_sample", []))
+                if samples:
+                    marker_lookup[role_key] = samples[0]
+    # fallback: structure.paragraphs의 marker 필드
+    for p in paragraphs:
+        role = p.get("role", "")
+        if role and role not in marker_lookup:
+            m = (p.get("marker") or "").strip()
+            if m:
+                marker_lookup[role] = m
+
+    # table roles: content_table_candidate 관련 (template_observation 또는 table_handling)
+    table_roles = set()
+    table_handling = shallow_region.get("table_handling", {})
+    for tr in table_handling.get("table_role_ids", []):
+        table_roles.add(tr)
+
+    # ── 3. shallow_block 내 paragraph level 분포 → top-level 결정 ──
+    levels_in_region = []
+    for idx in shallow_indices:
+        p = para_by_idx.get(idx)
+        if p:
+            levels_in_region.append(p.get("level", 99))
+
+    if not levels_in_region:
+        return {
+            "seed": None,
+            "fallback_reason": "no_paragraphs_with_level_in_region",
+            "extracted_heading_candidates": [],
+            "skipped_heading_candidates": [],
+        }
+
+    min_level = min(levels_in_region)
+    # "top-level에 가까운" = min_level 또는 min_level + 1까지 허용
+    top_level_threshold = min_level
+
+    # ── 4. heading 후보 수집 + evidence scoring ──
+    extracted_candidates = []
+    skipped_candidates = []
+
+    # role별 등장 횟수 (region 내): repeatable pattern 판단용
+    role_count_in_region: dict[str, int] = {}
+    for idx in sorted(shallow_indices):
+        p = para_by_idx.get(idx)
+        if p:
+            r = p.get("role", "")
+            role_count_in_region[r] = role_count_in_region.get(r, 0) + 1
+
+    for idx in sorted(shallow_indices):
+        p = para_by_idx.get(idx)
+        if not p:
+            continue
+
+        role = p.get("role", "")
+        level = p.get("level", 99)
+        full_text = idx_full_texts.get(str(idx), "").strip()
+
+        if not full_text:
+            continue
+
+        # ── required filters ──
+        skip_reason = None
+
+        # R1: table/content_table_candidate 제외
+        if role in table_roles:
+            skip_reason = "table_role"
+        # R2: level이 top-level이 아님
+        elif level > top_level_threshold:
+            skip_reason = f"level_{level}_above_threshold_{top_level_threshold}"
+
+        if skip_reason:
+            skipped_candidates.append({
+                "idx": idx, "role": role, "level": level,
+                "text_preview": full_text[:60],
+                "skip_reason": skip_reason, "filter_stage": "required",
+            })
+            continue
+
+        # ── evidence scoring ──
+        evidence = []
+        evidence_score = 0
+
+        # E1: subregion_candidates에서 heading으로 식별됨 (12.2 AI)
+        if role in ai_heading_roles:
+            evidence.append("subregion_candidate_heading")
+            evidence_score += 2
+
+        # E2: role_text_types에서 heading
+        rtt = role_text_types.get(role, {})
+        if rtt.get("text_type") == "heading":
+            evidence.append("role_text_type_heading")
+            evidence_score += 2
+
+        # E3: grammar has_children
+        g = global_grammar.get(role, {})
+        if g.get("allowed_children"):
+            evidence.append("grammar_has_children")
+            evidence_score += 1
+
+        # E4: 같은 role이 region 내에서 반복 등장 (section boundary 패턴)
+        count = role_count_in_region.get(role, 0)
+        if count >= 2:
+            evidence.append(f"repeatable_in_region_count_{count}")
+            evidence_score += 1
+
+        # E5: marker가 section-level 성격 (고정 마커, 단일 문자)
+        marker = marker_lookup.get(role, "")
+        if marker and len(marker) <= 2:
+            evidence.append(f"marker_present_{marker}")
+            # marker 자체는 weak evidence — 본문 role도 marker 있음
+            evidence_score += 0  # 점수 부여 안 함, 기록만
+
+        # E6: body-like paragraph 감지 (negative evidence)
+        if rtt.get("text_type") in ("body", "supporting"):
+            evidence.append("text_type_body_or_supporting")
+            evidence_score -= 2
+
+        # ── heading candidate 기록 ──
+        cleaned = _clean_heading_text(full_text, marker)
+        candidate = {
+            "idx": idx,
+            "role": role,
+            "level": level,
+            "text_raw": full_text,
+            "text_clean": cleaned,
+            "description": p.get("description", ""),
+            "evidence": evidence,
+            "evidence_score": evidence_score,
+            "marker": marker,
+        }
+        extracted_candidates.append(candidate)
+
+    # ── 5. seed 선별: evidence_score >= 2인 후보만 ──
+    seed_headings = []
+    for cand in extracted_candidates:
+        if cand["evidence_score"] >= 2:
+            seed_headings.append({
+                "idx": cand["idx"],
+                "role": cand["role"],
+                "text_raw": cand["text_raw"],
+                "text_clean": cand["text_clean"],
+                "evidence": cand["evidence"],
+                "evidence_score": cand["evidence_score"],
+            })
+        else:
+            skipped_candidates.append({
+                "idx": cand["idx"],
+                "role": cand["role"],
+                "level": cand["level"],
+                "text_preview": cand["text_raw"][:60],
+                "skip_reason": f"evidence_score_{cand['evidence_score']}_below_threshold_2",
+                "filter_stage": "evidence",
+                "evidence": cand["evidence"],
+            })
+
+    # ── 6. fallback: seed가 비거나 1개면 seed 없이 기존 동작 ──
+    if len(seed_headings) < 2:
+        fallback_reason = (
+            "no_heading_candidates_passed_evidence"
+            if not seed_headings
+            else "only_one_heading_insufficient_for_section_flow"
+        )
+        return {
+            "seed": None,
+            "fallback_reason": fallback_reason,
+            "extracted_heading_candidates": extracted_candidates,
+            "skipped_heading_candidates": skipped_candidates,
+        }
+
+    # ── 7. seed 구성 ──
+    # heading_role: seed에 포함된 heading들의 대표 role (가장 많은 role)
+    role_counts: dict[str, int] = {}
+    for h in seed_headings:
+        role_counts[h["role"]] = role_counts.get(h["role"], 0) + 1
+    primary_heading_role = max(role_counts, key=role_counts.get)
+
+    return {
+        "seed": {
+            "heading_count": len(seed_headings),
+            "primary_heading_role": primary_heading_role,
+            "headings": seed_headings,
+        },
+        "seed_completeness": "template_only",
+        "limitations": [
+            "source_content_not_considered",
+            "heading_adaptation_delegated_to_2b",
+        ],
+        "fallback_reason": None,
+        "extracted_heading_candidates": extracted_candidates,
+        "skipped_heading_candidates": skipped_candidates,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 2b AI: 패턴 + 소스 → 섹션별 텍스트 채우기
 # ──────────────────────────────────────────────────────────────────────
 
@@ -9912,6 +10187,7 @@ def build_section_fill_prompt(
     per_type_role_semantics: dict | None = None,
     content_only_mode: bool = False,
     shallow_mode: bool = False,
+    section_plan_seed: dict | None = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -10158,8 +10434,33 @@ text 구성: 본문 내용만
 
 1. **간결하게**: 양식 원본의 문장 밀도와 길이에 맞게 간결하게 작성하세요. 소스 내용을 길게 풀어 쓰지 마세요.
 2. **구조 반복 금지**: 소스에 큰 주제가 여러 개 있어도 위 패턴 구조 전체를 주제별로 반복하지 마세요. 여러 주제를 하나의 보고서 양식 안에 요약·통합하세요.
-3. **표는 구조 자리 표시만**: 표가 포함된 role은 자리만 유지하세요. 표 cell 값을 새로 생성하거나 수치를 나열하지 마세요. 표 구조는 후처리에서 보존됩니다. 주제별로 표를 반복 복제하지 마세요.
-4. **하나의 shallow report body**: 이 영역 전체가 하나의 짧은 보고서 본문입니다. 여러 개의 독립 보고서처럼 작성하지 마세요.
+3. **표는 구조 자리 표시만**: 표가 포함된 role은 자리만 유지하세요. 표 cell 값을 새로 생성하거나 수치를 나열하지 마세요. 표 구조는 후처리에서 보존됩니다 (table cell filling은 deferred). 주제별로 표를 반복 복제하지 마세요.
+4. **하나의 shallow report body**: 이 영역 전체가 하나의 짧은 보고서 본문입니다. 여러 개의 독립 보고서처럼 작성하지 마세요."""
+
+        # 13.3b-1: section plan seed가 있으면 구체적 heading list로 대체
+        _seed_data = (section_plan_seed or {}).get("seed")
+        if _seed_data and _seed_data.get("headings"):
+            _headings = _seed_data["headings"]
+            _heading_list = "\n".join(
+                f"  {i+1}. {h['text_clean']}"
+                for i, h in enumerate(_headings)
+            )
+            system_prompt += f"""
+
+## Template Section Flow (이 양식에서 관측된 보고서 흐름)
+
+이 양식의 주요 섹션 구조:
+{_heading_list}
+
+**규칙:**
+- 위 섹션 순서와 흐름을 따르세요. 소스의 주제 수만큼 위 구조를 반복하거나 재편하지 마세요.
+- 소스의 여러 주제를 위 보고서 흐름 안에 요약·분배하세요.
+- 각 섹션 제목의 구조적 의도(개요, 현황, 추진, 계획 등)는 유지하되, 날짜·기간·고유 주제명처럼 양식 원본에 특화된 표현은 소스 내용에 맞게 가볍게 조정할 수 있습니다.
+- 소스에 해당 내용이 없는 섹션은 간략 요약으로 채우거나 최소한으로 생성하세요. 섹션을 통째로 생략하지 마세요.
+- 출력은 반드시 위에 주어진 role 패턴과 grammar 안에 머물러야 합니다."""
+        else:
+            # seed 없음: 기존 추상 지시
+            system_prompt += """
 5. **소제목 의도 유지**: 양식의 소제목에는 문서 구조 역할(개요, 추진상황, 향후계획 등)과 원본 주제 표현이 섞여 있을 수 있습니다. 구조 역할은 유지하고, 원본 주제에 특화된 표현은 새 소스 주제에 맞게 바꾸세요. 소스의 주제 수만큼 섹션 구조를 재편하지 말고, 양식의 보고서 흐름 안에 소스 내용을 요약·통합하세요."""
 
     return [
@@ -10879,4 +11180,104 @@ def process_section_fill_result(
             _grammar_result.success if _grammar_result else True
         ),
         "items_count": len(debug_body_items),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.3b-1: Shallow Section Plan Seed Compliance Observation
+# ──────────────────────────────────────────────────────────────────────
+
+
+def observe_section_plan_compliance(
+    body_items: list[dict],
+    section_plan_seed_result: dict,
+) -> dict:
+    """
+    생성 결과가 section plan seed를 얼마나 따랐는지 관측한다 (debug-only).
+
+    Args:
+        body_items: process_section_fill_result의 body_items
+        section_plan_seed_result: extract_shallow_section_plan_seed의 반환값
+
+    Returns:
+        compliance observation dict (hard gate 아님)
+    """
+    seed = (section_plan_seed_result or {}).get("seed")
+    if not seed:
+        return {"status": "no_seed", "detail": "section_plan_seed was None or empty"}
+
+    plan_headings = seed.get("headings", [])
+    plan_count = len(plan_headings)
+    primary_role = seed.get("primary_heading_role", "")
+
+    # 생성된 items에서 heading role 찾기
+    generated_heading_items = []
+    generated_non_heading_items = []
+    for item in body_items:
+        if item.get("role") == primary_role:
+            generated_heading_items.append(item)
+        else:
+            generated_non_heading_items.append(item)
+
+    gen_count = len(generated_heading_items)
+
+    # heading text preview
+    gen_heading_texts = [
+        (it.get("text") or "")[:60] for it in generated_heading_items
+    ]
+    plan_heading_texts = [h.get("text_clean", "") for h in plan_headings]
+
+    # count match
+    count_match = gen_count == plan_count
+
+    # missing / extra estimate
+    missing_estimate = max(0, plan_count - gen_count)
+    extra_estimate = max(0, gen_count - plan_count)
+
+    # order plausibility: 생성된 heading texts가 plan texts와 대략 같은 순서인지
+    # (exact match는 요구하지 않음 — adaptation 허용)
+    order_plausible = True  # default optimistic
+    if gen_count >= 2 and plan_count >= 2:
+        # simple heuristic: 첫 heading과 마지막 heading이 plan 순서와 일치하는지
+        # (adaptation으로 text가 바뀌므로 text 비교 불가 — count 순서만 확인)
+        order_plausible = gen_count <= plan_count + 2  # 대폭 초과하면 의심
+
+    # thin_section_suspicion: heading 직후 body items가 0~1개인 section
+    thin_sections = []
+    if generated_heading_items:
+        heading_indices_in_body = [
+            i for i, it in enumerate(body_items)
+            if it.get("role") == primary_role
+        ]
+        for pos, hi in enumerate(heading_indices_in_body):
+            next_hi = (
+                heading_indices_in_body[pos + 1]
+                if pos + 1 < len(heading_indices_in_body)
+                else len(body_items)
+            )
+            body_between = next_hi - hi - 1
+            if body_between <= 1:
+                thin_sections.append({
+                    "heading_position": hi,
+                    "heading_text": (body_items[hi].get("text") or "")[:40],
+                    "body_items_after": body_between,
+                })
+
+    # source-topic-driven repetition suspicion
+    # heuristic: gen_count가 plan_count보다 2배 이상 → source topic별 반복 의심
+    repetition_suspicion = gen_count >= plan_count * 2 if plan_count > 0 else False
+
+    return {
+        "status": "observed",
+        "planned_heading_count": plan_count,
+        "generated_heading_count": gen_count,
+        "count_match": count_match,
+        "missing_planned_headings_estimate": missing_estimate,
+        "extra_generated_headings": extra_estimate,
+        "order_plausible": order_plausible,
+        "thin_section_suspicion": thin_sections if thin_sections else None,
+        "source_topic_repetition_suspicion": repetition_suspicion,
+        "plan_heading_texts": plan_heading_texts,
+        "generated_heading_texts": gen_heading_texts,
+        "primary_heading_role": primary_role,
     }
