@@ -110,6 +110,40 @@ def _make_raw_pcm_serializer(sample_rate: int = 16000, channels: int = 1):
     return RawPcmSerializer()
 
 
+_KOR_DIGITS = {"0":"공","1":"일","2":"이","3":"삼","4":"사","5":"오","6":"육","7":"칠","8":"팔","9":"구"}
+
+
+def _tts_text_postprocess(text: str) -> str:
+    """TTS 입력 텍스트 후처리 — 자막은 원본 그대로, TTS 만 한국어 발음으로 변환.
+
+    - 전화번호 (063-280-2114 → 공육삼에 이팔공에 이일일사)
+    - URL (https://...) → "홈페이지 주소"로 치환 (TTS 가 영어 알파벳 못 읽음)
+    - 단독 긴 숫자 (5자리 이상)도 한국어 자릿수 발음
+    """
+    import re as _re
+
+    def _digits_to_kor(d: str) -> str:
+        return "".join(_KOR_DIGITS.get(c, c) for c in d)
+
+    # 전화번호 패턴 (031-280-2114, 02-1234-5678 등)
+    def _repl_phone(m):
+        groups = m.group(0).split("-")
+        return "에 ".join(_digits_to_kor(g) for g in groups)
+
+    text = _re.sub(r"\b\d{2,4}-\d{3,4}-\d{4}\b", _repl_phone, text)
+
+    # 짧은 숫자-숫자 패턴 (예: 22-3344) 도 변환
+    text = _re.sub(r"\b\d{2,4}-\d{2,4}\b", _repl_phone, text)
+
+    # URL — 전체 발음 어색하므로 단순화
+    text = _re.sub(r"https?://\S+", "홈페이지", text)
+
+    # 5자리 이상 연속 숫자 (예: 12345) → 자릿수 발음
+    text = _re.sub(r"\b\d{5,}\b", lambda m: _digits_to_kor(m.group(0)), text)
+
+    return text
+
+
 def _build_rag_processor(request: Request, websocket=None):
     """우리 RAG 흐름을 Pipecat FrameProcessor 로 감싼 인스턴스 생성.
 
@@ -229,6 +263,7 @@ def _build_rag_processor(request: Request, websocket=None):
                 sentence_buffer = ""
                 full_reply = ""
                 sentence_count = 0
+                _stream_t0 = None  # 첫 delta 도착 시점 — streaming 동작 진단
 
                 try:
                     from open_webui.routers.public_chatbot import (
@@ -240,11 +275,24 @@ def _build_rag_processor(request: Request, websocket=None):
                     user_obj = _get_public_user(self._owi_request)
                     session_id = str(_uuid.uuid4())
 
+                    import time as _time
+
                     stream_failed = False
+                    delta_count = 0
                     async for kind, payload in _stream_public_llm_reply(
                         self._owi_request, user_obj, user_text, self._history, session_id
                     ):
                         if kind == "delta":
+                            now = _time.time()
+                            if _stream_t0 is None:
+                                _stream_t0 = now
+                                log.info("[voice_ws] FIRST delta arrived")
+                            delta_count += 1
+                            if delta_count <= 5 or delta_count % 20 == 0:
+                                # 처음 5개 + 20개마다 delta 도착 시점 로깅
+                                log.info(
+                                    f"[voice_ws] delta #{delta_count} +{(now - _stream_t0)*1000:.0f}ms len={len(payload)}"
+                                )
                             sentence_buffer += payload
                             full_reply += payload
                             # 문장 경계 감지 → 즉시 TTS 합성 시작
@@ -256,30 +304,33 @@ def _build_rag_processor(request: Request, websocket=None):
                                 sentence = sentence_buffer[:end].strip()
                                 sentence_buffer = sentence_buffer[end:]
                                 if len(sentence) >= 8:
-                                    # humanize 적용 (마크다운/인용 마커 제거)
                                     sentence_clean = _hum(sentence)
                                     if sentence_clean.strip():
                                         sentence_count += 1
-                                        if sentence_count <= 4:  # 너무 많이 잘리지 않게 상한
-                                            log.info(
-                                                f"[voice_ws] stream sentence #{sentence_count}: {sentence_clean[:40]!r}"
-                                            )
-                                            await self.push_frame(
-                                                TTSSpeakFrame(text=sentence_clean)
-                                            )
+                                        # TTS 만 한국어 발음 (자막은 원본)
+                                        tts_sentence = _tts_text_postprocess(sentence_clean)
+                                        log.info(
+                                            f"[voice_ws] stream sentence #{sentence_count}: "
+                                            f"{tts_sentence[:50]!r}"
+                                        )
+                                        await self.push_frame(TTSSpeakFrame(text=tts_sentence))
                         elif kind == "done":
                             final_text = payload or _hum(full_reply)
-                            # 남은 buffer 도 한 문장으로 합성 (마지막 문장이 종결 부호 없을 때)
-                            if sentence_buffer.strip() and sentence_count < 4:
+                            # 남은 buffer 도 한 문장으로 합성
+                            if sentence_buffer.strip():
                                 tail = _hum(sentence_buffer.strip())
                                 if tail and len(tail) >= 5:
                                     log.info(f"[voice_ws] stream tail: {tail[:40]!r}")
-                                    await self.push_frame(TTSSpeakFrame(text=tail))
-                            # 자막은 humanized 전체 답변
+                                    await self.push_frame(
+                                        TTSSpeakFrame(text=_tts_text_postprocess(tail))
+                                    )
+                            # 자막은 humanized 원본 (숫자 그대로)
                             self._caption_observer.queue_reply(final_text)
                             self._history.append({"role": "user", "content": user_text})
                             self._history.append({"role": "assistant", "content": final_text})
-                            log.info(f"[voice_ws] stream done len={len(final_text)}")
+                            log.info(
+                                f"[voice_ws] stream done deltas={delta_count} len={len(final_text)}"
+                            )
                         elif kind == "error":
                             log.warning(f"[voice_ws] stream error: {payload}")
                             stream_failed = True
@@ -302,14 +353,16 @@ def _build_rag_processor(request: Request, websocket=None):
                     self._history.append({"role": "user", "content": user_text})
                     self._history.append({"role": "assistant", "content": reply_text})
                     self._caption_observer.queue_reply(reply_text)
-                    # 문장 분할 후 push
+                    # 문장 분할 후 push (제한 없음)
                     parts = _re.split(
                         r"(?<=[.!?。…])\s+|(?<=다)\s+|(?<=요)\s+", reply_text
                     )
                     parts = [p.strip() for p in parts if p.strip()] or [reply_text]
-                    for s in parts[:4]:
+                    for s in parts:
                         if s.strip():
-                            await self.push_frame(TTSSpeakFrame(text=s))
+                            await self.push_frame(
+                                TTSSpeakFrame(text=_tts_text_postprocess(s))
+                            )
                 return
 
             # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
