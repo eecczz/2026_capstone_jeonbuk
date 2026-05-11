@@ -1801,6 +1801,31 @@ def assemble_hwpx_hybrid(
             "ai_marker_residual_count": _phase2_ai_marker_residuals,
             "rewrite_conflicts": _phase2_rewrite_conflicts[:20],
         }
+    # ── section dirty marking: save 시 serialize 대상에 포함 ──
+    # removal 또는 append가 발생한 section만 dirty 처리
+    _dirty_section_indices: set[int] = set()
+    # removal이 발생한 section
+    for si, cnt in _remove_per_section.items():
+        if cnt > 0:
+            _dirty_section_indices.add(si)
+    # append가 발생한 section (target section)
+    if success_count > 0:
+        _dirty_section_indices.add(_target_sec_idx)
+
+    for si in _dirty_section_indices:
+        if si < len(_all_sections):
+            _all_sections[si].mark_dirty()
+
+    structure["_dirty_marking"] = {
+        "dirty_section_indices": sorted(_dirty_section_indices),
+        "dirty_section_count": len(_dirty_section_indices),
+        "mark_dirty_applied": len(_dirty_section_indices) > 0,
+    }
+    log.info(
+        f"section dirty marking: indices={sorted(_dirty_section_indices)}, "
+        f"count={len(_dirty_section_indices)}"
+    )
+
     log.info(
         f"하이브리드 조립 완료: 성공 {success_count}, 실패 {len(errors)}, "
         f"body 항목 {len(body_items)}개, marker rewrite {changed}/{len(_marker_rewrite_log)}"
