@@ -341,7 +341,8 @@ def _build_rag_processor(request: Request, websocket=None):
                     stream_failed = False
                     delta_count = 0
                     async for kind, payload in _stream_public_llm_reply(
-                        self._owi_request, user_obj, user_text, self._history, session_id
+                        self._owi_request, user_obj, user_text, self._history,
+                        session_id, voice_mode=True,
                     ):
                         if kind == "delta":
                             now = _time.time()

@@ -416,10 +416,8 @@
   const PC_SAMPLE_RATE = 16000;
   const PC_TTS_SAMPLE_RATE = 24000;
 
-  // 봇 답변 재생 중 마이크 mute — 잡음("네." 같은) 이 STT 로 들어가서 엉뚱한
-  // 새 답변 트리거되는 것 방지. 마지막 audio chunk 수신 후 1.2s 까지 mute 유지.
-  let pcLastBotAudioTime = 0;
-  const PC_MIC_MUTE_AFTER_AUDIO_MS = 1200;
+  // (롤백) 봇 답변 중 마이크 mute 는 끼어들기 자유도를 해쳐 사용자가 비활성화 요청.
+  // Pipecat 의 allow_interruptions=True 만으로 끼어들기 처리.
 
   function _f32ToI16LE(f32) {
     const out = new Int16Array(f32.length);
@@ -471,8 +469,6 @@
           else if (msg && msg.type === "reply") setVoiceCaption(null, msg.text || "");
         } catch (_) {}
       } else if (ev.data instanceof ArrayBuffer) {
-        // 봇 audio chunk 도착 — mic mute timer 갱신 (echo / 잡음 차단)
-        pcLastBotAudioTime = Date.now();
         _enqueuePlayback(ev.data);
       }
     });
@@ -495,14 +491,6 @@
       pcProcessor.onaudioprocess = (ev) => {
         if (pcPausedByUser) return;
         if (!pcWs || pcWs.readyState !== WebSocket.OPEN) return;
-        // 봇 audio 재생 중 (마지막 chunk 수신 후 PC_MIC_MUTE_AFTER_AUDIO_MS 까지)
-        // mic 입력 무시 — 봇 자기 목소리 echo / 옆 잡음 STT 차단.
-        if (
-          pcLastBotAudioTime &&
-          Date.now() - pcLastBotAudioTime < PC_MIC_MUTE_AFTER_AUDIO_MS
-        ) {
-          return;
-        }
         const f32 = ev.inputBuffer.getChannelData(0);
         const i16 = _f32ToI16LE(f32);
         try { pcWs.send(i16.buffer); } catch (_) {}

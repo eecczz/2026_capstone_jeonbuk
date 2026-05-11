@@ -629,12 +629,28 @@ async def _run_public_llm(
 # ────────────────────────────────────────────────────────────────────────
 
 
+_VOICE_MODE_DIRECTIVES = """
+
+# 음성 출력 모드 — 이번 답변은 도민에게 음성으로 들려드립니다. 다음 규칙을 반드시 지키세요.
+
+1. 자연스러운 한국어 구어체로만 작성. 문어체 ("~함을 알려드립니다", "~인 바입니다", "~에 따르면 다음과 같습니다") 금지.
+2. URL · 이메일 · 파일 경로 · 영문 코드명 절대 작성 금지. 대신 "전북도청 홈페이지에서 보실 수 있어요" 같이 풀어서 말씀.
+3. 콜론(:) 으로 정렬한 목록, 글머리표, 항목 나열 금지. 모든 정보를 자연스러운 문장으로 풀어서 이어가세요.
+   잘못된 예: "기관명: 전북특별자치도\\n담당: 축산과\\n전화: 063-280-2114"
+   바른 예: "전북특별자치도 축산과에서 담당하시고요, 전화번호는 063-280-2114 예요"
+4. 괄호 · 따옴표 · 별표 · 대시 같은 기호는 최소한만. 음성으로 들으면 어색해요.
+5. 3~5 문장 정도가 듣기 좋아요. 핵심부터 자연스럽게 풀어가시고, 끝은 자연스러운 문장 종결로.
+6. 답변 끝에 "자세한 건 ~" 같은 안내 멘트를 인위적으로 붙이지 마세요. 정말 필요할 때만 자연스럽게.
+7. 숫자는 원본 표기 그대로 (45%, 063-280-2114) — TTS 측에서 한국어 발음으로 자동 변환됩니다."""
+
+
 async def _stream_public_llm_reply(
     request: Request,
     user: UserModel,
     user_message: str,
     history: list[dict],
     session_id: str,
+    voice_mode: bool = False,
 ):
     """LLM 응답을 SSE delta 별로 yield 하는 async generator.
 
@@ -643,8 +659,8 @@ async def _stream_public_llm_reply(
     - ("done",  str)  — 응답 종료, humanize 적용한 전체 reply text
     - ("error", str)  — 호출 실패 (호출자가 폴백 처리)
 
-    sources 는 streaming 모드에선 제공하지 않음 — 음성 모드 RAG processor 가
-    sources 안 쓰므로 무방.
+    voice_mode=True 면 system_prompt 끝에 구어체 / URL 금지 등 음성용 가이드 append.
+    텍스트 모드 (/chat) 는 voice_mode=False 라 영향 없음.
     """
     # 1. 모델 결정
     model_id = getattr(
@@ -675,6 +691,8 @@ async def _stream_public_llm_reply(
         "PUBLIC_CHATBOT_SYSTEM_PROMPT",
         "당신은 전북특별자치도청 대도민 안내 AI입니다.",
     ) + _today_context_prefix()
+    if voice_mode:
+        system_prompt = system_prompt + _VOICE_MODE_DIRECTIVES
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for turn in history or []:
