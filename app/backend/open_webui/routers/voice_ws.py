@@ -381,25 +381,35 @@ async def voice_ws(websocket: WebSocket):
     # run_tts 만 override 해서 voice 를 그대로 endpoint 에 보낸다.
     from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
+    # TTS 톤·말투 초기 세팅 — Qwen3-TTS 에 OpenAI 호환 instructions 인자로 전달.
+    # 사용자 피드백: 디폴트 Sohee 가 "지친 말투" 같음 → 아나운서 톤으로 또박또박,
+    # 명확하게, 약간 밝게. 도청 도민 안내원 컨셉이라 정중하고 신뢰감 있는 어조.
+    _TTS_INSTRUCTIONS = (
+        "정중하고 또박또박한 한국어 아나운서 톤으로 말씀해 주세요. "
+        "표준어 억양으로 분명하게, 너무 느리지 않게, 신뢰감 있는 어조로 발음해 주세요. "
+        "도청 도민 안내원이 시민에게 친절하게 설명한다고 생각하고 자연스럽게 읽어 주세요."
+    )
+    # speed 1.0 디폴트. Qwen3-TTS 가 받아주면 1.05 정도로 약간 빠르게.
+    _TTS_SPEED = 1.05
+
     class _JeonbukOpenAITTSService(OpenAITTSService):
         async def run_tts(self, text: str, context_id: str):
             log.info(
                 f"[voice_ws] TTS call voice={self._settings.voice!r} model={self._settings.model!r} "
                 f"rate={self.sample_rate} len={len(text)}: {text[:60]!r}"
             )
-            # Pipecat OpenAITTSService 의 chunk_size 디폴트가 0 이라 iter_bytes 가
-            # 임의 크기 chunk 를 반환한다. 24kHz 16-bit mono 에서 chunk 크기가
-            # 홀수면 한 sample 이 두 chunk 에 걸쳐서 클라이언트 측 Int16Array
-            # 변환 시 misalignment → 톤이 낮아지고 잡음 섞여 "느린 남성" 처럼 들림.
-            # → 명시적 4800 bytes (100ms @ 24kHz 16-bit mono) 로 yield + buffer 잔여.
-            FRAME_BYTES = 4800
+            FRAME_BYTES = 4800  # 100ms @ 24kHz 16-bit mono — chunk alignment 보장
             buf = bytearray()
             try:
+                # instructions / speed 는 OpenAI SDK 가 dict 로 endpoint 에 그대로 전달.
+                # Qwen3-TTS 가 instructions 안 받아도 무시될 뿐 합성은 정상.
                 async with self._client.audio.speech.with_streaming_response.create(
                     input=text,
                     model=self._settings.model,
                     voice=self._settings.voice,
                     response_format="pcm",
+                    instructions=_TTS_INSTRUCTIONS,
+                    speed=_TTS_SPEED,
                 ) as r:
                     if r.status_code != 200:
                         error = await r.text()
