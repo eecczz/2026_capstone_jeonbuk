@@ -26,10 +26,13 @@
 | **12** | **Generation Schema Redesign** | **done** | marker/content 분리, template observation, target unit planning |
 | 13 | Unit-Aware Generation | **in progress** | 13.0 done, 13.3b-1 done, 13.1 deferred |
 | **13.5** | **Attachment/Table Preserve** | **blocker** | chapter route에서 attachment 삭제됨 — preserve_indices 확장 필요 |
+| **13.6** | **Source Allocation Decision Gate** | **next** | 2a→source split 불안정 해결 방식 선택. multi-section append/document context 관측 |
+| 13.7 | Source-to-Template Allocation Redesign | not started | source_blocks→generation 연결, split 보완/대체 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
-| 15 | Source Evidence / Coverage | not started | source coverage validation — 14 이후 구현 |
+| 15 | Source Evidence / Coverage | not started | source coverage validation — 13.7 이후 |
 | 16 | Internal AI Transition | not started | 외부→내부 AI 전환 |
+| later | Assembly 고도화 | not started | tree→indentation, inline emphasis, section-aware append |
 
 ---
 
@@ -48,21 +51,36 @@
   |                         |
   |                    12: Schema Redesign (done)
   |                         |
-  |                    13: Unit-Aware Generation ← next
+  |                    13: Unit-Aware Generation (13.0, 13.3b-1 done)
   |                         |
-  |                    14: Open Notebook (KB 연동)
+  |                    13.5: Attachment Preserve ← BLOCKER
   |                         |
-  |                    15: Source Evidence (14 이후)
+  |                    13.6: Source Allocation Decision Gate
+  |                         |
+  |                    13.7: Source Allocation Redesign
+  |                         |
+  |              ┌──────────┤
+  |              |          |
+  |         14-table   14: Open Notebook (KB 연동)
+  |              |          |
+  |              └──────────┤
+  |                         |
+  |                    15: Source Evidence (13.7 이후)
   |                         |
   |                    16: Internal AI
+  |
+  └── later: Assembly 고도화 (독립)
 ```
 
 - 9, 10, 11은 8 이후 병렬 가능
-- **12 진입 전**: 3번째 양식 e2e 관측 (hard prerequisite) + 10.5 decision gate 판단
 - 12는 8 + 10(최소) + 11 결정 완료 후
 - 13은 12 이후 (target_unit_plan → generation 연결)
-- 14는 13 이후 (source contract 확정 후 KB 연동)
-- **15는 14 이후** (source 구조 확정 후 coverage validation)
+- **13.5는 13 이후** (attachment preserve blocker)
+- **13.6은 13.5 이후** (source split 불안정 해결 방식 선택 — "문제인지"가 아니라 "어떻게 고칠지" gate)
+- **13.7은 13.6 이후** (allocation redesign 구현)
+- **14-table과 14는 13.7 이후, 병렬 가능**
+- **15는 13.7 이후** (allocation 안정 후 coverage validation)
+- **Assembly 고도화는 독립** (tree→layout, section-aware append. 다른 단계와 의존 없음)
 - 16은 최후
 
 ---
@@ -504,6 +522,58 @@ target_unit_plan에서 attachment region (101p)이 section[1,2,4]에 분포. 현
 
 ---
 
+## Stage 13.6: Source Allocation Decision Gate — not started
+
+### 목적
+
+2a→source split 불안정의 **해결 방식을 선택**한다. "문제인지 판단"이 아니라 "어떻게 고칠지" gate.
+
+### 이미 관측된 문제
+
+- 같은 양식에서 2a가 3 chapter vs 5 chapter 편차 (10단계 finding)
+- source split 불균형: [154, 219, 40360] (한 chapter에 source 99% 집중)
+- 2a title이 source에 없으면 split 실패 → chapter에 source 미할당
+- 07b_source_split_decision.json으로 사후 진단 가능, 보정 메커니즘 없음
+
+### gate에서 결정할 것
+
+1. **2a 안정화**: 2a prompt/schema 개선으로 chapter output stability 확보 가능한가?
+2. **source_blocks 기반 allocation**: 13.0의 source_blocks를 chapter→source 매핑에 사용하면 title match 의존도를 낮출 수 있는가?
+3. **fallback chain**: split 실패 시 broad source로 fallback하는 게 나은가, 재시도가 나은가?
+4. **multi-section append**: 13.5 이후 attachment가 보존된 상태에서, body content가 section[0]에만 가는 것이 실제 문제인지 관측
+5. **document-level context**: 2b가 다른 chapter를 모르는 것이 실제 content 중복/누락을 유발하는지 관측
+
+### 산출물
+
+- 해결 방식 선택 문서 (13.7 구현 범위 결정)
+- multi-section / document-context watch 유지 or 승격 판단
+
+### 의존성
+
+- 13.5 이후 (attachment 보존 상태에서 source 문제의 실제 영향 측정)
+
+---
+
+## Stage 13.7: Source-to-Template Allocation Redesign — not started
+
+### 목적
+
+13.6에서 선택한 방식으로 source→chapter allocation을 개선한다.
+
+### 후보 방향 (13.6에서 확정)
+
+1. source_blocks를 generation input으로 연결 (13.1 deferred → 여기서 소비)
+2. chapter title 기반 split 보완 또는 대체
+3. source concentration / empty chapter / coverage 지표 도입
+4. allocation 결과를 debug에 기록 (17_source_allocation.json)
+
+### 의존성
+
+- 13.6 decision gate 결정 후 진입
+- 15 (source coverage)의 선행 — allocation이 안정돼야 coverage 검증이 의미 있음
+
+---
+
 ## Stage 14: Open Notebook Source Planning — not started
 
 ### 목적
@@ -629,15 +699,16 @@ source text가 chapter에 할당되는 전체 경로.
 |------|-------------|
 | 4 (2a) | chapter title + type 결정 → source split anchor |
 | 10.0+10.1 | decision log, allocation summary |
-| **10.2** | **A/B/C/D 원인 자동 분류 — 보류** |
-| **10.5** | **2a → source-to-template allocator 전환 — conditional** |
-| **12** | **source_refs 필드 → item-level source 추적** |
-| **13** | **source pre-filtering (template structure 기반) + region-based allocation** |
+| 13.0 | source_blocks adapter (debug-only, generation 미연결) |
+| **13.5** | **attachment preserve (source와 독립, 하지만 보존 대상 결정에 target_unit_plan 사용)** |
+| **13.6** | **source split 불안정 해결 방식 결정 gate** |
+| **13.7** | **source_blocks → generation 연결, split 보완/대체** |
 | **14** | **KB에서 RAG 기반 파일 선택 → 파일 전문 획득 경로 추가** |
-| **15** | **source coverage validation** |
+| **15** | **source coverage validation (13.7 이후)** |
 
-**현재 상태**: split 함수는 정상이지만, 2a output stability가 핵심 변수.
-**Source contract (합의)**: source는 파일 전문 1~N개의 텍스트. 생성기가 allocation 담당. 14에서 KB 연동 시에도 이 계약 유지.
+**현재 상태**: split 함수는 정상 동작 가능하지만 2a output stability에 의존. source_blocks는 debug-only.
+**관측된 문제**: 같은 양식에서 3 vs 5 chapter 편차, source concentration [154, 219, 40360].
+**Source contract (합의)**: source는 파일 전문 1~N개의 텍스트. 14에서 KB 연동 시에도 유지.
 
 ### CC4: Marker / Content 분리
 
