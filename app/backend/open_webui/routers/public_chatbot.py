@@ -622,6 +622,203 @@ async def _run_public_llm(
 
 
 # ────────────────────────────────────────────────────────────────────────
+# Streaming 변형 — 음성 WebSocket 경로 (voice_ws.py) 가 첫 토큰 도착 즉시
+# sentence 단위로 TTS 합성 시작하도록 SSE delta 를 async generator 로 yield.
+# 기존 _run_public_llm 의 form_data 구성을 그대로 복제 (분기 안 함으로써
+# 텍스트 모드 /chat 의 동작에 영향 없음).
+# ────────────────────────────────────────────────────────────────────────
+
+
+async def _stream_public_llm_reply(
+    request: Request,
+    user: UserModel,
+    user_message: str,
+    history: list[dict],
+    session_id: str,
+):
+    """LLM 응답을 SSE delta 별로 yield 하는 async generator.
+
+    yield 형식:
+    - ("delta", str)  — LLM 부분 응답 청크 (sentence aggregator 가 처리)
+    - ("done",  str)  — 응답 종료, humanize 적용한 전체 reply text
+    - ("error", str)  — 호출 실패 (호출자가 폴백 처리)
+
+    sources 는 streaming 모드에선 제공하지 않음 — 음성 모드 RAG processor 가
+    sources 안 쓰므로 무방.
+    """
+    # 1. 모델 결정
+    model_id = getattr(
+        request.app.state.config,
+        "PUBLIC_CHATBOT_MODEL_ID",
+        "jeonbuk-public-chatbot",
+    )
+    if not request.app.state.MODELS:
+        try:
+            await get_all_models(request, user=user)
+        except Exception as e:
+            log.warning(f"get_all_models failed in stream: {e}")
+    if model_id not in (request.app.state.MODELS or {}):
+        fallback = getattr(
+            request.app.state.config,
+            "PUBLIC_CHATBOT_BASE_MODEL",
+            "gpt-4o-mini",
+        )
+        if fallback not in (request.app.state.MODELS or {}):
+            yield ("error", f"모델 미발견: {model_id}, {fallback}")
+            return
+        model_id = fallback
+    model = request.app.state.MODELS[model_id]
+
+    # 2~3. system_prompt + messages
+    system_prompt = getattr(
+        request.app.state.config,
+        "PUBLIC_CHATBOT_SYSTEM_PROMPT",
+        "당신은 전북특별자치도청 대도민 안내 AI입니다.",
+    ) + _today_context_prefix()
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    for turn in history or []:
+        role = turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", None)
+        content = (
+            turn.get("content")
+            if isinstance(turn, dict)
+            else getattr(turn, "content", None)
+        )
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
+    # 4. metadata
+    message_id = str(uuid.uuid4())
+    metadata = {
+        "user_id": user.id,
+        "chat_id": "",
+        "message_id": message_id,
+        "session_id": session_id,
+        "parent_message_id": None,
+        "parent_message": None,
+        "filter_ids": [],
+        "tool_ids": None,
+        "tool_servers": None,
+        "files": None,
+        "features": {},
+        "variables": {},
+        "model": model,
+        "direct": False,
+        "params": {
+            "stream_delta_chunk_size": None,
+            "reasoning_tags": None,
+            "function_calling": "default",
+        },
+        "public_chatbot": True,
+    }
+    rag_files = _public_chatbot_rag_files(request)
+    metadata["files"] = rag_files
+
+    # 5. form_data (stream=True — 핵심 차이점)
+    form_data: dict[str, Any] = {
+        "model": model_id,
+        "messages": messages,
+        "stream": True,
+        "metadata": metadata,
+        "files": rag_files,
+    }
+    try:
+        request.state.metadata = metadata
+    except Exception:
+        pass
+
+    # 6. RAG 컨텍스트 주입
+    try:
+        form_data, metadata, _events = await process_chat_payload(
+            request, form_data, user, metadata, model
+        )
+    except Exception as e:
+        log.warning(f"process_chat_payload failed in stream: {e}")
+
+    # 비표준 키 제거
+    for k in (
+        "files", "tool_servers", "knowledge", "tools", "tool_ids",
+        "function_calling", "metadata", "session_id", "chat_id", "id",
+        "messageId", "background_tasks", "features", "variables",
+        "filter_ids", "params",
+    ):
+        form_data.pop(k, None)
+    form_data["stream"] = True  # process_chat_payload 가 덮어쓸 수 있어 다시 강제
+
+    # 7. LLM 호출
+    try:
+        response = await generate_chat_completion(
+            request, form_data, user=user, bypass_filter=True
+        )
+    except Exception as e:
+        log.exception(f"generate_chat_completion stream failed: {e}")
+        yield ("error", str(e))
+        return
+
+    # 8. SSE chunk → delta yield
+    full_text = ""
+    if isinstance(response, StreamingResponse):
+        try:
+            async for chunk in response.body_iterator:
+                if isinstance(chunk, bytes):
+                    chunk_str = chunk.decode("utf-8", errors="replace")
+                elif isinstance(chunk, str):
+                    chunk_str = chunk
+                else:
+                    continue
+                for line in chunk_str.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if payload in ("", "[DONE]"):
+                        continue
+                    try:
+                        obj = json.loads(payload)
+                        delta = (
+                            obj.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content", "")
+                            or ""
+                        )
+                        if delta:
+                            full_text += delta
+                            yield ("delta", delta)
+                    except Exception:
+                        continue
+        except Exception as e:
+            log.exception(f"stream iteration error: {e}")
+    elif isinstance(response, dict):
+        # endpoint 가 streaming 미지원 — 한꺼번에 받음
+        try:
+            text = response["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            text = json.dumps(response, ensure_ascii=False)
+        if text:
+            full_text = text
+            yield ("delta", text)
+    elif isinstance(response, JSONResponse) or hasattr(response, "body"):
+        try:
+            body = response.body
+            if isinstance(body, bytes):
+                body = body.decode("utf-8", errors="replace")
+            obj = json.loads(body) if body else {}
+            try:
+                text = obj["choices"][0]["message"]["content"] or ""
+            except (KeyError, IndexError, TypeError):
+                text = obj.get("detail") or obj.get("message") or ""
+            if text:
+                full_text = text
+                yield ("delta", text)
+        except Exception as e:
+            log.warning(f"JSONResponse parse failed in stream: {e}")
+
+    # 9. 종료 — humanized 전체 텍스트
+    final = _humanize_reply(full_text) if full_text else ""
+    yield ("done", final)
+
+
+# ────────────────────────────────────────────────────────────────────────
 # 챗봇 UI HTML 영구 서빙 — overlay layer 의 /static/ 이 컨테이너 재시작/워커 reload
 # 시점에 사라지는 문제를 우회. 영구 볼륨(/data/owi/public_chatbot/index.html)을
 # 직접 읽어 응답한다. 브라우저는 /api/v1/public/chatbot.html 을 호출.

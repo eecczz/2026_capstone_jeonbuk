@@ -214,59 +214,102 @@ def _build_rag_processor(request: Request, websocket=None):
                 if not user_text:
                     return
 
-                # 사용자 발화 자막 즉시 push (RAG 응답 기다리지 않고)
+                # 사용자 발화 자막 즉시 push
                 await _send_caption("transcription", user_text)
 
-                try:
-                    from open_webui.routers.public_chatbot import _run_chat_internal
-
-                    reply_text, _session_id, _sources = await _run_chat_internal(
-                        self._owi_request, user_text, self._history
-                    )
-                except Exception as e:
-                    log.exception(f"voice_ws RAG failure: {e}")
-                    reply_text = "죄송해요. 답변 준비 중에 문제가 생겼어요."
-
-                log.info(f"[voice_ws] reply: {reply_text[:80]!r}")
-
-                # 멀티턴 히스토리 누적 (TTS 잘림과 무관하게 전체 본문)
-                self._history.append({"role": "user", "content": user_text})
-                self._history.append({"role": "assistant", "content": reply_text})
-
-                # 자막 reply 는 TTS 첫 audio chunk 시점에 push 되도록 pending 등록.
-                # AudioStartCaptionObserver 가 다음 TTSAudioRawFrame 받을 때 송출.
-                self._caption_observer.queue_reply(reply_text)
-
-                # Sentence-by-sentence TTS — pseudo streaming.
-                # 답변 전체를 한 번에 합성하지 않고 문장 단위로 잘라 순차 push.
-                # TTSService 가 sentence queue 로 처리해서 첫 문장 합성이 끝나기
-                # 전에 두 번째 문장도 준비 → 음성 끊김 없이 자연스럽게 이어짐.
-                # (진짜 LLM streaming 은 RAG 전체 await 후 분할이라 LLM 응답 시간
-                #  자체는 못 줄이지만, TTS pipeline 측면에서 부드러움 ↑)
+                # ── 진짜 LLM streaming + sentence-by-sentence TTS ──
+                # _stream_public_llm_reply 가 SSE delta 별로 yield. LLM 첫 토큰이
+                # 도착하는 순간부터 sentence buffer 에 누적, 종결 어미 감지 즉시
+                # TTSSpeakFrame push → 첫 문장 음성 합성을 LLM 응답 완료 전에 시작.
+                # 사용자 체감 응답 시간 큰 폭 단축.
                 import re as _re
+                import uuid as _uuid
 
-                # 종결 어미 / 마침표 기준 문장 분할
-                parts = _re.split(r"(?<=[.!?。…])\s+|(?<=다)\s+|(?<=요)\s+", reply_text)
-                parts = [p.strip() for p in parts if p.strip()]
-                if not parts:
-                    parts = [reply_text]
+                _sentence_pat = _re.compile(r"[.!?。…]|다\s|요\s|니다\s|에요\s|이에요\s")
+                sentence_buffer = ""
+                full_reply = ""
+                sentence_count = 0
 
-                # 너무 짧은 단편은 다음 문장과 합침 (TTS 호출 비용 절약 + 자연 흐름)
-                merged: list[str] = []
-                buf = ""
-                for p in parts:
-                    if len(buf) + len(p) + 1 < 80:
-                        buf = f"{buf} {p}".strip() if buf else p
-                    else:
-                        if buf:
-                            merged.append(buf)
-                        buf = p
-                if buf:
-                    merged.append(buf)
+                try:
+                    from open_webui.routers.public_chatbot import (
+                        _stream_public_llm_reply,
+                        _get_public_user,
+                        _humanize_reply as _hum,
+                    )
 
-                log.info(f"[voice_ws] TTS sentences ({len(merged)}): {[s[:30] for s in merged]}")
-                for sentence in merged:
-                    await self.push_frame(TTSSpeakFrame(text=sentence))
+                    user_obj = _get_public_user(self._owi_request)
+                    session_id = str(_uuid.uuid4())
+
+                    stream_failed = False
+                    async for kind, payload in _stream_public_llm_reply(
+                        self._owi_request, user_obj, user_text, self._history, session_id
+                    ):
+                        if kind == "delta":
+                            sentence_buffer += payload
+                            full_reply += payload
+                            # 문장 경계 감지 → 즉시 TTS 합성 시작
+                            while True:
+                                m = _sentence_pat.search(sentence_buffer)
+                                if not m:
+                                    break
+                                end = m.end()
+                                sentence = sentence_buffer[:end].strip()
+                                sentence_buffer = sentence_buffer[end:]
+                                if len(sentence) >= 8:
+                                    # humanize 적용 (마크다운/인용 마커 제거)
+                                    sentence_clean = _hum(sentence)
+                                    if sentence_clean.strip():
+                                        sentence_count += 1
+                                        if sentence_count <= 4:  # 너무 많이 잘리지 않게 상한
+                                            log.info(
+                                                f"[voice_ws] stream sentence #{sentence_count}: {sentence_clean[:40]!r}"
+                                            )
+                                            await self.push_frame(
+                                                TTSSpeakFrame(text=sentence_clean)
+                                            )
+                        elif kind == "done":
+                            final_text = payload or _hum(full_reply)
+                            # 남은 buffer 도 한 문장으로 합성 (마지막 문장이 종결 부호 없을 때)
+                            if sentence_buffer.strip() and sentence_count < 4:
+                                tail = _hum(sentence_buffer.strip())
+                                if tail and len(tail) >= 5:
+                                    log.info(f"[voice_ws] stream tail: {tail[:40]!r}")
+                                    await self.push_frame(TTSSpeakFrame(text=tail))
+                            # 자막은 humanized 전체 답변
+                            self._caption_observer.queue_reply(final_text)
+                            self._history.append({"role": "user", "content": user_text})
+                            self._history.append({"role": "assistant", "content": final_text})
+                            log.info(f"[voice_ws] stream done len={len(final_text)}")
+                        elif kind == "error":
+                            log.warning(f"[voice_ws] stream error: {payload}")
+                            stream_failed = True
+
+                    if stream_failed and not full_reply:
+                        raise RuntimeError("LLM stream produced no output")
+
+                except Exception as e:
+                    log.exception(f"voice_ws streaming failed, falling back to non-stream: {e}")
+                    # 폴백: 기존 non-streaming 경로
+                    try:
+                        from open_webui.routers.public_chatbot import _run_chat_internal
+
+                        reply_text, _sid, _src = await _run_chat_internal(
+                            self._owi_request, user_text, self._history
+                        )
+                    except Exception as e2:
+                        log.exception(f"voice_ws fallback also failed: {e2}")
+                        reply_text = "죄송해요. 답변 준비 중에 문제가 생겼어요."
+                    self._history.append({"role": "user", "content": user_text})
+                    self._history.append({"role": "assistant", "content": reply_text})
+                    self._caption_observer.queue_reply(reply_text)
+                    # 문장 분할 후 push
+                    parts = _re.split(
+                        r"(?<=[.!?。…])\s+|(?<=다)\s+|(?<=요)\s+", reply_text
+                    )
+                    parts = [p.strip() for p in parts if p.strip()] or [reply_text]
+                    for s in parts[:4]:
+                        if s.strip():
+                            await self.push_frame(TTSSpeakFrame(text=s))
                 return
 
             # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
