@@ -34,14 +34,39 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _build_rag_processor(request: Request):
+def _build_rag_processor(request: Request, websocket=None):
     """우리 RAG 흐름을 Pipecat FrameProcessor 로 감싼 인스턴스 생성.
 
     의존성을 import time 에 끌어오면 main.py 로딩 시 사이클 문제가 생길 수 있어
     함수 내부에서 lazy import.
+
+    Args:
+        request: OWI Request-like 프록시 (state.config 접근용)
+        websocket: 자막 메시지 push 용 raw WebSocket. None 이면 자막 채널 없음.
     """
-    from pipecat.frames.frames import TranscriptionFrame, TextFrame
+    import json as _json
+
+    from pipecat.frames.frames import (
+        TranscriptionFrame,
+        TextFrame,
+        VADUserStartedSpeakingFrame,
+        VADUserStoppedSpeakingFrame,
+    )
     from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+
+    async def _send_caption(kind: str, text: str):
+        """프론트엔드 자막 영역 업데이트용 text 메시지 push.
+
+        Pipecat 의 binary 오디오 스트림과 같은 WebSocket 위에 text JSON 으로 전송.
+        프론트 ws.onmessage 가 string 받으면 JSON.parse 해서 vc-user / vc-bot 자막
+        bubble 을 갱신한다 (public-chatbot.html 안 setVoiceCaption).
+        """
+        if websocket is None:
+            return
+        try:
+            await websocket.send_text(_json.dumps({"type": kind, "text": text}))
+        except Exception as e:
+            log.debug(f"voice_ws caption send failed: {e}")
 
     class JeonbukRAGProcessor(FrameProcessor):
         """음성 STT 결과를 텍스트 챗봇과 같은 RAG/LLM 흐름으로 처리.
@@ -51,6 +76,7 @@ def _build_rag_processor(request: Request):
         받아 음성으로 합성 → transport.output() → 브라우저.
 
         멀티턴: 단일 WebSocket 세션 동안 history 누적.
+        VAD frame 은 추적용으로 로깅만 하고 통과시킨다 (디버그 도움).
         """
 
         def __init__(self, owi_request: Request):
@@ -61,10 +87,21 @@ def _build_rag_processor(request: Request):
         async def process_frame(self, frame, direction):  # type: ignore[override]
             await super().process_frame(frame, direction)
 
+            # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
+            if isinstance(frame, VADUserStartedSpeakingFrame):
+                log.info("[voice_ws] VAD: user started speaking")
+            elif isinstance(frame, VADUserStoppedSpeakingFrame):
+                log.info("[voice_ws] VAD: user stopped speaking")
+
             if isinstance(frame, TranscriptionFrame):
                 user_text = (frame.text or "").strip()
+                log.info(f"[voice_ws] STT transcript: {user_text!r}")
                 if not user_text:
                     return
+
+                # 사용자 발화 자막 즉시 push (RAG 응답 기다리지 않고)
+                await _send_caption("transcription", user_text)
+
                 try:
                     from open_webui.routers.public_chatbot import _run_chat_internal
 
@@ -74,6 +111,10 @@ def _build_rag_processor(request: Request):
                 except Exception as e:
                     log.exception(f"voice_ws RAG failure: {e}")
                     reply_text = "죄송해요. 답변 준비 중에 문제가 생겼어요."
+
+                log.info(f"[voice_ws] reply: {reply_text[:80]!r}")
+                # 봇 답변 자막 push (TTS 합성 전에 — 시각적으론 즉시 보임)
+                await _send_caption("reply", reply_text)
 
                 # 멀티턴 히스토리 누적
                 self._history.append({"role": "user", "content": user_text})
@@ -154,15 +195,22 @@ async def voice_ws(websocket: WebSocket):
     )
 
     # Pipecat 1.1 에서는 VAD 가 Transport params 가 아닌 별도 Pipeline 노드로 들어간다.
-    # 도청 민원은 긴 설명이 잦아 stop_secs 를 길게 (0.8s) — 짧은 텀에 답변 끊고
-    # 들어가는 문제 완화. start_secs 는 짧게 (0.18s) — 발화 시작 빠르게 포착.
+    #
+    # 파라미터 튜닝 의도:
+    # - min_volume=0.3: 브라우저 마이크 입력은 자동 게인이 약해 기본 0.6 으로는 발화
+    #   시작 자체를 못 잡는 경우가 많다. 도민이 작게 말해도 인지하도록 낮춤.
+    # - confidence=0.5: 한국어 + 잡음 환경에서 0.65 는 보수적이라 stop 감지가 늦어
+    #   "계속 듣는 모드가 안 멈춤" 증상으로 이어짐. 0.5 로 적극화.
+    # - start_secs=0.18: 발화 시작 빠르게 포착.
+    # - stop_secs=0.4: 사용자가 잠시 텀 두면 turn 끝났다고 판단. Smart Turn V3 가
+    #   다시 한 번 "정말 발화 끝인지" 추가 판정하므로 0.4 로 짧게 두어도 안전.
     vad_processor = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
             params=VADParams(
-                confidence=0.65,
+                confidence=0.5,
                 start_secs=0.18,
-                stop_secs=0.8,
-                min_volume=0.6,
+                stop_secs=0.4,
+                min_volume=0.3,
             )
         ),
     )
@@ -174,7 +222,7 @@ async def voice_ws(websocket: WebSocket):
         language=Language.KO_KR,
     )
 
-    rag = _build_rag_processor(owi_request_proxy)
+    rag = _build_rag_processor(owi_request_proxy, websocket=websocket)
 
     tts = OpenAITTSService(
         base_url=tts_base,
