@@ -29,7 +29,8 @@ from langchain_core.documents import Document
 from open_webui.env import GLOBAL_LOG_LEVEL
 from open_webui.models.crawler import CrawledPages
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
-from open_webui.retrieval.web.utils import get_web_loader
+# crawler_engines.crawl4ai_engine 으로 _load_page 가 분리됨. get_web_loader 는
+# 더 이상 페이지 본문 로드에 쓰지 않음 (Crawl4AI 단일 경로).
 from open_webui.routers.retrieval import save_docs_to_vector_db
 from open_webui.tasks.crawler_sites import SITES, infer_sub_institution, get_site
 
@@ -242,7 +243,7 @@ async def _http_head(url: str) -> dict[str, Optional[str]]:
 async def _fetch_html(url: str) -> Optional[str]:
     """페이지 raw HTML 취득 (첨부/이미지 링크 추출 용도).
 
-    get_web_loader 와 별개로 호출되며 실패해도 페이지 처리에는 영향 없음.
+    Crawl4AI 본문 fetch 와 별개로 호출되며 실패해도 페이지 처리에는 영향 없음.
     정부 사이트의 self-signed cert 체인을 고려해 SSL 검증을 끈다 (기존 크롤러와 동일 정책).
     """
     try:
@@ -270,23 +271,24 @@ async def _fetch_html(url: str) -> Optional[str]:
 ####################
 
 
-def _load_page_sync(url: str) -> list[Document]:
-    """기존 get_web_loader로 페이지를 로드하여 langchain Document 반환.
-
-    정부 사이트의 self-signed cert 체인 때문에 verify_ssl=False 사용.
-    주의: get_web_loader는 전역 WEB_LOADER_ENGINE 설정을 사용한다.
-    """
-    loader = get_web_loader(url, verify_ssl=False)
-    try:
-        docs = loader.load()
-        return docs or []
-    except Exception as e:
-        log.warning(f"load_page failed: {url}: {e}")
-        return []
-
-
 async def _load_page(url: str) -> list[Document]:
-    return await asyncio.to_thread(_load_page_sync, url)
+    """Crawl4AI HTTP-only 어댑터로 페이지 fetch + markdown 변환.
+
+    이전 langchain PlaywrightURLLoader 는 표·그림 구조가 평탄화되고 boilerplate 가
+    그대로 남는 문제가 있었음. Crawl4AI 는 LXML scraping + markdown generator 로
+    표 / 인라인 이미지 / 메뉴 구조를 잘 보존한다.
+
+    정부 도메인이 SSR 정적 HTML 이라 브라우저 없이 HTTP-only 전략으로 충분.
+    self-signed cert 환경이라 verify_ssl=False.
+    """
+    from open_webui.tasks.crawler_engines.crawl4ai_engine import load_url
+
+    return await load_url(url, verify_ssl=False)
+
+
+def _load_page_sync(url: str) -> list[Document]:
+    """동기 호환 래퍼 — 외부에서 sync 로 호출하는 경로용."""
+    return asyncio.run(_load_page(url))
 
 
 ####################

@@ -144,6 +144,9 @@ ldap3==2.9.1
 ## Firecrawl
 firecrawl-py==4.18.0
 
+## Crawl4AI (HTTP-only 전략으로 정부 도메인 크롤. 브라우저 다운로드 불필요)
+crawl4ai==0.8.6
+
 ## Trace
 opentelemetry-api==1.40.0
 opentelemetry-sdk==1.40.0

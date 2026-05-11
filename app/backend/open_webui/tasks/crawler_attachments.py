@@ -4,14 +4,16 @@
 흐름:
 1. 페이지 HTML 에서 attachment 링크와 inline `<img>` 추출
 2. 각 자원을 임시 파일로 다운로드
-3. 적절한 Loader (Mineru/DeepSeekOCR/HWPLoader/PyPDF/...) 통과 → Document 생성
+3. 적절한 Loader 통과 → Document 생성
 4. save_docs_to_vector_db 로 같은 collection 에 저장
 5. CrawledAttachments 테이블에 상태 기록
 
-이미지 처리:
-- PDF/HWP/HWPX 안의 이미지/표는 MinerU 혹은 DeepSeekOCR 가 OCR 처리해서 텍스트로 변환
-- 페이지 인라인 `<img>` 는 DeepSeekOCR 로 단일 이미지 처리 (로컬 OCR 서버 필요)
-- OCR 서버가 응답하지 않으면 기본 alt/caption fallback 으로 처리하고 status='error' 기록
+로더 통일 정책:
+- PDF/HWP/HWPX/이미지 모두 EXTERNAL_DOCUMENT_LOADER_URL (도청 통합 문서 처리 API
+  http://host.docker.internal:30100) 로 전달. 내부 엔진(MinerU / kordoc / MarkItDown
+  / GLM-OCR or Qwen 397B VLM 등) 선택은 운영 측 책임이고 우리는 endpoint 호출만 함.
+- 외부 API 가 없거나 빈 결과면 폴백: PDF 는 PyPDF, 이미지는 DeepSeekOCRLoader.
+- 폴백 경로는 외부 서비스 점검 시간 동안 RAG 가 죽지 않게 하는 안전망.
 """
 
 import asyncio
@@ -350,11 +352,76 @@ def _build_loader(request) -> DocLoader:
     return DocLoader(engine="")
 
 
-def _ocr_image_file(file_path: str) -> list[Document]:
-    """이미지 단일 파일 → DeepSeekOCRLoader 로 OCR.
+def _ocr_image_via_external(
+    file_path: str, *, external_url: str, api_key: str = "", timeout: int = 120
+) -> list[Document]:
+    """이미지 단일 파일 → 외부 통합 문서 처리 API (EXTERNAL_DOCUMENT_LOADER_URL) 호출.
 
-    이미지 분기는 Loader._get_loader 가 PDF 만 지원하므로 직접 호출.
+    문서 처리 파이프라인과 동일 엔드포인트를 사용해 인덱싱 도구 일관성을 유지한다.
+    응답 schema: {"documents": [{"page_content": "...", "metadata": {...}}, ...]}
+    GLM-OCR / Qwen 397B VLM 등 내부 모델 변경은 운영 측 결정 — 우리는 URL 호출만.
     """
+    import os
+    import requests
+
+    if not external_url:
+        return []
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        with open(file_path, "rb") as f:
+            files = {"file": (os.path.basename(file_path), f)}
+            resp = requests.post(
+                external_url, files=files, headers=headers, timeout=timeout, verify=False
+            )
+        resp.raise_for_status()
+        data = resp.json() or {}
+        out: list[Document] = []
+        for d in data.get("documents") or []:
+            content = (d.get("page_content") or "").strip()
+            if not content:
+                continue
+            out.append(
+                Document(
+                    page_content=content,
+                    metadata=d.get("metadata") or {"source": file_path, "type": "ocr"},
+                )
+            )
+        return out
+    except Exception as e:
+        log.warning(f"external OCR failed for {file_path}: {e}")
+        return []
+
+
+def _ocr_image_file(file_path: str, *, request=None) -> list[Document]:
+    """이미지 단일 파일 OCR.
+
+    우선순위:
+    1) EXTERNAL_DOCUMENT_LOADER_URL (문서 처리 파이프라인과 동일 엔드포인트) — 권장 경로.
+       PDF/HWP/HWPX 등이 가는 동일 통합 API 라 모델·메타 형식이 일관됨.
+    2) 폴백: DeepSeekOCRLoader (OCR_SERVER_URL) — 외부 API 가 빈 결과거나 미설정일 때.
+
+    이미지 분기는 Loader._get_loader 가 PDF 만 지원하므로 직접 호출 형태로 유지.
+    """
+    # 1) 외부 통합 OCR API 우선 시도
+    if request is not None:
+        cfg = getattr(request.app.state, "config", None)
+        if cfg is not None:
+            external_url = (
+                getattr(cfg, "EXTERNAL_DOCUMENT_LOADER_URL", "") or ""
+            ).strip()
+            api_key = (
+                getattr(cfg, "EXTERNAL_DOCUMENT_LOADER_API_KEY", "") or ""
+            ).strip()
+            if external_url:
+                docs = _ocr_image_via_external(
+                    file_path, external_url=external_url, api_key=api_key
+                )
+                if docs:
+                    return docs
+
+    # 2) 폴백 — 기존 DeepSeekOCRLoader (외부 API 미설정/실패 시)
     from open_webui.env import OCR_SERVER_URL  # late import
     from open_webui.retrieval.loaders.deepseek_ocr_loader import DeepSeekOCRLoader
 
@@ -368,7 +435,7 @@ def _ocr_image_file(file_path: str) -> list[Document]:
         )
         return loader.load()
     except Exception as e:
-        log.debug(f"OCR loader failed for {file_path}: {e}")
+        log.debug(f"DeepSeek OCR fallback failed for {file_path}: {e}")
         return []
 
 
@@ -389,7 +456,7 @@ def _doc_chunks_via_loader(
     이미지는 OCR 로 분기. 그 외는 표준 디스패치.
     """
     if ext in _IMAGE_EXTS or ext == "img":
-        return _ocr_image_file(file_path)
+        return _ocr_image_file(file_path, request=request)
 
     loader = _build_loader(request)
     content_type = _content_type_for_ext(ext)
