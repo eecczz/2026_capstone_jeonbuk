@@ -3,7 +3,7 @@
 이 파일은 HWPX 파이프라인의 단계별 로드맵입니다.
 각 단계에서 무엇을 했고, 무엇이 남았고, 다른 단계에서 기억해야 할 것이 무엇인지 기록합니다.
 
-최종 수정: 2026-05-11
+최종 수정: 2026-05-12
 
 ---
 
@@ -25,6 +25,7 @@
 | 11 | Role & Style Observation | done (조건부) | 11.1 semantic_tag, 11.2 style profile, 11.3 findings |
 | **12** | **Generation Schema Redesign** | **done** | marker/content 분리, template observation, target unit planning |
 | 13 | Unit-Aware Generation | **in progress** | 13.0 done, 13.3b-1 done, 13.1 deferred |
+| **13.4b** | **Chapter Template Plan Seed** | **in progress** | template-driven chapter loop, broad source fallback, 2b template context |
 | **13.5** | **Attachment/Table Preserve** | **blocker** | chapter route에서 attachment 삭제됨 — preserve_indices 확장 필요 |
 | **13.6** | **Source Allocation Decision Gate** | **next** | 2a→source split 불안정 해결 방식 선택. multi-section append/document context 관측 |
 | 13.7 | Source-to-Template Allocation Redesign | not started | source_blocks→generation 연결, split 보완/대체 |
@@ -53,6 +54,8 @@
   |                         |
   |                    13: Unit-Aware Generation (13.0, 13.3b-1 done)
   |                         |
+  |                    13.4b: Chapter Template Plan Seed ← IN PROGRESS
+  |                         |
   |                    13.5: Attachment Preserve ← BLOCKER
   |                         |
   |                    13.6: Source Allocation Decision Gate
@@ -75,7 +78,8 @@
 - 9, 10, 11은 8 이후 병렬 가능
 - 12는 8 + 10(최소) + 11 결정 완료 후
 - 13은 12 이후 (target_unit_plan → generation 연결)
-- **13.5는 13 이후** (attachment preserve blocker)
+- **13.4b는 13 이후** (template-driven chapter loop — template intent flow 보존 최소 안전장치)
+- **13.5는 13.4b 이후** (attachment preserve blocker)
 - **13.6은 13.5 이후** (source split 불안정 해결 방식 선택 — "문제인지"가 아니라 "어떻게 고칠지" gate)
 - **13.7은 13.6 이후** (allocation redesign 구현)
 - **14-table과 14는 13.7 이후, 병렬 가능**
@@ -478,6 +482,263 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 
 ---
 
+## Stage 13.4b: Chapter Template Plan Seed — IN PROGRESS
+
+### 목적
+
+chapter route에서 2a가 source 구조로 template chapter flow를 덮어쓰는 문제를 방지하는 최소 안전장치.
+template의 chapter intent flow를 anchor로 삼고, title/content는 source에 맞게 adaptation하는 구조.
+
+### 문제: source가 template 구조를 덮어씀
+
+#### 근본 원인
+
+현재 chapter route의 architecture:
+```
+2a → source 기반 chapter 추출 → chapter loop 구동 → per-chapter 2b
+```
+
+2a의 task 정의가 **"source에서 대제목을 추출하라"**이므로, template의 장 구조와 관계 없이
+source content에서 topic을 뽑아 chapter를 만든다. 결과적으로 template의 chapter flow가 완전히 무시된다.
+
+#### 민원인 양식에서 관측된 현상
+
+**template 원본 구조:**
+```
+Ⅰ. 목 적
+Ⅱ. 추진배경 및 경과
+Ⅲ. 민원응대 기본방향
+Ⅳ. 안전한 근무환경 구축
+Ⅴ. 폭언·폭행 등 특이민원 대응방안
+Ⅵ. 위법행위에 대한 기관차원의 대응체계 확립
+Ⅶ. 민원공무원 근무여건 개선 및 인식개선
+Ⅷ. 행정사항
+```
+
+**2a가 만든 source 기반 구조 (소스 PDF = 수석보좌관 회의자료):**
+```
+Ch0: "문제정책 관리제도 평가 및 제도보완 방안"  (body 0개 — 빈 chapter)
+Ch1: "외국국적동포 방문취업제 신설 추진 점검"
+Ch2: "문서관리카드 처리방안과 개선사항 및 보고서 작성 방법"
+```
+
+**출력 파일에서 보이는 증상:**
+```
+[1] 336차 수석·보좌관 회의                                     ← header slot (정상)
+[2] 2005. 11. 21                                              ← header slot (정상)
+[3] 차례 문제정책 관리제도.../외국국적동포...                      ← TOC에 source 제목
+[4] - 제1장 -민원인의 위법행위 대응문제정책 관리제도 평가 및...    ← 원본 텍스트 + 생성 title concat
+[5] - 제1장 -민원인의 위법행위 대응외국국적동포 방문취업제...      ← 같은 문제
+[7] 11 대통령 지시 및 초기 검토                                  ← 대제목 없이 소제목부터
+```
+
+**문제 분석:**
+1. template 8장 → source 기반 3장으로 대체됨 (장 수/순서/의미 전부 소실)
+2. role_cluster_3이 slot이면서 title_role이라 dual-use 충돌 (보존 + 생성 동시 발생)
+3. 2a header_data에 role_cluster_3이 없어서 slot 텍스트가 변경되지 않음
+4. 생성된 chapter title이 보존된 slot 텍스트에 concatenate됨
+5. template의 대제목(Ⅰ. 목적 등)이 아예 출력에 없음 — 소제목부터 시작
+
+#### 조달청에서도 해당
+
+조달청 template의 3장도 의미 흐름이 있다:
+```
+Ⅰ. 추진성과 및 평가      ← 작은 볼륨 (성과 요약)
+Ⅱ. 2024년 업무추진 여건 및 방향  ← 중간 볼륨 (방향 설정)
+Ⅲ. 2024년 핵심 추진과제     ← 큰 볼륨 (문서 대부분)
+```
+현재 2a가 source 기반으로 비슷한 3장을 만들어서 우연히 동작하지만,
+source가 바뀌면 "3 vs 5 chapter 편차" (10단계 관측)처럼 불안정.
+
+### 해결 방향 선택 이유
+
+| 후보 | 설명 | 채택 여부 | 이유 |
+|------|------|----------|------|
+| A: 2a prompt 수정으로 template 구조 강제 | 2a에 template chapter plan을 넣어 매핑 | ✗ | 2a의 task 정의 자체가 바뀜. "source chapter 추출"에서 "template chapter 매핑"으로 변경. 과도한 변경. |
+| B: template-driven chapter loop + 2a header_data 전용 | chapter loop를 template 기준으로 전환. 2a는 header_data만 사용. | **✓** | shallow route에서 검증된 패턴. 2a 변경 최소화. template 구조 보존 보장. |
+| C: source-to-template allocation 전체 개편 | evidence 기반 source→template 매핑 planner | ✗ | 규모가 크고 13.6~13.7 범위. 지금은 최소 안전장치만 필요. |
+| D: 2a를 폐기하고 template plan만 사용 | 2a를 아예 안 부름 | ✗ | header_data(제목/날짜/기관 등)를 2a가 추출하므로 여전히 필요. |
+
+**B를 택한 핵심 이유**: shallow route에서 이미 동일 패턴이 검증됨.
+shallow route에서도 2a는 header_data 획득용으로만 실행하고, template section plan이 생성을 구동한다.
+chapter route에 같은 패턴을 적용하면 일관성 있고 변경이 작다.
+
+### source 전달 방식
+
+template-driven loop에서 per-chapter source split을 쓰면 문제가 생긴다:
+- `split_source_by_chapters`는 2a title 기반으로 source를 자름
+- template title(Ⅰ.목적, Ⅱ.추진배경 등)로 source를 자르면, source에 해당 heading이 없어서 split 실패
+- 결과: 8장 전부 source 미할당 → 빈 생성
+
+따라서 template-driven loop에서는 **broad source fallback**을 사용한다:
+- 각 2b에 전체 source를 전달
+- 2b가 template chapter context(제목/의도/위치)를 보고 관련 source 내용을 선택
+- 비효율(토큰 8배)이지만, 정확도 우선
+- 이건 최종 구조가 아니라 임시 안전장치. 13.6~13.7에서 evidence 기반 allocation으로 대체 예정
+
+split_source_by_chapters 결과는 삭제하지 않고 diagnostic으로 보존 (debug에 남김).
+
+### 이번에 하는 것
+
+| 항목 | 설명 |
+|------|------|
+| `extract_chapter_template_plan_seed()` | target_unit_plan + structure + idx_full_texts에서 chapter 순서/제목/의도/위치 추출 |
+| template-driven chapter loop | seed가 있으면 template chapter 기준으로 2b loop 구동 |
+| 2a 역할 축소 | seed 유효 시 2a chapters는 loop driver로 사용하지 않고, header_data 전용 |
+| 2b template chapter context | 각 2b에 template_title, description, position, paragraph_count 전달 |
+| broad source fallback | template-driven loop에서는 split_source 결과 대신 전체 source 전달 |
+| fallback 보존 | seed 없거나 confidence 낮으면 기존 2a-driven loop 유지 |
+| per-chapter 상태 기록 | filled / insufficient_source debug 수준 |
+| dual-use role warning | slot이면서 title_role인 role은 debug/warning 기록 (구조 변경 안 함) |
+
+### seed schema (최소)
+
+```python
+{
+    "chapters": [
+        {
+            "template_title": "Ⅱ. 2024년 업무추진 여건 및 방향",
+            "description": "업무추진 여건과 향후 방향 설명",
+            "position": 2,
+            "total_chapters": 3,
+            "paragraph_count": 17,
+        },
+        ...
+    ],
+    "confidence": "high",
+    "evidence": {...},
+    "loop_driver": "template_plan",
+}
+```
+
+title adaptation, intent flow 보존, hallucination 금지는 prompt-level global instruction.
+
+### 하지 않는 것 (명시적 deferred — 12개)
+
+> **13.4b의 broad source fallback과 template-driven chapter loop는 최종 source allocation redesign이 아니라,
+> template intent flow를 깨지 않기 위한 최소 안전장치다.**
+
+#### D1. source-to-template allocation redesign (→ 13.6~13.7)
+
+**문제**: 13.4b의 broad source fallback은 각 2b에 전체 source를 보내서 AI가 관련 내용을 골라쓰게 한다.
+이건 비효율(토큰 N배)이고, 장 간 content 중복/누락을 막지 못한다.
+**최종 구조**: source를 template의 각 chapter 위치에 evidence 기반으로 배정하는 planner가 필요하다.
+source_blocks(13.0)를 generation input으로 연결하거나, template chapter별 evidence matching으로 split을 대체해야 한다.
+**왜 지금 안 하나**: 규모가 크고, template-driven loop가 안정된 후에 allocation을 고도화하는 순서가 맞다.
+**재검토**: 13.6 decision gate에서 해결 방식 선택 → 13.7에서 구현.
+
+#### D2. insufficient_source 정식 정책 (→ 13.6~13.7)
+
+**문제**: template이 8장인데 source가 3장 분량이면, 5장은 source가 부족하다.
+지금은 per-chapter status를 debug에 `insufficient_source`로 기록할 뿐이다.
+**필요한 것**: 어떤 chapter가 "필수인데 source 부족"인지 vs "preserve/skip 가능"인지 판단하는 정식 정책.
+user-facing report ("이 장은 source 부족으로 생성하지 못했습니다")와 production HWP 본문 반영 여부도 결정해야 한다.
+**왜 지금 안 하나**: 필수/선택 판단에는 template semantic 분석이 필요하고, 이건 allocation redesign과 함께 해야 한다.
+**재검토**: 13.6~13.7에서 allocation과 함께 설계.
+
+#### D3. fixed/repeatable/hybrid template handling (→ auto 실패 5+ 사례 후)
+
+**문제**: template의 top-level chapter가 고유 의미를 갖는 "fixed" 양식과,
+동일 pattern이 topic 수만큼 반복되는 "repeatable" 양식이 있다.
+실제로는 top-level은 fixed이고 내부 subunit은 repeatable인 "hybrid"도 가능하다.
+예: 조달청 Ⅲ장 안에서 과제별 블록이 반복.
+**현재 처리**: 별도 policy 없이, `extract_chapter_template_plan_seed()`의 리턴값 유무로 분기.
+seed가 나오면 template-driven, 안 나오면 2a-driven.
+**왜 지금 안 하나**: template 2개로 분류 체계를 확정하면 과적합. user-facing policy는 auto 감지 실패 사례가 쌓인 후 추가.
+**설계 메모**: top-level fixed + 내부 repeatable 공존 가능성은 기억해 둘 것. repeatable exemplar handling은 후속 설계.
+
+#### D4. user override / generation mode (→ auto 실패 사례 충분 시)
+
+**문제**: auto 감지가 잘못 판단할 수 있다. fixed 양식을 repeatable로 보거나 그 반대.
+user가 `auto`, `fixed_template`, `repeatable_template`을 선택할 수 있으면 이 위험을 회피할 수 있다.
+**왜 지금 안 하나**: auto 실패 사례가 아직 없다. override를 미리 만들면 dead code이고 설계 부채.
+auto가 잘 되면 override가 불필요하고, 안 되면 heuristic을 고치는 게 먼저다.
+**재검토**: 5개 이상 양식에서 auto 감지 실패가 관측되면 valve/UI 추가 검토.
+
+#### D5. template extension candidate (→ 13.6~13.7)
+
+**문제**: source에 중요한 내용이 있는데 template에 대응하는 chapter가 없을 수 있다.
+예: template에는 "목적/배경"만 있는데 source에 "결과/성과"가 중요하면,
+grammar가 허용하는 같은 레벨에서 새 chapter를 추가할 수 있어야 한다.
+**왜 지금 안 하나**: source↔template 매핑 판단 + grammar 기반 확장 가능성 체크 + 새 chapter slot 생성이 필요.
+이건 source-to-template allocation의 핵심 기능이고, 최소 안전장치 범위를 넘는다.
+**재검토**: 13.6~13.7에서 allocation redesign과 함께.
+
+#### D6. relative volume hint 고도화 (→ later)
+
+**문제**: template의 각 chapter가 문서에서 차지하는 비중이 다르다.
+조달청 Ⅲ장은 전체의 80%+, Ⅰ장은 5% 미만.
+2b에 "이 장은 큰 볼륨"이라고 알려주면 분량 배분이 나아질 수 있다.
+**현재 처리**: seed에 paragraph_count만 기록. 2b prompt에 volume hint를 넣지 않음.
+**왜 지금 안 하나**: AI가 volume hint를 정확히 따를 보장이 없고, 효과 측정이 안 된 상태에서 넣으면 관측 불가.
+**재검토**: 13.4b 결과에서 장별 분량 불균형이 observable failure이면 그때 추가.
+
+#### D7. chapter intent 정교화 (→ 필요 시)
+
+**문제**: 2b에 "이 장은 성과 평가 목적이다"라고 알려주면 생성 품질이 나아질 수 있다.
+하지만 template title에서 intent를 자동 추론하려면 AI가 필요하다.
+**현재 처리**: template title text + 1a description을 그대로 사용. 별도 intent 추론 AI 호출 없음.
+**왜 지금 안 하나**: description이 이미 역할 설명을 포함하고 있어 별도 추론이 불필요할 수 있다.
+별도 AI 호출은 latency 증가. 효과 미검증.
+**재검토**: 13.4b 결과에서 2b가 chapter의 의도를 잘못 파악하는 사례가 나오면 검토.
+
+#### D8. table cell filling (→ 14-table)
+
+별도 scope. template 표 셀을 source content로 채우는 기능.
+13.4b에서 table은 기존대로 exemplar clone (구조만 보존, content 미변경).
+
+#### D9. source evidence / coverage validation (→ 15)
+
+generation output이 실제 source evidence를 얼마나 반영했는지 검증.
+hallucination detection, source gap warning 포함.
+13.4b에서는 broad source를 보낼 뿐, 어떤 source 부분이 사용됐는지 추적하지 않는다.
+allocation이 안정된 후(13.7+) coverage validation이 의미 있다.
+
+#### D10. section-aware append 전체 재설계 (→ later)
+
+현재 모든 generated content가 section[0]에 append. multi-section 양식에서 layout 깨짐 가능.
+13.5에서 attachment preserve를 최소 변경으로 해결한 후, 근본적 multi-section append는 별도 작업.
+
+#### D11. dual-use role 구조 변경 (→ 13.5+ 또는 later)
+
+**문제**: 민원인의 role_cluster_3은 slot(idx=3, "- 제1장 - 민원인의 위법행위 대응")이면서
+동시에 chapter type_1의 title_role(chapter title exemplar)이다.
+slot으로서 header_indices에 보존되고, title_role로서 exemplar clone 대상이기도 하다.
+이 충돌 때문에 원본 텍스트에 생성 텍스트가 concatenate되는 현상이 발생.
+**현재 처리**: debug/warning으로 기록. 구조 변경(role 분리, exemplar 선택 로직 변경) 안 함.
+**왜 지금 안 하나**: template-driven loop로 전환하면 2a chapters가 loop driver가 아니게 되므로,
+chapter title이 template chapter plan에서 오고 별도 exemplar 매핑이 필요해진다.
+이 구조 변경은 13.4b loop 전환이 안정된 후에 하는 게 안전하다.
+
+#### D12. multi-section body 분석 누락 (→ 별도 watch, CC11)
+
+**문제**: 민원인 HWPX 파일은 5개 section을 가진다.
+section4에 "제2장 - 반복민원 대응" 본문 Part 2 (559 p elements, 385 with text)가 있다.
+그런데 truncated XML(291 paragraphs)에는 section4 내용이 포함되지 않는다.
+원인: analyze_hwpx 또는 truncate_xml이 section0만 처리하거나, 문단 수 제한에 걸린 것으로 추정.
+**영향**: 문서 후반부 전체(반복민원 대응, 서식 1~5 등)가 분석/생성 대상에서 빠짐.
+**왜 지금 안 하나**: 13.4b는 template chapter flow 보존이 목적이고, 분석 범위 확장은 1a 단계 이슈.
+현재 section0만으로도 8장 구조(Ⅰ~Ⅷ)가 전부 포함되어 있어 13.4b 검증에는 지장 없다.
+**재검토**: 13.4b 이후 별도 조사. `analyze_hwpx`의 section 처리 로직 확인 필요.
+
+### 검증 기준
+
+| 양식 | 확인 항목 |
+|------|----------|
+| 민원인 | 8장 구조(Ⅰ~Ⅷ) 유지, title이 source에 맞게 adaptation, 대제목 존재, assembly fail=0 |
+| 조달청 | template-driven loop 적용, 3장 구조 유지, grammar pass, assembly regression 없음 |
+| CC7 | shallow route 불변, section plan seed 동작 불변 |
+
+### 다른 단계에서 기억할 것
+
+- **broad source fallback은 임시**: 13.6~13.7에서 evidence 기반 allocation으로 대체 예정
+- **2a는 header_data 전용**: seed 유효 시 2a chapters는 무시. shallow route 패턴과 동일
+- **split_source_by_chapters 결과는 diagnostic**: template-driven loop에서는 사용하지 않지만 debug에 보존
+- **chapter_template_plan_seed와 shallow_section_plan_seed는 별개**: 각각 chapter route / shallow route 전용. 서로 건드리지 않음
+- **repeatable은 내부 subunit 수준**: top-level chapter 개수 변경이 아닌, chapter 내부 항목 반복. 후속 설계 대상
+
+---
+
 ## Stage 13.5: Attachment/Table Preserve — BLOCKER
 
 ### 문제 (민원인 양식에서 관측)
@@ -700,14 +961,16 @@ source text가 chapter에 할당되는 전체 경로.
 | 4 (2a) | chapter title + type 결정 → source split anchor |
 | 10.0+10.1 | decision log, allocation summary |
 | 13.0 | source_blocks adapter (debug-only, generation 미연결) |
+| **13.4b** | **template-driven chapter loop + broad source fallback (최소 안전장치)** |
 | **13.5** | **attachment preserve (source와 독립, 하지만 보존 대상 결정에 target_unit_plan 사용)** |
 | **13.6** | **source split 불안정 해결 방식 결정 gate** |
 | **13.7** | **source_blocks → generation 연결, split 보완/대체** |
 | **14** | **KB에서 RAG 기반 파일 선택 → 파일 전문 획득 경로 추가** |
 | **15** | **source coverage validation (13.7 이후)** |
 
-**현재 상태**: split 함수는 정상 동작 가능하지만 2a output stability에 의존. source_blocks는 debug-only.
-**관측된 문제**: 같은 양식에서 3 vs 5 chapter 편차, source concentration [154, 219, 40360].
+**현재 상태**: 13.4b에서 template-driven chapter loop 도입 중. broad source fallback은 최종 구조가 아닌 임시 안전장치.
+**관측된 문제**: 2a가 source 기반 chapter를 만들어 template 장 구조를 덮어씀 (민원인: 8장→3장). 같은 양식에서 3 vs 5 chapter 편차. source concentration [154, 219, 40360].
+**13.4b 합의**: template intent flow를 anchor로 삼되 title은 source에 맞게 adaptation. 정식 allocation redesign은 13.6~13.7.
 **Source contract (합의)**: source는 파일 전문 1~N개의 텍스트. 14에서 KB 연동 시에도 유지.
 
 ### CC4: Marker / Content 분리
@@ -785,6 +1048,40 @@ inline emphasis (bold, color 등) 보존.
 - 실제 보정은 assemble/rendering 단계에서 처리
 - 현재 observable layout failure가 심각하지 않으면 watch 유지
 
+### CC10: Template-First vs Source-First Generation
+
+chapter loop를 template이 구동하는가 / source(2a)가 구동하는가.
+
+| 단계 | 한 것 / 할 것 |
+|------|-------------|
+| 4 (2a) | source 기반 chapter 추출 — chapter loop 구동 |
+| **13.3b-1** | **shallow route에서 template section plan seed → 2b에 template flow 보존** |
+| **13.4b** | **chapter route에서 template-driven chapter loop 도입. 2a는 header_data 전용으로 축소** |
+| **13.6~13.7** | **정식 source-to-template allocation redesign** |
+
+**현재 상태 (13.4b)**: template plan seed가 있으면 template chapter 기준 loop, 없으면 2a 기준 loop (fallback).
+**합의된 원칙**:
+- template의 chapter intent flow를 anchor로 삼는다
+- title text는 source에 맞게 adaptation 허용
+- source 기반 목차가 template 전체 구조를 대체하는 것은 금지
+- source 부족 chapter는 hallucination 없이 insufficient_source로 남김
+- top-level chapter는 template-driven, 내부 subunit은 반복 가능 (후속 설계)
+- broad source fallback은 최종 구조가 아닌 임시 안전장치
+
+### CC11: Multi-Section Analysis Coverage
+
+HWPX의 여러 section이 분석에 모두 포함되는지.
+
+| 양식 | section 수 | 분석 포함 | 비고 |
+|------|-----------|----------|------|
+| 조달청 | 1 | 전부 | single-section |
+| CC7 | ? | ? | 미확인 |
+| 민원인 | 5 | **section0만** | section4("제2장 - 반복민원 대응") 본문 Part 2 누락 |
+
+**현재 상태**: 민원인 section4의 559 p elements (385 with text)가 truncated XML에 미포함. 원인 미조사 (analyze_hwpx 또는 truncate_xml이 section0만 처리하는지, 문단 수 제한인지).
+**영향**: 본문 Part 2 전체가 분석/생성 대상에서 빠짐.
+**재검토 시점**: 13.4b 이후 별도 조사 (1a 분석 단계 이슈).
+
 ---
 
 ## 금지 사항 (전 단계 공통)
@@ -801,14 +1098,16 @@ inline emphasis (bold, color 등) 보존.
 
 ## 양식 현황
 
-| 양식 | 이름 | sections | chapters | 특이점 |
-|------|------|----------|----------|--------|
-| 1 | 조달청 업무계획 | 1 (single) | 3 | c8 parent disagreement, 기본 테스트 |
-| 2 | 민원인 위법행위 대응지침 | 5 (multi) | 5 | multi-section, secPr carrier, type_3 |
+| 양식 | 이름 | sections | template chapters | 특이점 |
+|------|------|----------|-------------------|--------|
+| 1 | 조달청 업무계획 | 1 (single) | 3 (Ⅰ.성과/Ⅱ.여건/Ⅲ.과제) | top-level fixed flow, 내부 과제별 반복 |
+| 2 | 민원인 위법행위 대응지침 | 5 (multi) | 8 (Ⅰ~Ⅷ) | multi-section, secPr, attachment 101p, section4 Part2 누락 |
+| 3 | CC7 주간보고 | ? | shallow (non-chapter) | shallow route, section plan seed |
 
 테스트 시 양식 번호에 따라 다른 검증 포인트:
-- 양식1: single-section 정상 동작, grammar, marker rewrite
-- 양식2: multi-section, secPr 보존, section_info, append target
+- 양식1: template-driven 3장 유지, grammar, marker rewrite, broad source regression
+- 양식2: template-driven 8장 유지, multi-section, attachment preserve (13.5), section4 누락 (CC11)
+- 양식3: shallow route 불변, section plan seed 동작
 
 ---
 

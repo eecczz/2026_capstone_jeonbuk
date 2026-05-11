@@ -9705,6 +9705,178 @@ def should_use_shallow_route(target_unit_plan: dict) -> tuple[bool, dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 13.4b: Chapter Template Plan Seed
+# ──────────────────────────────────────────────────────────────────────
+
+
+def extract_chapter_template_plan_seed(
+    target_unit_plan: dict,
+    structure: dict,
+    idx_full_texts: dict,
+) -> dict | None:
+    """
+    target_unit_plan에서 chapter region을 추출하여 template chapter plan seed를 반환.
+
+    template-driven chapter loop의 구동 데이터.
+    seed가 있으면 chapter loop를 template chapter 기준으로 돌리고,
+    None이면 기존 2a-driven loop로 fallback.
+
+    Returns:
+        dict with {chapters, total_chapters, confidence, evidence, loop_driver}
+        or None if extraction fails.
+    """
+    regions = target_unit_plan.get("regions", [])
+    if not regions:
+        regions = target_unit_plan.get("ai_plan", {}).get("regions", [])
+
+    chapter_regions = [r for r in regions if r.get("unit_type") == "chapter"]
+    if not chapter_regions:
+        return None
+
+    # paragraph lookup for descriptions
+    para_by_idx = {}
+    for p in structure.get("paragraphs", []):
+        pidx = p.get("idx")
+        if pidx is not None:
+            para_by_idx[pidx] = p
+
+    chapters = []
+    for position, region in enumerate(chapter_regions):
+        pi = region.get("paragraph_indices", [])
+        if not pi:
+            continue
+
+        first_idx = pi[0]
+
+        # template_title: first paragraph text from idx_full_texts
+        raw_title = ""
+        for key in (first_idx, str(first_idx)):
+            if key in idx_full_texts:
+                raw_title = str(idx_full_texts[key])
+                break
+
+        # description: from target_unit_plan region (AI-generated during 12.2)
+        region_desc = region.get("description", "")
+
+        # fallback description: from 1a paragraph description
+        if not region_desc:
+            first_para = para_by_idx.get(first_idx, {})
+            region_desc = first_para.get("description", "")
+
+        chapters.append({
+            "template_title": raw_title.strip() if raw_title else f"Chapter {position + 1}",
+            "description": region_desc,
+            "position": position,
+            "total_chapters": len(chapter_regions),
+            "paragraph_count": len(pi),
+            "region_id": region.get("region_id"),
+            "first_paragraph_idx": first_idx,
+        })
+
+    if not chapters:
+        return None
+
+    # chapter_type determination: find the dominant body chapter type
+    chapter_types = structure.get("chapter_types", {})
+    dominant_ch_type = _find_dominant_chapter_type(chapter_regions, structure)
+
+    # confidence: based on evidence quality
+    has_titles = sum(1 for c in chapters if c["template_title"] and c["template_title"] != f"Chapter {c['position'] + 1}")
+    has_descriptions = sum(1 for c in chapters if c["description"])
+    title_ratio = has_titles / len(chapters) if chapters else 0
+    desc_ratio = has_descriptions / len(chapters) if chapters else 0
+
+    if title_ratio >= 0.8 and desc_ratio >= 0.5:
+        confidence = "high"
+    elif title_ratio >= 0.5:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    # dual-use role warning: check if title_role is also in slot region
+    dual_use_warnings = []
+    if dominant_ch_type:
+        type_info = chapter_types.get(dominant_ch_type, {})
+        title_role = type_info.get("title_role", "")
+        if title_role:
+            slot_regions = [r for r in regions if r.get("unit_type") == "slot"]
+            slot_indices = set()
+            for sr in slot_regions:
+                slot_indices.update(sr.get("paragraph_indices", []))
+            for sidx in slot_indices:
+                slot_para = para_by_idx.get(sidx, {})
+                if slot_para.get("role") == title_role:
+                    dual_use_warnings.append({
+                        "warning": "dual_use_role",
+                        "role": title_role,
+                        "slot_idx": sidx,
+                        "detail": "title_role is also used in slot region — may cause text concatenation in assembly",
+                    })
+
+    return {
+        "chapters": chapters,
+        "total_chapters": len(chapters),
+        "dominant_chapter_type": dominant_ch_type,
+        "confidence": confidence,
+        "loop_driver": "template_plan",
+        "evidence": {
+            "chapter_region_count": len(chapter_regions),
+            "titles_found": has_titles,
+            "descriptions_found": has_descriptions,
+            "title_ratio": round(title_ratio, 2),
+            "desc_ratio": round(desc_ratio, 2),
+        },
+        "dual_use_warnings": dual_use_warnings,
+    }
+
+
+def _find_dominant_chapter_type(
+    chapter_regions: list[dict],
+    structure: dict,
+) -> str | None:
+    """
+    chapter region에서 dominant chapter_type을 결정.
+
+    chapter_types의 각 type에 대해, type의 title_role이
+    chapter region 첫 paragraph의 role과 일치하는지 확인.
+    일치하는 type 중 가장 많이 매칭된 것을 dominant로 선택.
+    """
+    chapter_types = structure.get("chapter_types", {})
+    if not chapter_types:
+        return None
+
+    para_by_idx = {}
+    for p in structure.get("paragraphs", []):
+        pidx = p.get("idx")
+        if pidx is not None:
+            para_by_idx[pidx] = p
+
+    # Collect roles of first paragraphs in each chapter region
+    first_roles = []
+    for region in chapter_regions:
+        pi = region.get("paragraph_indices", [])
+        if pi:
+            first_para = para_by_idx.get(pi[0], {})
+            first_roles.append(first_para.get("role", ""))
+
+    # Match against chapter_type patterns
+    type_counts = {}
+    for type_name, type_info in chapter_types.items():
+        pattern = type_info.get("pattern", {})
+        pattern_roles = set(pattern.keys())
+        # Check how many chapter regions have their first role in this pattern
+        match_count = sum(1 for role in first_roles if role in pattern_roles)
+        if match_count > 0:
+            type_counts[type_name] = match_count
+
+    if not type_counts:
+        # fallback: return first chapter_type
+        return next(iter(chapter_types), None)
+
+    return max(type_counts, key=type_counts.get)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 13.3b-1: Shallow Section Plan Seed
 # ──────────────────────────────────────────────────────────────────────
 
@@ -10188,6 +10360,7 @@ def build_section_fill_prompt(
     content_only_mode: bool = False,
     shallow_mode: bool = False,
     section_plan_seed: dict | None = None,
+    template_chapter_context: dict | None = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -10462,6 +10635,34 @@ text 구성: 본문 내용만
             # seed 없음: 기존 추상 지시
             system_prompt += """
 5. **소제목 의도 유지**: 양식의 소제목에는 문서 구조 역할(개요, 추진상황, 향후계획 등)과 원본 주제 표현이 섞여 있을 수 있습니다. 구조 역할은 유지하고, 원본 주제에 특화된 표현은 새 소스 주제에 맞게 바꾸세요. 소스의 주제 수만큼 섹션 구조를 재편하지 말고, 양식의 보고서 흐름 안에 소스 내용을 요약·통합하세요."""
+
+    # 13.4b: template chapter context — template-driven loop에서 전달
+    if template_chapter_context:
+        _tcc = template_chapter_context
+        _tcc_position = _tcc.get("position", 0) + 1
+        _tcc_total = _tcc.get("total_chapters", 1)
+        _tcc_title = _tcc.get("template_title", "")
+        _tcc_desc = _tcc.get("description", "")
+        _tcc_para = _tcc.get("paragraph_count", 0)
+
+        _tcc_block = f"""
+
+## Template Chapter Context (이 장의 양식 원본 위치)
+
+이 장은 양식에서 **{_tcc_position}/{_tcc_total}번째** 장입니다.
+
+- 양식 원본 제목: "{_tcc_title}"
+- 양식 설명: {_tcc_desc}
+- 원본 분량: 약 {_tcc_para}개 문단
+
+**규칙:**
+- 위 양식 제목의 **구조적 의도**(목적, 배경, 현황, 추진, 계획 등)를 보존하세요.
+- 제목 텍스트는 새 소스 주제에 맞게 자연스럽게 **adaptation 가능**합니다 (연도, 기관명, 정책명 등 교체 허용).
+- 하지만 양식 전체의 **장 순서와 흐름**을 변경하거나 재구성하지 마세요.
+- 소스에서 이 장에 해당하는 내용을 찾아 배치하세요. 관련 내용이 없거나 매우 부족하면 빈 JSON array `[]`를 반환하세요 — **억지로 내용을 만들지 마세요**.
+- 이 장은 전체 문서의 일부입니다. 다른 장에서 다룰 내용을 중복으로 넣지 마세요."""
+
+        system_prompt += _tcc_block
 
     return [
         {"role": "system", "content": system_prompt},
