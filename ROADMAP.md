@@ -391,7 +391,7 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 
 ---
 
-## Stage 13: Unit-Aware Generation — not started
+## Stage 13: Unit-Aware Generation — in progress
 
 ### 목적
 12.2에서 만든 `target_unit_plan`을 실제 generation route에 연결하여, region별로 적합한 generation strategy를 실행한다.
@@ -401,42 +401,61 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 - 14단계에서 KB 연동 시에도 이 형태 유지 (RAG는 파일 식별용, source 자체는 전문)
 - 마크다운 구조(heading)가 있으면 split point로 활용 가능
 
-### 예상 작업
+### 완료
 
-1. **Source pre-filtering + region-based allocation**
-   - 기존: 2a가 chapter title로 source를 split
-   - 변경: target_unit_plan의 region별로 source를 배분
-   - chapter_generation 양식: 기존 2a 유지 (chapter title → source split 정상 동작)
-   - shallow_report 양식: 2a 대신 target_unit_plan을 source allocator로 사용
-   - 분기 키: target_unit_plan의 region 구성 (chapter region 유무)
+#### 13.0: source_blocks adapter (c908865)
+- `text_blob_to_source_blocks()`: heading split, 4 fields, debug-only
+- `16_source_blocks.json` debug output
+- generation output 무변경
 
-2. **Region별 generation strategy 실행**
-   - `chapter` region: 기존 2b(tree generation) 유지
-   - `shallow_block` region: flat list generation (2b보다 단순한 prompt)
-   - `slot` region: direct mapping (AI 없이 source에서 추출 가능하면) 또는 경량 AI
-   - `attachment` region: skip 또는 별도 처리
+#### 13.3: shallow route 기본 동작
+- **routing**: `should_use_shallow_route(target_unit_plan)` — chapter 없음 + shallow primary → shallow route
+- **2b single-call**: CC7 cache의 `chapter_types.type_1.pattern` 재사용, `shallow_mode=True`
+- **assemble safety**: `preserve_indices` (slot/attachment 보존), table text replacement skip
+- **table policy**: shallow mode에서 table-like role은 structural placeholder (cell filling deferred)
+- **prompt**: shallow mode 지시 5항 (간결/구조반복금지/표보존/단일body/소제목의도유지)
+- 검증: CC7 grammar_passed, assembly_fail=0, 조달청 regression 없음
 
-3. **Assemble 확장**
-   - 현재: body_items를 순서대로 exemplar clone + marker reattach
-   - 확장: region별로 다른 assemble 전략 (slot은 header 영역에 직접 삽입 등)
+#### 13.1: allocation debug — deferred
+- 소비자 없어서 defer. shallow는 broad source, chapter는 기존 split_source_by_chapters 유지.
 
-4. **Validation 확장**
-   - region별 coverage: 각 region에 source가 배분됐는지
-   - region별 generation quality: 빈 region 없는지
+### 미해결 — shallow section planning
+
+**현재 문제**: shallow 2b single-call에서 planning 단계가 없음. AI가 template의 보고서 흐름(개요→현황→추진→계획)을 무시하고 source topic별로 section을 구성함.
+
+**원인**: chapter route에는 2a(planning) → 2b(generation) 2단계가 있지만, shallow route는 planning 없이 바로 2b → AI가 구조+content를 동시에 결정.
+
+**해결 방향**:
+1. template의 top-level heading texts를 section plan으로 추출 (cache의 idx_full_texts에서)
+2. section plan을 2b prompt에 "이 섹션들을 만들어라" 지시로 전달
+3. 선택지 A: prompt에 section plan 추가 (1회 호출 유지, 최소 변경) ← 우선 시도
+4. 선택지 B: shallow 2a를 별도로 만들어 section plan AI 호출
+5. 선택지 C: per-section 2b multi-call (chapter route와 유사)
+
+**데이터**: CC7의 □ heading texts는 cache `idx_full_texts`에 있음 (개요, 주간AI활용현황, 추진상황, 향후계획)
+
+**상세**: [session_stage13.md](../../../.claude/projects/-home-sprint-2026-capstone-jeonbuk/memory/session_stage13.md)
 
 ### 하지 않을 것
-- table cell fill 구현 (복잡도 높음 → 14 이후)
+- table cell fill 구현 (14-table 단계로 분리)
 - KB 연동 (14단계)
 - internal AI transition (16단계)
 - marker rewrite retirement (Phase 3, 별도 timing)
+- source allocation 고도화 (13.1 deferred)
+- heading reuse policy의 full classifier/schema (later)
+
+### Watch
+- **heading reuse / section intent policy**: structural vs topic-specific heading 분류. 모든 보고서 양식에 해당.
+- **별도 shallow generator 코드 정리**: SHALLOW_FILL_PROMPT 등 미사용. 2b single-call로 대체됨. 삭제 후보.
+- **compute_preserve_indices 파일 위치**: source_block_adapter.py → target_unit_plan_utils.py 분리 후보
+- **AI가 일부 role 미생성**: role_cluster_5/6/7 미생성. optional이므로 정상일 수 있으나 관측 필요.
 
 ### 기억할 것
-- **9.2b section append 정책**: slot-filling에서 section 단위 배치가 필요할 수 있음
-- **9.8 chapter→section mapping**: slot-filling에서는 chapter가 아닌 section 단위 매핑이 자연스러울 수 있음
-- **header slot semantic (6.6)**: header 영역은 이미 slot-filling에 가까운 방식으로 처리 중
-- **12단계 결과물**: target_unit_plan (region 구성), marker/content 분리 (content-only + reattach)
-- **derived_mode_label 분기 금지**: 실제 분기는 region 구성 기반
-- **template table filling**: 양식 자체가 표 셀 채우기 중심이면 slot-filling의 특수 케이스. source-side table extraction은 Stage 14, template-side table filling은 이 단계에서 관측만
+- **shallow route는 2a를 header_data 획득용으로만 실행** — chapter output은 무시
+- **split_source_by_chapters 공존**: chapter path에서 계속 사용, shallow는 broad source
+- **preserve_indices**: shallow route에서만 전달 (slot+attachment). chapter route는 None.
+- **table text skip 조건**: `is_tbl_box and preserve_indices` — shallow route에서만 동작
+- **13.3 완료 기준**: CC7이 template 보고서 흐름을 따르는 shallow content 생성. section planning이 해결돼야 완료.
 
 ---
 
