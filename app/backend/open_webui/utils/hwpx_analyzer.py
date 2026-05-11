@@ -9058,6 +9058,15 @@ def write_stage_debug_files(
         _skip("15_target_unit_planning.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 16. Source blocks (13.0 debug-only adapter output)
+    # ═══════════════════════════════════════════════════════════════
+    _sb = debug_payload.get("source_blocks")
+    if _sb:
+        _write("16_source_blocks.json", _sb)
+    else:
+        _skip("16_source_blocks.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
