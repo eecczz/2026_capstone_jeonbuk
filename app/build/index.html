@@ -800,24 +800,16 @@
     </script>
 
     <!-- ===========================================================
-         Public Voice Chatbot floating button (auth page only)
-         - /auth 경로에서만 우측 하단에 챗봇 버튼 표시
-         - 클릭 시 /static/public-chatbot.html 을 슬라이드 패널 iframe 으로 띄움
+         Public AI 안내원 floating button (모든 페이지)
+         - 메인·로그인·기타 모든 경로에서 우측 하단에 챗봇 버튼 표시
+         - 클릭 시 /api/v1/public/chatbot.html 을 슬라이드 패널 iframe 으로 띄움
          =========================================================== -->
     <script>
       (function () {
-        var AUTH_PATH_PREFIXES = ["/auth"];
         var BTN_ID = "jb-pub-chatbot-btn";
         var PANEL_ID = "jb-pub-chatbot-panel";
         var STYLE_ID = "jb-pub-chatbot-style";
         var CHATBOT_URL = "/api/v1/public/chatbot.html";
-
-        function isAuthRoute() {
-          var p = location.pathname || "/";
-          return AUTH_PATH_PREFIXES.some(function (prefix) {
-            return p === prefix || p.startsWith(prefix + "/");
-          });
-        }
 
         function ensureStyle() {
           if (document.getElementById(STYLE_ID)) return;
@@ -887,19 +879,8 @@
           document.body.appendChild(btn);
         }
 
-        function removeUi() {
-          var btn = document.getElementById(BTN_ID);
-          if (btn) btn.remove();
-          var panel = document.getElementById(PANEL_ID);
-          if (panel) panel.remove();
-        }
-
         function sync() {
-          if (isAuthRoute()) {
-            ensureButton();
-          } else {
-            removeUi();
-          }
+          ensureButton();
         }
 
         // SPA route 변경 감지 (history API hook)

@@ -264,16 +264,74 @@
     .voice-state { font-size: 15px; }
     .chat { padding: 6px 12px; }
   }
+
+  /* ── 모드 토글 (텍스트 ↔ 음성) ── */
+  .mode-toggle {
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 14px;
+    padding: 5px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    margin-right: 6px;
+  }
+  .mode-toggle:hover { background: var(--primary-dark); }
+
+  /* 텍스트 모드 = 기본: orb 영역과 음성 자막 숨김, 대화창/입력 표시 */
+  body.mode-text .voice-stage { display: none; }
+  body.mode-text .voice-caption { display: none; }
+
+  /* 음성 모드: orb 보이고 chat/input 숨김, 자막 1세트만 표시 */
+  body.mode-voice .chat { display: none; }
+  body.mode-voice .input-bar { display: none; }
+  body.mode-voice .voice-stage { flex: 1; justify-content: center; }
+
+  /* 음성 모드 자막 (사용자 발화 + 봇 응답 1세트) */
+  .voice-caption {
+    width: min(560px, 92%);
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 96px;
+  }
+  .vc-bubble {
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 15px;
+    line-height: 1.45;
+    max-width: 92%;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+  }
+  .vc-bubble.visible { opacity: 1; transform: none; }
+  .vc-user {
+    background: var(--user-bubble);
+    color: #fff;
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+  }
+  .vc-bot {
+    background: var(--bot-bubble);
+    color: var(--text);
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+  }
 </style>
 </head>
-<body>
+<body class="mode-text">
 <div class="app">
   <header>
     <img src="/static/jblogo.png" alt="전북도청" onerror="this.style.display='none'" />
     <div class="titles">
       <h1>전북도청 AI 안내원</h1>
-      <p>탭하여 말하거나, 아래에 직접 입력하세요</p>
+      <p id="headerHint">텍스트로 질문해 주세요</p>
     </div>
+    <button class="mode-toggle" id="modeToggleBtn" title="음성/텍스트 모드 전환" type="button">🎤 음성</button>
     <button class="reset-btn" id="resetBtn" title="대화 기록 초기화">초기화</button>
   </header>
 
@@ -284,6 +342,10 @@
     </div>
     <div class="voice-state" id="voiceState">탭하여 말하기</div>
     <div class="voice-hint" id="voiceHint">한국어로 자연스럽게 질문해 주세요</div>
+    <div class="voice-caption" id="voiceCaption">
+      <div class="vc-bubble vc-user" id="vcUser"></div>
+      <div class="vc-bubble vc-bot" id="vcBot"></div>
+    </div>
   </div>
 
   <div class="chat" id="chat">
@@ -311,6 +373,51 @@
   const hintEl = document.getElementById("voiceHint");
   const resetBtn = document.getElementById("resetBtn");
   const emptyHint = document.getElementById("emptyHint");
+  const modeToggleBtn = document.getElementById("modeToggleBtn");
+  const headerHintEl = document.getElementById("headerHint");
+  const vcUserEl = document.getElementById("vcUser");
+  const vcBotEl = document.getElementById("vcBot");
+
+  // ─────────── UI 모드 (text / voice) ───────────
+  // 첫 진입은 텍스트 모드. 헤더 토글 버튼으로 음성 모드 진입.
+  // 음성 모드에서는 chat / input bar 가 숨겨지고 orb + 자막(1세트)만 표시.
+  let uiMode = "text";
+
+  function setVoiceCaption(userText, botText) {
+    if (typeof userText === "string") {
+      vcUserEl.textContent = userText;
+      vcUserEl.classList.toggle("visible", !!userText.trim());
+    }
+    if (typeof botText === "string") {
+      vcBotEl.textContent = botText;
+      vcBotEl.classList.toggle("visible", !!botText.trim());
+    }
+  }
+  function clearVoiceCaption() {
+    vcUserEl.textContent = "";
+    vcBotEl.textContent = "";
+    vcUserEl.classList.remove("visible");
+    vcBotEl.classList.remove("visible");
+  }
+
+  function setUiMode(mode) {
+    uiMode = mode === "voice" ? "voice" : "text";
+    document.body.classList.toggle("mode-voice", uiMode === "voice");
+    document.body.classList.toggle("mode-text", uiMode === "text");
+    if (uiMode === "voice") {
+      modeToggleBtn.textContent = "💬 텍스트";
+      headerHintEl.textContent = "탭하여 말씀해 주세요";
+      clearVoiceCaption();
+      // 음성 모드 진입 = orb idle 로 시작 (사용자가 탭하면 listening 시작)
+      if (typeof setMode === "function") setMode("idle", "탭하여 말하기", "한국어로 자연스럽게 질문해 주세요");
+    } else {
+      modeToggleBtn.textContent = "🎤 음성";
+      headerHintEl.textContent = "텍스트로 질문해 주세요";
+      // 텍스트 모드 = 음성 입력 / 재생 정리
+      if (typeof stopMicLoop === "function") stopMicLoop();
+      if (typeof stopReply === "function") stopReply();
+    }
+  }
 
   // ─────────── 상태 ───────────
   let history = [];
@@ -390,41 +497,34 @@
 
   function stopAllAudio() {
     if (currentAudio) { try { currentAudio.pause(); } catch(_){} currentAudio = null; }
+    // 안전망: 혹시 외부 코드가 발화시켰을 수 있는 브라우저 내장 TTS 도 강제 정지
     if ("speechSynthesis" in window) { try { window.speechSynthesis.cancel(); } catch(_){} }
   }
-  function playReply(audioUrl, text) {
+  function playReply(audioUrl, _text) {
+    // 정책: 답변 음성은 백엔드 Qwen3-TTS (audio_url) 만 사용.
+    // 브라우저 내장 SpeechSynthesis 는 사용하지 않는다 (사람 목소리/도청 톤 통일).
+    // audio_url 이 없으면 무음으로 텍스트만 표시.
     stopAllAudio();
-    // 봇 자기 음성을 마이크로 다시 녹음하지 않도록 MediaRecorder 정지
     stopMediaRecorderFully();
     stopMicLoop();
-    setMode("speaking", "답변 중...", "Orb 를 탭하면 멈춰요");
 
     const onEnd = () => {
       lastBotEndTime = Date.now();
-      // 답변 끝나면 자동으로 재청취 (cool-down 후)
-      enterCooldownThenListen();
+      // 음성 모드일 때만 자동 재청취 — 텍스트 모드는 cool-down 불필요
+      if (uiMode === "voice") enterCooldownThenListen();
     };
 
     if (audioUrl) {
+      setMode("speaking", "답변 중...", "Orb 를 탭하면 멈춰요");
       const a = new Audio(audioUrl);
       currentAudio = a;
       a.addEventListener("ended", onEnd);
-      a.addEventListener("error", () => browserSpeak(text, onEnd));
-      a.play().catch(() => browserSpeak(text, onEnd));
+      a.addEventListener("error", onEnd);
+      a.play().catch(onEnd);
       return;
     }
-    browserSpeak(text, onEnd);
-  }
-  function browserSpeak(text, onEnd) {
-    if (!("speechSynthesis" in window) || !text) { onEnd && onEnd(); return; }
-    try {
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.lang = "ko-KR";
-      utter.rate = 1.05;
-      utter.onend = onEnd;
-      utter.onerror = onEnd;
-      window.speechSynthesis.speak(utter);
-    } catch (e) { onEnd && onEnd(); }
+    // audio_url 없음 = TTS 실패. 텍스트만 보이고 다음 단계로.
+    onEnd();
   }
 
   // ─────────── 텍스트 전송 ───────────
@@ -702,9 +802,13 @@
       history.push({ role: "assistant", content: reply, sources });
       saveHistory();
 
+      // 음성 모드: 1세트만 자막으로 표시 (직전 세트 덮어씀)
+      if (uiMode === "voice") setVoiceCaption(question, reply);
+
       playReply(data.audio_url || null, reply);
     } catch (e) {
       appendBubble("bot", `음성 처리 오류: ${e.message}`);
+      if (uiMode === "voice") setVoiceCaption(null, `음성 처리 오류: ${e.message}`);
       enterCooldownThenListen();
     } finally {
       sendBtn.disabled = false;
@@ -776,13 +880,20 @@
     history = [];
     localStorage.removeItem(STORAGE_KEY);
     chatEl.innerHTML = '<div class="empty-hint" id="emptyHint">대화 내용이 여기에 표시됩니다</div>';
+    clearVoiceCaption();
     stopAllAudio();
-    if (pausedByUser) {
-      setMode("idle", "탭하여 시작", "Orb 를 탭하면 자동으로 듣기 시작해요");
-    } else {
-      setMode("listening", "듣고 있어요", "한국어로 자연스럽게 말씀해 주세요");
+    if (uiMode === "voice") {
+      setMode("idle", "탭하여 말하기", "한국어로 자연스럽게 질문해 주세요");
     }
   });
+
+  // 모드 토글 버튼 (텍스트 ↔ 음성)
+  modeToggleBtn.addEventListener("click", () => {
+    setUiMode(uiMode === "voice" ? "text" : "voice");
+  });
+
+  // 초기 모드: 텍스트 (body class="mode-text" + 이벤트 미부착 상태에서 정렬)
+  setUiMode("text");
 
   // 초기 안내 — 사용자가 orb 한 번 탭해야 mic 권한 요청 + 자동 모드 진입
   setMode("idle", "탭하여 시작", "Orb 를 탭하면 자동으로 듣기 시작해요");

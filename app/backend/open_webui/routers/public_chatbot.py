@@ -110,7 +110,7 @@ _PUBLIC_STT_DOMAIN_PROMPT = (
 )
 
 
-def _trim_text_for_tts(text: str, max_chars: int = 240, max_sentences: int = 3) -> str:
+def _trim_text_for_tts(text: str, max_chars: int = 140, max_sentences: int = 2) -> str:
     """음성으로 들려줄 텍스트만 추출.
 
     - 우선 첫 max_sentences 개 문장까지만 사용
@@ -734,48 +734,56 @@ async def _synthesize_public_qwen_tts(request: Request, text: str) -> Optional[s
     vLLM 서버 패턴을 따른다. 결과 파일을 SPEECH_CACHE_DIR 에 저장하고
     /api/v1/public/voice-audio/<filename> 로 서빙.
 
-    실패 시 None 을 반환 → 클라이언트가 브라우저 SpeechSynthesis 로 fallback.
+    실패 시 None 반환. 클라이언트는 audio_url 없으면 자막만 표시 (브라우저 TTS 미사용).
     """
+    log.debug(f"enter text_len={len(text or '')!r}")
     if not text or not text.strip():
+        log.debug("return None: empty text")
         return None
 
     # 음성 출력은 첫 3문장만 (도민이 길게 듣고 있기 어려움) — 화면엔 전체 reply
     text = _trim_text_for_tts(text)
+    log.debug(f"after_trim len={len(text)} preview={text[:60]!r}")
 
     cfg = request.app.state.config
-    engine = (getattr(cfg, "TTS_ENGINE", "") or "").lower()
+    engine = (getattr(cfg, "AUDIO_TTS_ENGINE", "") or getattr(cfg, "TTS_ENGINE", "") or "").lower()
+    log.debug(f"engine={engine!r}")
     # 'qwen' 또는 'openai'(vLLM 호환) 양쪽 모두 지원
     if engine not in {"qwen", "openai", ""}:
+        log.debug(f"return None: unsupported engine {engine!r}")
         log.info(f"Public voice TTS skipped — unsupported engine '{engine}'")
         return None
 
     base_url = (
-        getattr(cfg, "TTS_OPENAI_API_BASE_URL", "")
-        or getattr(cfg, "AUDIO_TTS_OPENAI_API_BASE_URL", "")
+        getattr(cfg, "AUDIO_TTS_OPENAI_API_BASE_URL", "")
+        or getattr(cfg, "TTS_OPENAI_API_BASE_URL", "")
         or ""
     )
     api_key = (
-        getattr(cfg, "TTS_OPENAI_API_KEY", "")
-        or getattr(cfg, "AUDIO_TTS_OPENAI_API_KEY", "")
+        getattr(cfg, "AUDIO_TTS_OPENAI_API_KEY", "")
+        or getattr(cfg, "TTS_OPENAI_API_KEY", "")
         or "dummy"
     )
     model = (
-        getattr(cfg, "TTS_MODEL", "")
-        or getattr(cfg, "AUDIO_TTS_MODEL", "")
-        or "Qwen3-TTS"
+        getattr(cfg, "AUDIO_TTS_MODEL", "")
+        or getattr(cfg, "TTS_MODEL", "")
+        or "qwen3-tts"
     )
     voice = (
-        getattr(cfg, "TTS_VOICE", "")
-        or getattr(cfg, "AUDIO_TTS_VOICE", "")
+        getattr(cfg, "AUDIO_TTS_VOICE", "")
+        or getattr(cfg, "TTS_VOICE", "")
         or "Sohee"
     )
+    log.debug(f"base_url={base_url!r} model={model!r} voice={voice!r}")
     if not base_url:
+        log.debug("return None: no base_url")
         log.info("Public voice TTS skipped — no TTS base url configured")
         return None
 
     try:
         from open_webui.routers.audio import SPEECH_CACHE_DIR
     except Exception as e:
+        log.debug(f"return None: audio import failed {e}")
         log.exception(f"audio router import failed: {e}")
         return None
 
@@ -788,8 +796,10 @@ async def _synthesize_public_qwen_tts(request: Request, text: str) -> Optional[s
     ).hexdigest()
     filename = f"{PUBLIC_VOICE_AUDIO_PREFIX}{cache_key}.mp3"
     file_path = Path(SPEECH_CACHE_DIR).joinpath(filename)
+    log.debug(f"file_path={file_path} exists={file_path.is_file()}")
 
     if file_path.is_file():
+        log.debug(f"return cached path={filename}")
         return f"/api/v1/public/voice-audio/{filename}"
 
     # 너무 긴 텍스트는 자르기 (TTS 안정성 + 사용자 듣기 편의)
@@ -808,26 +818,40 @@ async def _synthesize_public_qwen_tts(request: Request, text: str) -> Optional[s
             "response_format": "mp3",
         }
         headers = {"Authorization": f"Bearer {api_key}"}
-        timeout = aiohttp.ClientTimeout(total=30)
+        # Qwen3-TTS 가 한국어 ~150자 기준으로 합성에 20~40초 걸려서 넉넉히 90초.
+        # 동시 호출 부하 상황에서도 timeout 으로 인한 audio_url=None 회피.
+        timeout = aiohttp.ClientTimeout(total=90)
         connector = aiohttp.TCPConnector(ssl=False)
+        log.debug(f"POST {url} model={model} voice={voice} len={len(speak_text)}")
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as s:
             async with s.post(url, json=payload, headers=headers) as resp:
+                log.debug(f"resp status={resp.status}")
                 if resp.status >= 400:
                     body = (await resp.text())[:300]
+                    log.debug(f"return None: HTTP {resp.status} body={body!r}")
                     log.warning(f"Public TTS HTTP {resp.status}: {body}")
                     return None
                 audio_bytes = await resp.read()
+        log.debug(f"audio_bytes len={len(audio_bytes or b'')}")
         if not audio_bytes:
+            log.debug("return None: empty bytes")
             log.warning("Public TTS empty response")
             return None
         try:
             file_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-        with open(file_path, "wb") as f:
-            f.write(audio_bytes)
+        except Exception as e:
+            log.debug(f"mkdir except {e}")
+        try:
+            with open(file_path, "wb") as f:
+                f.write(audio_bytes)
+            log.debug(f"wrote file {file_path} size={file_path.stat().st_size}")
+        except Exception as e:
+            log.debug(f"return None: write failed {e}")
+            return None
+        log.debug(f"return ok /api/v1/public/voice-audio/{filename}")
         return f"/api/v1/public/voice-audio/{filename}"
     except Exception as e:
+        log.debug(f"return None: outer exception {type(e).__name__} {e}")
         log.exception(f"Public TTS request failed: {e}")
         return None
 
