@@ -109,6 +109,7 @@ async def voice_ws(websocket: WebSocket):
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask, PipelineParams
+    from pipecat.processors.audio.vad_processor import VADProcessor
     from pipecat.services.openai.stt import OpenAISTTService
     from pipecat.services.openai.tts import OpenAITTSService
     from pipecat.transcriptions.language import Language
@@ -148,18 +149,21 @@ async def voice_ws(websocket: WebSocket):
             audio_in_channels=1,
             audio_out_channels=1,
             add_wav_header=False,
-            # VAD: 화자 발화 끝 감지. start_secs/stop_secs 가 turn-taking 핵심 파라미터.
-            # 도청 민원은 긴 설명이 잦으므로 stop_secs 를 다소 길게 (0.8s) — "텀 있어도
-            # 답변 끊고 들어가는" 문제 완화.
-            vad_analyzer=SileroVADAnalyzer(
-                params=VADParams(
-                    confidence=0.65,
-                    start_secs=0.18,
-                    stop_secs=0.8,
-                    min_volume=0.6,
-                )
-            ),
             session_timeout=600,  # 10분 idle 시 자동 종료
+        ),
+    )
+
+    # Pipecat 1.1 에서는 VAD 가 Transport params 가 아닌 별도 Pipeline 노드로 들어간다.
+    # 도청 민원은 긴 설명이 잦아 stop_secs 를 길게 (0.8s) — 짧은 텀에 답변 끊고
+    # 들어가는 문제 완화. start_secs 는 짧게 (0.18s) — 발화 시작 빠르게 포착.
+    vad_processor = VADProcessor(
+        vad_analyzer=SileroVADAnalyzer(
+            params=VADParams(
+                confidence=0.65,
+                start_secs=0.18,
+                stop_secs=0.8,
+                min_volume=0.6,
+            )
         ),
     )
 
@@ -183,6 +187,7 @@ async def voice_ws(websocket: WebSocket):
     pipeline = Pipeline(
         [
             transport.input(),
+            vad_processor,  # VADUserStarted/StoppedSpeakingFrame push → STT 가 utterance 경계 인지
             stt,
             rag,
             tts,
