@@ -145,23 +145,58 @@ def _build_rag_processor(request: Request, websocket=None):
         except Exception as e:
             log.debug(f"voice_ws caption send failed: {e}")
 
+    class _AudioStartCaptionObserver(FrameProcessor):
+        """첫 TTSAudioRawFrame 도착 시점에 자막 reply 를 push.
+
+        commit 3c0c0de 시점에 검증된 "자막-음성 동시" 패턴. 이전엔 TTS 텍스트가
+        140자/긴 합성 시간 + chunk 4800 + speed 1.05 라 자막 hold 시간이 길어
+        체감 지연이 컸지만, 지금은 chunk 1920 + speed 1.0 + 짧은 텍스트로
+        합성이 1~2초라 자막 hold 도 거의 안 느껴짐.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self._pending_reply: str | None = None
+            self._sent_for_current: bool = False
+
+        def queue_reply(self, text: str):
+            self._pending_reply = text
+            self._sent_for_current = False
+
+        async def process_frame(self, frame, direction):  # type: ignore[override]
+            from pipecat.frames.frames import TTSAudioRawFrame as _TTSAudioRawFrame
+
+            await super().process_frame(frame, direction)
+
+            if (
+                not self._sent_for_current
+                and self._pending_reply
+                and isinstance(frame, _TTSAudioRawFrame)
+            ):
+                await _send_caption("reply", self._pending_reply)
+                self._sent_for_current = True
+                self._pending_reply = None
+
+            await self.push_frame(frame, direction)
+
     class JeonbukRAGProcessor(FrameProcessor):
         """음성 STT 결과를 텍스트 챗봇과 같은 RAG/LLM 흐름으로 처리.
 
-        TranscriptionFrame(text) 이 들어오면 _run_chat_internal 을 await 하고
-        결과 텍스트를 TTSSpeakFrame 으로 푸시한다. TTS service 가 받아 음성으로
-        합성 → transport.output() → 브라우저.
-
-        자막 reply 는 RAG 직후 즉시 송출 (음성보다 약간 먼저 보이지만 사용자
-        체감 지연이 적음). 음성-자막 정확 동기 노드는 별도 파이프라인 비용이
-        커서 제거.
+        자막 reply 는 직접 push 하지 않고 _AudioStartCaptionObserver 에
+        queue 만 한다. observer 가 TTS 첫 audio chunk 시점에 자막을 push 해서
+        음성-자막 동시 시작을 보장.
 
         멀티턴: 단일 WebSocket 세션 동안 history 누적.
         """
 
-        def __init__(self, owi_request: Request):
+        def __init__(
+            self,
+            owi_request: Request,
+            caption_observer: "_AudioStartCaptionObserver",
+        ):
             super().__init__()
             self._owi_request = owi_request
+            self._caption_observer = caption_observer
             self._history: list[dict] = []
 
         async def process_frame(self, frame, direction):  # type: ignore[override]
@@ -198,21 +233,19 @@ def _build_rag_processor(request: Request, websocket=None):
                 self._history.append({"role": "user", "content": user_text})
                 self._history.append({"role": "assistant", "content": reply_text})
 
-                # 자막 reply 즉시 송출 — 음성보다 약간 먼저 보이지만 사용자가
-                # 답변 받았다는 신호를 빨리 인지하는 게 체감상 더 좋음.
-                await _send_caption("reply", reply_text)
+                # 자막 reply 는 TTS 첫 audio chunk 시점에 push 되도록 pending 등록.
+                # AudioStartCaptionObserver 가 다음 TTSAudioRawFrame 받을 때 송출.
+                self._caption_observer.queue_reply(reply_text)
 
-                # 음성 합성 시간을 짧게 잡아 자막-음성 시차 최소화.
-                # 자막은 전체 reply 그대로 보여주고 음성은 첫 1문장만 합성.
-                # (60자 / 1문장 ≈ 합성 1~2s — RAG 직후 자막과 거의 동시 재생).
+                # TTS 길이는 디폴트 (140자/2문장) — 너무 짧으면 음성이 중간에
+                # 끝나버린 느낌. AudioStartCaptionObserver 가 자막을 첫 chunk
+                # 시점까지 holding 하므로 자막-음성 동기는 자동으로 맞춰짐.
                 try:
                     from open_webui.routers.public_chatbot import _trim_text_for_tts
 
-                    tts_text = _trim_text_for_tts(
-                        reply_text, max_chars=60, max_sentences=1
-                    )
+                    tts_text = _trim_text_for_tts(reply_text)
                 except Exception:
-                    tts_text = reply_text[:60]
+                    tts_text = reply_text[:140]
                 log.info(f"[voice_ws] TTS text len={len(tts_text)}: {tts_text[:60]!r}")
                 await self.push_frame(TTSSpeakFrame(text=tts_text))
                 return
@@ -220,8 +253,9 @@ def _build_rag_processor(request: Request, websocket=None):
             # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
             await self.push_frame(frame, direction)
 
-    rag = JeonbukRAGProcessor(request)
-    return rag
+    caption_observer = _AudioStartCaptionObserver()
+    rag = JeonbukRAGProcessor(request, caption_observer)
+    return rag, caption_observer
 
 
 @router.websocket("/voice-ws")
@@ -341,7 +375,7 @@ async def voice_ws(websocket: WebSocket):
         language=Language.KO_KR,
     )
 
-    rag = _build_rag_processor(owi_request_proxy, websocket=websocket)
+    rag, caption_observer = _build_rag_processor(owi_request_proxy, websocket=websocket)
 
     # Pipecat OpenAITTSService 는 voice 를 OpenAI 표준 화이트리스트
     # (alloy/echo/nova/...) 로 강제 검증해서 "Sohee" 입력 시 KeyError 가 난다.
@@ -428,10 +462,13 @@ async def voice_ws(websocket: WebSocket):
     pipeline = Pipeline(
         [
             transport.input(),
-            vad_processor,  # VADUserStarted/StoppedSpeakingFrame push
+            vad_processor,
             stt,
             rag,
             tts,
+            # TTS 와 transport 사이 — 첫 audio chunk 흐를 때 자막 reply push.
+            # 음성과 자막 동시 시작 (commit 3c0c0de 시점 검증된 fix).
+            caption_observer,
             transport.output(),
         ]
     )
