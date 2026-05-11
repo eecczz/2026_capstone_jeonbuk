@@ -202,12 +202,17 @@ def _build_rag_processor(request: Request, websocket=None):
                 # 답변 받았다는 신호를 빨리 인지하는 게 체감상 더 좋음.
                 await _send_caption("reply", reply_text)
 
+                # 음성 합성 시간을 짧게 잡아 자막-음성 시차 최소화.
+                # 자막은 전체 reply 그대로 보여주고 음성은 첫 1문장만 합성.
+                # (60자 / 1문장 ≈ 합성 1~2s — RAG 직후 자막과 거의 동시 재생).
                 try:
                     from open_webui.routers.public_chatbot import _trim_text_for_tts
 
-                    tts_text = _trim_text_for_tts(reply_text)
+                    tts_text = _trim_text_for_tts(
+                        reply_text, max_chars=60, max_sentences=1
+                    )
                 except Exception:
-                    tts_text = reply_text[:140]
+                    tts_text = reply_text[:60]
                 log.info(f"[voice_ws] TTS text len={len(tts_text)}: {tts_text[:60]!r}")
                 await self.push_frame(TTSSpeakFrame(text=tts_text))
                 return
