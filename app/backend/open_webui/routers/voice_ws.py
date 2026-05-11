@@ -277,20 +277,26 @@ async def voice_ws(websocket: WebSocket):
         f"voice_ws connected | STT {stt_base}/{stt_model} | TTS {tts_base}/{tts_model}/{tts_voice}"
     )
 
+    # Sample rate 정합 이슈:
+    # - 클라이언트(브라우저) 마이크 입력은 16kHz 가 안정 (ScriptProcessor 기본).
+    # - Qwen3-TTS endpoint 응답은 PCM 16-bit 이지만 실제 rate 가 24kHz 인 경우
+    #   많음. transport 가 16kHz 로 가정하고 클라이언트도 16kHz 로 재생하면
+    #   1.5배 느린 톤으로 들림 (남성 음성처럼).
+    # → 출력만 24kHz 로 잡고, 클라이언트도 24kHz 로 재생.
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             audio_in_sample_rate=16000,
-            audio_out_sample_rate=16000,
+            audio_out_sample_rate=24000,
             audio_in_channels=1,
             audio_out_channels=1,
             add_wav_header=False,
             # serializer 미지정 시 Pipecat 가 inbound 메시지를 버린다. 자체 raw
-            # PCM serializer 로 양방향 매핑.
+            # PCM serializer 로 양방향 매핑. 입력 16kHz / 출력 24kHz 각자 처리.
             serializer=_make_raw_pcm_serializer(sample_rate=16000, channels=1),
-            session_timeout=600,  # 10분 idle 시 자동 종료
+            session_timeout=600,
         ),
     )
 
@@ -365,13 +371,14 @@ async def voice_ws(websocket: WebSocket):
                 log.exception(f"[voice_ws] TTS exception: {e}")
                 yield ErrorFrame(error=f"TTS exception: {e}")
 
-    # sample_rate=16000 — transport audio_out_sample_rate 와 정합 (재생 속도 정상).
+    # sample_rate=24000 — Qwen3-TTS endpoint 실제 응답 rate. transport 출력도 동일.
+    log.info(f"[voice_ws] TTS init: model={tts_model!r} voice={tts_voice!r} rate=24000")
     tts = _JeonbukOpenAITTSService(
         base_url=tts_base,
         api_key=tts_key,
         model=tts_model,
         voice=tts_voice,
-        sample_rate=16000,
+        sample_rate=24000,
     )
 
     pipeline = Pipeline(

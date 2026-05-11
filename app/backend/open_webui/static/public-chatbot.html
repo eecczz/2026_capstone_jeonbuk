@@ -412,7 +412,10 @@
   let pcProcessor = null;
   let pcPlaybackTime = 0;
   let pcPausedByUser = false;
+  // 입력: 마이크 16kHz (Cohere STT 호환). 출력: TTS endpoint 응답 24kHz (Qwen3-TTS).
+  // AudioContext 는 16kHz 로 두고, 재생 시 createBuffer(rate=24000) 으로 자동 resample.
   const PC_SAMPLE_RATE = 16000;
+  const PC_TTS_SAMPLE_RATE = 24000;
 
   function _f32ToI16LE(f32) {
     const out = new Int16Array(f32.length);
@@ -429,7 +432,7 @@
     if (!i16.length) return;
     const f32 = new Float32Array(i16.length);
     for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-    const buf = pcAudioCtx.createBuffer(1, f32.length, PC_SAMPLE_RATE);
+    const buf = pcAudioCtx.createBuffer(1, f32.length, PC_TTS_SAMPLE_RATE);
     buf.getChannelData(0).set(f32);
     const src = pcAudioCtx.createBufferSource();
     src.buffer = buf;
