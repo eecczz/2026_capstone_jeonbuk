@@ -1762,7 +1762,11 @@ def assemble_hwpx_hybrid(
         # 텍스트 교체 (공백 prefix 포함)
         try:
             is_tbl_box = role_is_table_box.get(role, False)
-            _set_cloned_element_text(new_elem, space_prefix + clean_text, NS, is_tbl_box)
+            # table_box + preserve_indices 경로: 표 원본 cell 구조 보존 (cell filling은 14-table)
+            if is_tbl_box and preserve_indices:
+                pass  # exemplar clone만, text replacement skip
+            else:
+                _set_cloned_element_text(new_elem, space_prefix + clean_text, NS, is_tbl_box)
 
             # 탭 삽입 (table_box가 아닐 때만)
             if num_tabs > 0 and not is_tbl_box:
