@@ -24,8 +24,10 @@
 | 10 | Source Allocation | done (10.0+10.1) | decision log, allocation summary |
 | 11 | Role & Style Observation | done (조건부) | 11.1 semantic_tag, 11.2 style profile, 11.3 findings |
 | **12** | **Generation Schema Redesign** | **done** | marker/content 분리, template observation, target unit planning |
-| 13 | Unit-Aware Generation | **next** | target_unit_plan → generation route 연결, region별 strategy |
+| 13 | Unit-Aware Generation | **in progress** | 13.0 done, 13.3b-1 done, 13.1 deferred |
+| **13.5** | **Attachment/Table Preserve** | **blocker** | chapter route에서 attachment 삭제됨 — preserve_indices 확장 필요 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
+| 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
 | 15 | Source Evidence / Coverage | not started | source coverage validation — 14 이후 구현 |
 | 16 | Internal AI Transition | not started | 외부→내부 AI 전환 |
 
@@ -416,25 +418,24 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 - **prompt**: shallow mode 지시 5항 (간결/구조반복금지/표보존/단일body/소제목의도유지)
 - 검증: CC7 grammar_passed, assembly_fail=0, 조달청 regression 없음
 
+#### 13.3b-1: shallow section plan seed (751489f)
+- **extract_shallow_section_plan_seed()**: template evidence 기반 heading 후보 추출
+  - required filter: region membership, level threshold, table exclusion
+  - evidence scoring: subregion_candidate_heading(+2), role_text_type_heading(+2), grammar_has_children(+1), repeatable_in_region(+1), body_negative(-2)
+  - threshold: score >= 2 → seed, otherwise → fallback
+- **build_section_fill_prompt(section_plan_seed=)**: seed 있으면 "Template Section Flow" 블록 삽입
+- **observe_section_plan_compliance()**: debug-only 사후 관측 (heading count/order/thin/repetition)
+- 검증 결과:
+  - CC7: seed 4 headings → template 4-section 흐름 보존 (이전: source topic 6개 재구성)
+  - compliance: planned=4, generated=4, count_match=True, repetition=False
+  - heading adaptation 정상: "주간 AI 활용 현황 (3.30.~4.5.)" → "주간 현황 및 지표"
+  - 조달청: shallow route 미진입, chapter route 불변, assembly fail=0
+  - 민원인: chapter route 불변, assembly fail=0. **attachment 삭제 문제 관측 → 13.5 blocker로 승격.**
+- 설계서: `docs/13_3_shallow_section_planning.md`
+- "seed"로 명명 — template_only, source 미고려. 완성형 planner 아님.
+
 #### 13.1: allocation debug — deferred
 - 소비자 없어서 defer. shallow는 broad source, chapter는 기존 split_source_by_chapters 유지.
-
-### 미해결 — shallow section planning
-
-**현재 문제**: shallow 2b single-call에서 planning 단계가 없음. AI가 template의 보고서 흐름(개요→현황→추진→계획)을 무시하고 source topic별로 section을 구성함.
-
-**원인**: chapter route에는 2a(planning) → 2b(generation) 2단계가 있지만, shallow route는 planning 없이 바로 2b → AI가 구조+content를 동시에 결정.
-
-**해결 방향**:
-1. template의 top-level heading texts를 section plan으로 추출 (cache의 idx_full_texts에서)
-2. section plan을 2b prompt에 "이 섹션들을 만들어라" 지시로 전달
-3. 선택지 A: prompt에 section plan 추가 (1회 호출 유지, 최소 변경) ← 우선 시도
-4. 선택지 B: shallow 2a를 별도로 만들어 section plan AI 호출
-5. 선택지 C: per-section 2b multi-call (chapter route와 유사)
-
-**데이터**: CC7의 □ heading texts는 cache `idx_full_texts`에 있음 (개요, 주간AI활용현황, 추진상황, 향후계획)
-
-**상세**: [session_stage13.md](../../../.claude/projects/-home-sprint-2026-capstone-jeonbuk/memory/session_stage13.md)
 
 ### 하지 않을 것
 - table cell fill 구현 (14-table 단계로 분리)
@@ -445,17 +446,61 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 - heading reuse policy의 full classifier/schema (later)
 
 ### Watch
-- **heading reuse / section intent policy**: structural vs topic-specific heading 분류. 모든 보고서 양식에 해당.
 - **별도 shallow generator 코드 정리**: SHALLOW_FILL_PROMPT 등 미사용. 2b single-call로 대체됨. 삭제 후보.
 - **compute_preserve_indices 파일 위치**: source_block_adapter.py → target_unit_plan_utils.py 분리 후보
 - **AI가 일부 role 미생성**: role_cluster_5/6/7 미생성. optional이므로 정상일 수 있으나 관측 필요.
+- **seed → planner 확장**: 현재 seed는 template_only. source-aware planner (Option B)로 확장 시 seed를 입력으로 받아 adapted plan 생성.
 
 ### 기억할 것
 - **shallow route는 2a를 header_data 획득용으로만 실행** — chapter output은 무시
 - **split_source_by_chapters 공존**: chapter path에서 계속 사용, shallow는 broad source
-- **preserve_indices**: shallow route에서만 전달 (slot+attachment). chapter route는 None.
+- **preserve_indices**: shallow route에서만 전달 (slot+attachment). **chapter route는 None → 13.5에서 확장 필요.**
 - **table text skip 조건**: `is_tbl_box and preserve_indices` — shallow route에서만 동작
-- **13.3 완료 기준**: CC7이 template 보고서 흐름을 따르는 shallow content 생성. section planning이 해결돼야 완료.
+- **idx_full_texts는 cache top-level**: `structure` 안이 아님. DB tool에서 `_idx_full_texts` 변수 사용.
+
+---
+
+## Stage 13.5: Attachment/Table Preserve — BLOCKER
+
+### 문제 (민원인 양식에서 관측)
+
+민원인 template은 5개 HWP layout section을 가진다.
+
+| section | 역할 | remove 문단 | append 문단 |
+|---------|------|-----------|-----------|
+| section[0] | 본문 (slot + chapter x8) | 322 | **65 (전부 여기)** |
+| section[1] | attachment (붙임 1~3) | 85 | **0** |
+| section[2] | attachment | 3 | **0** |
+| section[3] | (secPr carrier only) | 0 | 0 |
+| section[4] | attachment | 192 | **0** |
+
+target_unit_plan에서 attachment region (101p)이 section[1,2,4]에 분포. 현재 chapter route에서는 `preserve_indices=None`이라 **attachment 101p가 전부 삭제**되고 재삽입되지 않는다.
+
+### 왜 blocker인가
+
+- 본문 chapter generation이 성공해도 붙임 자료가 사라지면 최종 HWP가 불완전하다.
+- 결과 품질 판단을 왜곡한다 (본문만 보고 "잘 됐다"고 판단할 수 없음).
+- watch가 아니라 해결해야 할 구조적 결함이다.
+
+### 후보 방향 (확정 아님 — 별도 설계 필요)
+
+1. shallow route에서 쓰던 `preserve_indices` 메커니즘을 chapter route에도 확장 검토
+2. target_unit_plan 기반으로 slot/attachment/table preserve 대상 계산 (`compute_preserve_indices`의 chapter route 확장)
+3. body/chapter generation 대상과 preserve 대상의 section별 삭제/append 정책 분리
+4. section[1,2,4]처럼 attachment-only section은 secPr carrier만 남기지 말고 attachment content 보존 여부를 명시적으로 결정
+5. table filling/generation과 attachment preserve는 분리해서 다룰 것
+
+### 하지 않을 것
+
+- table cell filling (14-table 별도)
+- section-aware append 정책 변경 (9.2b — 별도 판단)
+- attachment content를 AI로 재생성 (preserve가 기본)
+
+### 의존성
+
+- 13 완료 후 진입 가능 (target_unit_plan의 region 분류에 의존)
+- 14(KB 연동)과 독립 — 병렬 가능
+- 14-table과 독립 — attachment preserve와 table filling은 별도 책임
 
 ---
 
