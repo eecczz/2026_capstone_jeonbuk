@@ -23,9 +23,9 @@
 | 9 | Assemble Engine | done (1차 안정화) | section_info, secPr, tree split. watch: append 정책, chapter→section mapping |
 | 10 | Source Allocation | done (10.0+10.1) | decision log, allocation summary |
 | 11 | Role & Style Observation | done (조건부) | 11.1 semantic_tag, 11.2 style profile, 11.3 findings |
-| **12** | **Generation Schema Redesign** | **next** | marker/content 분리 + transition plan. 진입 전: 3번째 양식 e2e |
-| 13 | Shallow Template / Slot-Filling | not started | 간단한 양식 fast path. 해당 양식 관측 시 설계 |
-| 14 | Open Notebook Source Planning | not started | source block, table contract |
+| **12** | **Generation Schema Redesign** | **done** | marker/content 분리, template observation, target unit planning |
+| 13 | Unit-Aware Generation | **next** | target_unit_plan → generation route 연결, region별 strategy |
+| 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 15 | Source Evidence / Coverage | not started | source coverage validation — 14 이후 구현 |
 | 16 | Internal AI Transition | not started | 외부→내부 AI 전환 |
 
@@ -44,14 +44,11 @@
   |             |           |
   |             └───────────┤
   |                         |
-  |          [10.5 decision gate]
-  |          [3번째 양식 e2e]
+  |                    12: Schema Redesign (done)
   |                         |
-  |                    12: Schema Redesign
+  |                    13: Unit-Aware Generation ← next
   |                         |
-  |                    13: Slot-Filling
-  |                         |
-  |                    14: Open Notebook
+  |                    14: Open Notebook (KB 연동)
   |                         |
   |                    15: Source Evidence (14 이후)
   |                         |
@@ -61,8 +58,8 @@
 - 9, 10, 11은 8 이후 병렬 가능
 - **12 진입 전**: 3번째 양식 e2e 관측 (hard prerequisite) + 10.5 decision gate 판단
 - 12는 8 + 10(최소) + 11 결정 완료 후
-- 13은 12 이후 (해당 양식이 관측될 때 상세 설계)
-- 14는 12 이후
+- 13은 12 이후 (target_unit_plan → generation 연결)
+- 14는 13 이후 (source contract 확정 후 KB 연동)
 - **15는 14 이후** (source 구조 확정 후 coverage validation)
 - 16은 최후
 
@@ -354,7 +351,7 @@ format_role(role_cluster)과 semantic_role(structural intent)을 분리 관측�
 
 ---
 
-## Stage 12: Generation Schema Redesign — next
+## Stage 12: Generation Schema Redesign — done
 
 ### 진입 전 체크 (hard prerequisite)
 1. **3번째 양식 e2e 관측** — 새 양식에서 실패 패턴이 나오면 schema 설계에 반영해야 하므로 12 전에 수행
@@ -394,45 +391,78 @@ marker/content 분리, source_refs, run_policy 등 2b output schema를 재설계
 
 ---
 
-## Stage 13: Shallow Template / Slot-Filling — not started
+## Stage 13: Unit-Aware Generation — not started
 
 ### 목적
-AI 자유 생성이 필요 없는 정형 slot 처리. full generation pipeline이 과한 간단한 양식을 위한 fast path.
+12.2에서 만든 `target_unit_plan`을 실제 generation route에 연결하여, region별로 적합한 generation strategy를 실행한다.
 
-### 10.5 Source-to-Template Allocation Redesign과의 구분
-- 10.5: source→chapter 할당 방식 변경 (2a 책임 재설계)
-- 13: 표지/제목/날짜/기관명/반복 label/고정 heading 같은 정형 slot을 AI 없이 채우기
-- 서로 다른 문제이며 독립적으로 진행 가능
-
-### 상세 설계 시점
-해당 양식(표 셀 채우기 중심, 반복 구조 없는 단순 양식)이 관측될 때 설계. 현재 양식 2개는 모두 full pipeline 필요.
+### Source Contract (합의 사항)
+- source = 파일 전문 1~N개의 텍스트 (PDF text 또는 마크다운)
+- 14단계에서 KB 연동 시에도 이 형태 유지 (RAG는 파일 식별용, source 자체는 전문)
+- 마크다운 구조(heading)가 있으면 split point로 활용 가능
 
 ### 예상 작업
-1. **양식 복잡도 판별**: pattern tree의 depth, role 수, repeatable 비율로 분류
-2. **slot-filling 모드**: 양식이 간단하면 2b 대신 직접 slot→source 매핑
-3. **section-aware 배치**: 어떤 slot이 어떤 section에 속하는지 매핑
+
+1. **Source pre-filtering + region-based allocation**
+   - 기존: 2a가 chapter title로 source를 split
+   - 변경: target_unit_plan의 region별로 source를 배분
+   - chapter_generation 양식: 기존 2a 유지 (chapter title → source split 정상 동작)
+   - shallow_report 양식: 2a 대신 target_unit_plan을 source allocator로 사용
+   - 분기 키: target_unit_plan의 region 구성 (chapter region 유무)
+
+2. **Region별 generation strategy 실행**
+   - `chapter` region: 기존 2b(tree generation) 유지
+   - `shallow_block` region: flat list generation (2b보다 단순한 prompt)
+   - `slot` region: direct mapping (AI 없이 source에서 추출 가능하면) 또는 경량 AI
+   - `attachment` region: skip 또는 별도 처리
+
+3. **Assemble 확장**
+   - 현재: body_items를 순서대로 exemplar clone + marker reattach
+   - 확장: region별로 다른 assemble 전략 (slot은 header 영역에 직접 삽입 등)
+
+4. **Validation 확장**
+   - region별 coverage: 각 region에 source가 배분됐는지
+   - region별 generation quality: 빈 region 없는지
+
+### 하지 않을 것
+- table cell fill 구현 (복잡도 높음 → 14 이후)
+- KB 연동 (14단계)
+- internal AI transition (16단계)
+- marker rewrite retirement (Phase 3, 별도 timing)
 
 ### 기억할 것
 - **9.2b section append 정책**: slot-filling에서 section 단위 배치가 필요할 수 있음
-  - multi-section 양식에서 slot이 어느 section에 속하는지 결정 필요
-  - section_info (9.0+9.1 결과)를 slot-filling에서도 활용
 - **9.8 chapter→section mapping**: slot-filling에서는 chapter가 아닌 section 단위 매핑이 자연스러울 수 있음
 - **header slot semantic (6.6)**: header 영역은 이미 slot-filling에 가까운 방식으로 처리 중
-- **12단계 schema**: slot-filling 모드에서도 같은 output schema를 사용할지, 별도 경량 schema를 쓸지 결정 필요
-- **template table filling**: 양식 자체가 표 셀 채우기 중심이면 slot-filling의 특수 케이스로 분리 검토. source-side table extraction은 Stage 14, template-side table filling은 이 단계(13)에서 담당
+- **12단계 결과물**: target_unit_plan (region 구성), marker/content 분리 (content-only + reattach)
+- **derived_mode_label 분기 금지**: 실제 분기는 region 구성 기반
+- **template table filling**: 양식 자체가 표 셀 채우기 중심이면 slot-filling의 특수 케이스. source-side table extraction은 Stage 14, template-side table filling은 이 단계에서 관측만
 
 ---
 
 ## Stage 14: Open Notebook Source Planning — not started
 
 ### 목적
-파일(PDF) 기반 source 입력을 source block(구조화된 단위) 기반으로 전환한다.
+파일(PDF) 직접 업로드 기반 source 입력을 Knowledge Base(오픈노트북) 연동으로 전환한다.
+
+### Source Contract (13단계 설계 시 합의)
+- **source 형태**: 파일 전문 1~N개의 텍스트 (현재 PDF text blob과 동일 형태)
+- **파일 식별**: RAG로 관련 chunk 탐색 → chunk 출처 파일 식별 → 해당 파일 전문 획득
+- **allocation 책임**: 생성기 (13단계에서 구현된 region-based allocation 그대로 사용)
+- **결론**: 13단계 generation pipeline과 호환. 14에서는 "KB에서 파일 선택" 경로만 추가.
+
+### 시스템 현황 (조사 결과)
+- **Knowledge Base**: 컬렉션 1개 = 파일 여러 개. RAG(벡터 검색)으로 관련 chunk 추출 가능.
+- **Notes**: 노트 1개 = 마크다운 1장. 첨부 시 전문 한 덩어리 전달.
+- **File**: 파일 1개. 첨부 시 전문 전달.
+- RAG chunk는 단편적(300자 조각)이라 문서 생성 source로 부적합 → 파일 단위 전문 사용이 적합.
+- 채팅에서 note/file 첨부: `retrieval/utils.py` — type별 분기 (note→md전문, file→content전문, collection→RAG)
 
 ### 예상 작업
-1. **source block 정의**: 제목, 본문, 표, 이미지 등의 구조화된 단위
-2. **table block contract**: source 표 → template 표 매핑
-3. **source block → chapter/section 할당**: split_source_by_chapters 대체
-4. **source block 에디터**: 사용자가 source block을 편집/추가/삭제
+1. **KB→파일 선택 경로**: RAG chunk 출처 trace → 관련 파일 식별 → 전문 획득 API
+2. **multi-file source 처리**: 파일 2개+ 선택 시 source 결합 또는 파일별 독립 allocation
+3. **table block contract**: source 표 → template 표 매핑
+4. **source block 에디터 (선택)**: 사용자가 source block을 편집/추가/삭제
 
 ### 기억할 것
 - **10단계 source split**: 현재 text 기반 split은 임시. source block 단위로 대체 예정
@@ -445,6 +475,7 @@ AI 자유 생성이 필요 없는 정형 slot 처리. full generation pipeline�
 - **9.8 chapter→section mapping**: source block 단위 할당에서 section mapping 재활용 가능
 - **15단계 source_refs**: source block에서 ref를 걸면 coverage 추적이 정확해짐
 - **E (전역 전제)**: 파일 기반 source adapter는 임시. 이 단계에서 근본 대체
+- **RAG는 파일 식별용**: chunk를 source로 쓰지 않음. 관련 파일 선택 후 전문 사용.
 
 ---
 
@@ -537,10 +568,12 @@ source text가 chapter에 할당되는 전체 경로.
 | **10.2** | **A/B/C/D 원인 자동 분류 — 보류** |
 | **10.5** | **2a → source-to-template allocator 전환 — conditional** |
 | **12** | **source_refs 필드 → item-level source 추적** |
-| **14** | **source block 단위로 대체** |
+| **13** | **source pre-filtering (template structure 기반) + region-based allocation** |
+| **14** | **KB에서 RAG 기반 파일 선택 → 파일 전문 획득 경로 추가** |
 | **15** | **source coverage validation** |
 
 **현재 상태**: split 함수는 정상이지만, 2a output stability가 핵심 변수.
+**Source contract (합의)**: source는 파일 전문 1~N개의 텍스트. 생성기가 allocation 담당. 14에서 KB 연동 시에도 이 계약 유지.
 
 ### CC4: Marker / Content 분리
 
