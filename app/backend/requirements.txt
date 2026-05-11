@@ -168,3 +168,6 @@ python-hwpx==1.9
 
 ## Fork-specific: OCR loader
 pdf2image
+
+## Pipecat (음성 챗봇 turn-taking / VAD / interrupt handling)
+pipecat-ai[silero,openai]==1.1.0

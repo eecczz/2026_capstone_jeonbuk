@@ -100,6 +100,7 @@ from open_webui.routers import (
     usage,
     terminals,
     public_chatbot,
+    voice_ws,
     crawler,
 )
 
@@ -1815,6 +1816,10 @@ app.include_router(terminals.router, prefix="/api/v1/terminals", tags=["terminal
 # 전북도청 대도민 공개 AI 안내 챗봇 (인증 불필요)
 app.include_router(
     public_chatbot.router, prefix="/api/v1/public", tags=["public-chatbot"]
+)
+# Pipecat 기반 음성 챗봇 WebSocket (대도민 공개, 인증 없음)
+app.include_router(
+    voice_ws.router, prefix="/api/v1/public", tags=["public-voice-ws"]
 )
 # 홈페이지 크롤러 관리 API (관리자 전용)
 app.include_router(crawler.router, prefix="/api/v1/crawler", tags=["crawler"])
