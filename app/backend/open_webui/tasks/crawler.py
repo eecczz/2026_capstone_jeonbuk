@@ -468,6 +468,27 @@ async def _process_url(
         content_changed=True,
     )
 
+    # GraphRAG dual-track 적재 — Neo4j 에도 Page 노드 upsert.
+    # vector RAG (Qdrant) + graph RAG (Neo4j) 두 트랙 동시 인덱싱.
+    # Neo4j 미연결/실패해도 페이지 처리에는 영향 없음 (best-effort).
+    try:
+        import time as _time
+        from open_webui.retrieval.graphrag.neo4j_client import upsert_page as _graph_upsert
+
+        _graph_upsert(
+            url=url,
+            title=metadata.get("title") or "",
+            site_code=site_config["code"],
+            crawled_at=int(_time.time()),
+            extra={
+                "institution": metadata.get("institution") or "",
+                "category": metadata.get("category") or "",
+                "chunks_count": len(docs),
+            },
+        )
+    except Exception as e:
+        log.debug(f"Neo4j page upsert skipped for {url}: {e}")
+
     # 첨부 + 인라인 이미지 처리 (best-effort, 실패해도 페이지는 success 유지)
     cfg = getattr(request.app.state, "config", None)
     attach_enabled = bool(getattr(cfg, "CRAWL_ATTACHMENTS_ENABLED", True)) if cfg else True
