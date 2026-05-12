@@ -470,10 +470,22 @@ async def _process_url(
 
     # GraphRAG dual-track 적재 — Neo4j 에도 Page 노드 upsert.
     # vector RAG (Qdrant) + graph RAG (Neo4j) 두 트랙 동시 인덱싱.
-    # Neo4j 미연결/실패해도 페이지 처리에는 영향 없음 (best-effort).
+    # content_preview (앞 2000자) 도 함께 적재해서 fulltext 검색 결과 LLM context 에 활용.
     try:
         import time as _time
-        from open_webui.retrieval.graphrag.neo4j_client import upsert_page as _graph_upsert
+        from open_webui.retrieval.graphrag.neo4j_client import (
+            upsert_page as _graph_upsert,
+            ensure_schema as _graph_schema,
+        )
+
+        # idempotent — 매번 호출해도 안전
+        _graph_schema()
+
+        # docs[0].page_content = Crawl4AI markdown (전체 페이지). 앞 2000자만 발췌.
+        preview = ""
+        if docs:
+            txt = docs[0].page_content if hasattr(docs[0], "page_content") else ""
+            preview = (txt or "")[:2000]
 
         _graph_upsert(
             url=url,
@@ -484,6 +496,7 @@ async def _process_url(
                 "institution": metadata.get("institution") or "",
                 "category": metadata.get("category") or "",
                 "chunks_count": len(docs),
+                "content_preview": preview,
             },
         )
     except Exception as e:

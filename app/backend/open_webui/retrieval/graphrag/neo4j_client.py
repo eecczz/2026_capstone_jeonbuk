@@ -82,9 +82,9 @@ def close_neo4j_store():
 
 
 def ensure_schema():
-    """Page / Chunk / Entity 노드의 자주 쓰는 인덱스 생성 (idempotent).
+    """Page / Chunk / Entity 노드의 자주 쓰는 인덱스 + 한국어 fulltext 인덱스.
 
-    이미 있으면 Neo4j 가 무시 — 안전하게 매 worker 시작 시 호출 가능.
+    이미 있으면 Neo4j 가 무시 — 매 worker 시작 시 호출 가능 (idempotent).
     """
     store = get_neo4j_store()
     if store is None:
@@ -93,10 +93,60 @@ def ensure_schema():
         store.create_index("Page", "url", index_type="btree")
         store.create_index("Chunk", "id", index_type="btree")
         store.create_index("Entity", "name", index_type="btree")
-        return True
     except Exception as e:
-        log.debug(f"Neo4j ensure_schema warning (idempotent): {e}")
-        return True
+        log.debug(f"Neo4j btree index warning: {e}")
+    # 한국어 fulltext 인덱스 — Page.title + content_preview 키워드 검색용
+    try:
+        store.execute_query(
+            "CREATE FULLTEXT INDEX page_text IF NOT EXISTS "
+            "FOR (n:Page) ON EACH [n.title, n.content_preview]"
+        )
+    except Exception as e:
+        log.debug(f"Neo4j fulltext index warning (might already exist): {e}")
+    return True
+
+
+def search_pages_by_text(query: str, limit: int = 5) -> list[dict]:
+    """fulltext query 로 관련 Page 검색. RAG 단에서 graph 컨텍스트 추가용.
+
+    Returns: [{url, title, content_preview, score, institution, category}, ...]
+    """
+    store = get_neo4j_store()
+    if store is None or not query.strip():
+        return []
+    try:
+        res = store.execute_query(
+            """
+            CALL db.index.fulltext.queryNodes('page_text', $q) YIELD node, score
+            RETURN node.url AS url, node.title AS title,
+                   node.content_preview AS content_preview,
+                   node.institution AS institution, node.category AS category,
+                   score
+            ORDER BY score DESC LIMIT $limit
+            """,
+            parameters={"q": query, "limit": limit},
+        )
+        # Semantica Neo4jStore.execute_query 반환 형태에 따라 정규화
+        records = []
+        if isinstance(res, dict):
+            records = res.get("records") or res.get("data") or []
+        elif isinstance(res, list):
+            records = res
+        out = []
+        for r in records:
+            if isinstance(r, dict):
+                out.append(r)
+            elif hasattr(r, "data"):
+                out.append(r.data())
+            elif hasattr(r, "__getitem__"):
+                try:
+                    out.append({k: r[k] for k in ("url", "title", "content_preview", "institution", "category", "score")})
+                except Exception:
+                    pass
+        return out
+    except Exception as e:
+        log.debug(f"Neo4j search_pages_by_text failed: {e}")
+        return []
 
 
 def upsert_page(

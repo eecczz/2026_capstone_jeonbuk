@@ -687,6 +687,31 @@ async def _stream_public_llm_reply(
     if voice_mode:
         system_prompt = system_prompt + _VOICE_MODE_DIRECTIVES
 
+    # GraphRAG context — Neo4j fulltext 검색으로 관련 Page 5건 prepend.
+    # vector RAG (Qdrant top-k via process_chat_payload) 와 dual-track.
+    try:
+        from open_webui.retrieval.graphrag.neo4j_client import search_pages_by_text
+
+        gpages = search_pages_by_text(user_message, limit=5)
+        if gpages:
+            lines = []
+            for p in gpages:
+                t = (p.get("title") or "").strip()[:80]
+                u = (p.get("url") or "").strip()
+                inst = (p.get("institution") or "").strip()
+                cat = (p.get("category") or "").strip()
+                preview = (p.get("content_preview") or "").strip()[:300]
+                lines.append(f"- [{inst}/{cat}] {t} ({u})\n  {preview}")
+            graph_ctx = (
+                "\n\n# 관련 페이지 (지식그래프 검색 결과)\n"
+                "다음은 사용자 질문과 관련 가능성 있는 페이지의 요약입니다. "
+                "필요 시 참고하되 구체 답변은 RAG 컨텍스트에서 인용해 주세요.\n"
+                + "\n".join(lines)
+            )
+            system_prompt = system_prompt + graph_ctx
+    except Exception as e:
+        log.debug(f"graphrag search skipped: {e}")
+
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for turn in history or []:
         role = turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", None)
