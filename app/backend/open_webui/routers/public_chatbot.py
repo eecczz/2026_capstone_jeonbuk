@@ -516,9 +516,16 @@ async def _run_public_llm(
         pass
 
     # 6. 핵심 — process_chat_payload로 RAG 컨텍스트/도구 주입
+    rag_sources: list[dict] = []
     try:
         form_data, metadata, events = await process_chat_payload(
             request, form_data, user, metadata, model
+        )
+        # process_chat_payload 가 metadata["sources"] 에 RAG 결과를 저장.
+        # LLM 응답에는 sources 가 안 실리므로 (streaming/dict 모두) 여기서 직접 수집.
+        rag_sources = list(metadata.get("sources") or [])
+        log.info(
+            f"public_chatbot RAG sources from metadata: {len(rag_sources)} groups"
         )
     except Exception as e:
         log.exception(f"process_chat_payload failed: {e}")
@@ -616,6 +623,12 @@ async def _run_public_llm(
             f"unexpected response type from generate_chat_completion: {type(response).__name__}"
         )
         reply_text = str(response)
+
+    # process_chat_payload 가 미리 수집한 RAG sources 가 있으면 우선 사용 (LLM
+    # 응답에는 안 실리는 경우가 대부분). LLM 응답에 sources 가 따로 실린 드문
+    # 경우만 sources 를 그대로 둔다.
+    if rag_sources and not sources:
+        sources = rag_sources
 
     # 마크다운 / [N] 인용 마커 제거 — TTS 가 기호를 그대로 읽지 않게 함
     return _humanize_reply(reply_text), sources, model_id
@@ -765,9 +778,14 @@ async def _stream_public_llm_reply(
         pass
 
     # 6. RAG 컨텍스트 주입
+    rag_sources: list[dict] = []
     try:
         form_data, metadata, _events = await process_chat_payload(
             request, form_data, user, metadata, model
+        )
+        rag_sources = list(metadata.get("sources") or [])
+        log.info(
+            f"public_chatbot stream RAG sources from metadata: {len(rag_sources)} groups"
         )
     except Exception as e:
         log.warning(f"process_chat_payload failed in stream: {e}")
@@ -849,7 +867,11 @@ async def _stream_public_llm_reply(
         except Exception as e:
             log.warning(f"JSONResponse parse failed in stream: {e}")
 
-    # 9. 종료 — humanized 전체 텍스트
+    # 9. sources event 발행 — voice 자막에 [출처] 표시용 (필요시 소비)
+    if rag_sources:
+        yield ("sources", rag_sources)
+
+    # 10. 종료 — humanized 전체 텍스트
     final = _humanize_reply(full_text) if full_text else ""
     yield ("done", final)
 
