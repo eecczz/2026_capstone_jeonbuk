@@ -46,6 +46,7 @@ data/redis/
 .claude/
 
 # App specific
+app/build/
 app/backend/_old
 app/backend/uploads
 app/backend/_test
@@ -56,3 +57,10 @@ app/backend/open_webui/data/*
 .ipynb_checkpoints
 *.jar
 data/sprinter_config_dump.sql
+
+# JavaScript / frontend
+node_modules/
+.svelte-kit/
+.next/
+dist/
+coverage/
