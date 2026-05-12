@@ -610,6 +610,16 @@ async def agenerate_openai_batch_embeddings(
         log.debug(
             f"agenerate_openai_batch_embeddings:model {model} batch size: {len(texts)}"
         )
+        # BGE M3 같은 임베딩 endpoint 가 8192 토큰 한도를 넘으면 400 'parse body
+        # error' 를 반환하고 batch 전체 임베딩이 None 으로 돌아오는 문제 방지.
+        # OWI 의 chunk_size 가 적절해도 markdown 표/긴 줄로 인해 단일 청크가
+        # 너무 길게 들어올 수 있어 endpoint 호출 직전에 안전망으로 자름.
+        # 4000자 ≈ 한국어 ~6000 토큰 (한도 8192 안).
+        MAX_EMBED_CHARS = 4000
+        texts = [
+            (t if isinstance(t, str) and len(t) <= MAX_EMBED_CHARS else (t or "")[:MAX_EMBED_CHARS])
+            for t in texts
+        ]
         form_data = {"input": texts, "model": model}
         if isinstance(RAG_EMBEDDING_PREFIX_FIELD_NAME, str) and isinstance(prefix, str):
             form_data[RAG_EMBEDDING_PREFIX_FIELD_NAME] = prefix

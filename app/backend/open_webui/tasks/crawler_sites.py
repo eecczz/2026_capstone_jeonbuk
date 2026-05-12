@@ -80,8 +80,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "관광",
         "crawler_engine": "playwright",
-        "max_pages": 500,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     # ─────────────── 직속기관 (독립 홈페이지) ───────────────
     {
@@ -99,8 +99,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "농업",
         "crawler_engine": "playwright",
-        "max_pages": 400,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "jihe_jeonbuk",
@@ -116,8 +116,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "보건환경",
         "crawler_engine": "playwright",
-        "max_pages": 300,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "hrd_jeonbuk",
@@ -136,8 +136,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "교육",
         "crawler_engine": "playwright",
-        "max_pages": 400,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "forest_jb",
@@ -153,8 +153,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "산림",
         "crawler_engine": "playwright",
-        "max_pages": 300,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "kukakwon",
@@ -170,8 +170,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "문화예술",
         "crawler_engine": "playwright",
-        "max_pages": 300,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "jma",
@@ -187,8 +187,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "문화예술",
         "crawler_engine": "playwright",
-        "max_pages": 300,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "jbchild",
@@ -204,8 +204,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "교육체험",
         "crawler_engine": "playwright",
-        "max_pages": 200,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "agriacademy",
@@ -221,8 +221,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "교육",
         "crawler_engine": "playwright",
-        "max_pages": 300,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "jbba",
@@ -239,8 +239,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "경제지원",
         "crawler_engine": "playwright",
-        "max_pages": 400,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
     {
         "code": "jb_jobcenter",
@@ -256,8 +256,8 @@ SITES: list[dict[str, Any]] = [
         },
         "default_category": "일자리",
         "crawler_engine": "playwright",
-        "max_pages": 300,
-        "max_depth": 3,
+        "max_pages": 500000,
+        "max_depth": 5,
     },
 ]
 
