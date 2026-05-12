@@ -149,6 +149,99 @@ def search_pages_by_text(query: str, limit: int = 5) -> list[dict]:
         return []
 
 
+def upsert_entities(
+    page_url: str,
+    entities: list[dict],
+    relations: list[dict],
+) -> Optional[dict]:
+    """Page 와 연결된 Entity 노드 + 관계 적재.
+
+    스키마:
+    - MERGE (e:Entity {name, type})
+    - MERGE (page)-[:MENTIONS]->(e)
+    - MERGE (a)-[:RELATED_TO {predicate}]->(b)  (relations 의 subject→object)
+
+    중복 호출 안전 (MERGE 사용). 관계는 predicate 별로 별도 edge.
+
+    Returns: 적재 통계 {entities: N, relations: M} 또는 None.
+    """
+    store = get_neo4j_store()
+    if store is None or not entities:
+        return None
+    try:
+        # Entity 노드 + MENTIONS 일괄 적재 — UNWIND 로 한 트랜잭션.
+        store.execute_query(
+            """
+            MATCH (p:Page {url: $url})
+            UNWIND $entities AS ent
+            MERGE (e:Entity {name: ent.name})
+            ON CREATE SET e.type = ent.type, e.first_seen = timestamp()
+            ON MATCH SET e.type = coalesce(e.type, ent.type)
+            MERGE (p)-[:MENTIONS]->(e)
+            """,
+            parameters={"url": page_url, "entities": entities},
+        )
+        rels_added = 0
+        if relations:
+            store.execute_query(
+                """
+                UNWIND $relations AS rel
+                MATCH (a:Entity {name: rel.subject})
+                MATCH (b:Entity {name: rel.object})
+                MERGE (a)-[r:RELATED_TO {predicate: rel.predicate}]->(b)
+                ON CREATE SET r.source_url = $url, r.first_seen = timestamp()
+                """,
+                parameters={"url": page_url, "relations": relations},
+            )
+            rels_added = len(relations)
+        return {"entities": len(entities), "relations": rels_added}
+    except Exception as e:
+        log.warning(f"upsert_entities failed for {page_url}: {e}")
+        return None
+
+
+def search_entities_neighbors(query: str, limit: int = 5) -> list[dict]:
+    """엔티티 이름 부분일치 → 인접 노드/관계 1-hop 반환. graph RAG 컨텍스트용.
+
+    Returns: [{entity, neighbors: [{name, predicate, type}], pages: [url]}, ...]
+    """
+    store = get_neo4j_store()
+    if store is None or not query.strip():
+        return []
+    try:
+        # name CONTAINS (case-insensitive) — graph 인덱스 미사용이라 한도 적게.
+        res = store.execute_query(
+            """
+            MATCH (e:Entity)
+            WHERE toLower(e.name) CONTAINS toLower($q)
+            WITH e LIMIT $limit
+            OPTIONAL MATCH (e)-[r:RELATED_TO]-(n:Entity)
+            OPTIONAL MATCH (p:Page)-[:MENTIONS]->(e)
+            WITH e,
+                 collect(DISTINCT {name: n.name, predicate: r.predicate, type: n.type})[..10] AS neighbors,
+                 collect(DISTINCT p.url)[..5] AS pages
+            RETURN e.name AS name, e.type AS type, neighbors, pages
+            LIMIT $limit
+            """,
+            parameters={"q": query, "limit": limit},
+        )
+        records = []
+        if isinstance(res, dict):
+            records = res.get("records") or res.get("data") or []
+        elif isinstance(res, list):
+            records = res
+        out = []
+        for r in records:
+            if isinstance(r, dict):
+                out.append(r)
+            elif hasattr(r, "data"):
+                out.append(r.data())
+        return out
+    except Exception as e:
+        log.debug(f"search_entities_neighbors failed: {e}")
+        return []
+
+
 def upsert_page(
     url: str,
     title: str,

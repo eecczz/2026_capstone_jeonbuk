@@ -16,6 +16,7 @@
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import sys
 import time
@@ -513,6 +514,35 @@ async def _process_url(
                 "content_preview": preview,
             },
         )
+
+        # LLM 엔티티 추출 → Neo4j Entity/RELATED_TO 적재. 멀티홉 graph RAG 용.
+        # 환경변수 CRAWL_GRAPH_ENTITY_EXTRACT=0 이면 스킵 (cost guard).
+        if os.environ.get("CRAWL_GRAPH_ENTITY_EXTRACT", "1") != "0" and preview:
+            try:
+                from open_webui.retrieval.graphrag.entity_extractor import (
+                    extract_entities_llm,
+                )
+                from open_webui.retrieval.graphrag.neo4j_client import (
+                    upsert_entities as _graph_upsert_entities,
+                )
+
+                extracted = await extract_entities_llm(
+                    title=metadata.get("title") or "",
+                    text=preview,
+                )
+                if extracted and extracted.get("entities"):
+                    stats = _graph_upsert_entities(
+                        page_url=url,
+                        entities=extracted["entities"],
+                        relations=extracted.get("relations") or [],
+                    )
+                    if stats:
+                        log.info(
+                            f"[graphrag] entities[{url}] "
+                            f"e={stats['entities']} r={stats['relations']}"
+                        )
+            except Exception as e:
+                log.debug(f"entity extraction skipped for {url}: {e}")
     except Exception as e:
         log.debug(f"Neo4j page upsert skipped for {url}: {e}")
 

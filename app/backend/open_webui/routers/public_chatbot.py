@@ -700,12 +700,18 @@ async def _stream_public_llm_reply(
     if voice_mode:
         system_prompt = system_prompt + _VOICE_MODE_DIRECTIVES
 
-    # GraphRAG context — Neo4j fulltext 검색으로 관련 Page 5건 prepend.
+    # GraphRAG context — Neo4j Page fulltext + Entity 1-hop 결합.
     # vector RAG (Qdrant top-k via process_chat_payload) 와 dual-track.
     try:
-        from open_webui.retrieval.graphrag.neo4j_client import search_pages_by_text
+        from open_webui.retrieval.graphrag.neo4j_client import (
+            search_pages_by_text,
+            search_entities_neighbors,
+        )
 
         gpages = search_pages_by_text(user_message, limit=5)
+        ent_hits = search_entities_neighbors(user_message, limit=5)
+        graph_sections = []
+
         if gpages:
             lines = []
             for p in gpages:
@@ -715,13 +721,38 @@ async def _stream_public_llm_reply(
                 cat = (p.get("category") or "").strip()
                 preview = (p.get("content_preview") or "").strip()[:300]
                 lines.append(f"- [{inst}/{cat}] {t} ({u})\n  {preview}")
-            graph_ctx = (
+            graph_sections.append(
                 "\n\n# 관련 페이지 (지식그래프 검색 결과)\n"
                 "다음은 사용자 질문과 관련 가능성 있는 페이지의 요약입니다. "
                 "필요 시 참고하되 구체 답변은 RAG 컨텍스트에서 인용해 주세요.\n"
                 + "\n".join(lines)
             )
-            system_prompt = system_prompt + graph_ctx
+
+        if ent_hits:
+            ent_lines = []
+            for e in ent_hits:
+                name = (e.get("name") or "").strip()
+                etype = (e.get("type") or "").strip()
+                neighbors = e.get("neighbors") or []
+                nb_strs = []
+                for n in neighbors[:8]:
+                    if not isinstance(n, dict) or not n.get("name"):
+                        continue
+                    nb_strs.append(
+                        f"{n.get('predicate','')}: {n.get('name')}"
+                    )
+                if nb_strs:
+                    ent_lines.append(f"- {name} ({etype}) — " + "; ".join(nb_strs))
+            if ent_lines:
+                graph_sections.append(
+                    "\n\n# 관련 엔티티 (지식그래프 1-hop)\n"
+                    "사용자 질문과 매치된 엔티티 및 직접 연결된 정보. "
+                    "예: 사업명·자격·금액·담당부서 등 관계 추론 시 참고.\n"
+                    + "\n".join(ent_lines)
+                )
+
+        if graph_sections:
+            system_prompt = system_prompt + "".join(graph_sections)
     except Exception as e:
         log.debug(f"graphrag search skipped: {e}")
 
