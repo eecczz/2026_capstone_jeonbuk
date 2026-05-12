@@ -9877,6 +9877,215 @@ def _find_dominant_chapter_type(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 13.5: Region Action Plan
+# ──────────────────────────────────────────────────────────────────────
+
+
+_UNIT_TYPE_ACTION_MAP = {
+    "slot": "fill_slot",
+    "chapter": "generate",
+    "attachment": "preserve_original",
+    "shallow_block": "preserve_original",
+}
+
+_UNIT_TYPE_TABLE_POLICY = {
+    "slot": "not_applicable",
+    "chapter": "defer_table_filling",
+    "attachment": "preserved_with_region",
+    "shallow_block": "not_applicable",
+}
+
+
+def compute_region_action_plan(
+    target_unit_plan: dict,
+    structure: dict,
+    idx_map: dict | None = None,
+) -> dict | None:
+    """
+    target_unit_plan의 모든 region에 action을 부여하고 preserve_indices를 계산.
+
+    chapter route 전용. shallow route는 기존 compute_preserve_indices 사용.
+
+    Returns:
+        dict with {actions, preserve_indices, summary, warnings} or None.
+    """
+    if not target_unit_plan:
+        return None
+
+    regions = target_unit_plan.get("regions", [])
+    if not regions:
+        regions = target_unit_plan.get("ai_plan", {}).get("regions", [])
+    if not regions:
+        return None
+
+    # paragraph level lookup
+    para_level = {}
+    for p in structure.get("paragraphs", []):
+        pidx = p.get("idx")
+        if pidx is not None:
+            para_level[pidx] = p.get("level")  # None if missing
+
+    actions = []
+    preserve_indices = []
+    all_generate_real = set()
+    all_preserve_real = set()
+    warnings = []
+
+    for region in regions:
+        unit_type = region.get("unit_type", "")
+        ai_indices = region.get("paragraph_indices", [])
+        region_id = region.get("region_id")
+
+        # idx_map: AI idx → real idx
+        real_indices = []
+        for idx in ai_indices:
+            real_idx = idx_map.get(idx, idx) if idx_map else idx
+            real_indices.append(real_idx)
+
+        if not ai_indices:
+            warnings.append({
+                "type": "empty_region",
+                "region_id": region_id,
+                "unit_type": unit_type,
+                "detail": "region has no paragraph_indices",
+            })
+
+        # --- action determination ---
+        if unit_type in _UNIT_TYPE_ACTION_MAP:
+            action = _UNIT_TYPE_ACTION_MAP[unit_type]
+            table_policy = _UNIT_TYPE_TABLE_POLICY[unit_type]
+        else:
+            # unknown unit_type → 보수적 보존 + 강한 warning
+            action = "preserve_original"
+            table_policy = "preserved_with_region"
+            warnings.append({
+                "type": "unclassified_region_preserved",
+                "region_id": region_id,
+                "unit_type": unit_type,
+                "detail": (
+                    f"unknown unit_type '{unit_type}' — preserved conservatively. "
+                    "Not safely classified as generate or preserve."
+                ),
+                "paragraph_indices": ai_indices,
+                "real_paragraph_indices": real_indices,
+            })
+
+        # --- preserve_via_header / in_preserve_set ---
+        in_preserve_set = False
+        preserve_via_header = False
+        level_warnings = []
+
+        if unit_type == "slot":
+            preserve_via_header = True
+            # debug: check levels to validate assumption
+            for idx in ai_indices:
+                lv = para_level.get(idx)
+                if lv is None:
+                    level_warnings.append({"idx": idx, "level_missing": True})
+                elif lv != 0:
+                    level_warnings.append({"idx": idx, "level": lv, "expected": 0})
+            if level_warnings:
+                warnings.append({
+                    "type": "slot_level_assumption_check",
+                    "region_id": region_id,
+                    "detail": "slot paragraphs with unexpected or missing level",
+                    "entries": level_warnings,
+                })
+
+        elif unit_type == "shallow_block":
+            # level-0 → header_indices에서 이미 보존
+            all_level_0 = True
+            for idx in ai_indices:
+                lv = para_level.get(idx)
+                if lv is None:
+                    all_level_0 = False
+                    level_warnings.append({"idx": idx, "level_missing": True})
+                elif lv != 0:
+                    all_level_0 = False
+                    level_warnings.append({"idx": idx, "level": lv})
+            if all_level_0 and ai_indices:
+                preserve_via_header = True
+            else:
+                in_preserve_set = True
+                if level_warnings:
+                    warnings.append({
+                        "type": "shallow_block_level_ambiguity",
+                        "region_id": region_id,
+                        "detail": "shallow_block with non-zero or missing level — added to preserve_indices",
+                        "entries": level_warnings,
+                    })
+
+        elif unit_type == "attachment":
+            in_preserve_set = True
+
+        elif unit_type not in _UNIT_TYPE_ACTION_MAP:
+            # unknown: already handled above as preserve_original
+            in_preserve_set = True
+
+        # --- collect preserve_indices ---
+        if in_preserve_set:
+            preserve_indices.extend(real_indices)
+            all_preserve_real.update(real_indices)
+
+        if action == "generate":
+            all_generate_real.update(real_indices)
+
+        # --- reason ---
+        reason_parts = [f"{unit_type} — {action}"]
+        if preserve_via_header:
+            reason_parts.append("preserved via header_indices")
+        if in_preserve_set:
+            reason_parts.append("added to preserve_indices")
+        reason = "; ".join(reason_parts)
+
+        actions.append({
+            "region_id": region_id,
+            "unit_type": unit_type,
+            "action": action,
+            "paragraph_indices": ai_indices,
+            "real_paragraph_indices": real_indices,
+            "paragraph_count": len(ai_indices),
+            "in_preserve_set": in_preserve_set,
+            "preserve_via_header": preserve_via_header,
+            "table_policy": table_policy,
+            "reason": reason,
+        })
+
+    # --- overlap check ---
+    overlap = all_generate_real & all_preserve_real
+    if overlap:
+        warnings.append({
+            "type": "generate_preserve_overlap",
+            "detail": "paragraphs in both generate and preserve sets",
+            "overlapping_real_indices": sorted(overlap),
+        })
+
+    # --- summary ---
+    action_summary = {}
+    for a in actions:
+        act = a["action"]
+        if act not in action_summary:
+            action_summary[act] = {"count": 0, "paragraphs": 0}
+        action_summary[act]["count"] += 1
+        action_summary[act]["paragraphs"] += a["paragraph_count"]
+
+    visited_types = {a["unit_type"] for a in actions}
+    coverage = "all_regions_visited" if len(actions) == len(regions) else "partial"
+
+    return {
+        "actions": actions,
+        "preserve_indices": sorted(set(preserve_indices)),
+        "summary": {
+            "total_regions": len(regions),
+            "actions": action_summary,
+            "coverage": coverage,
+            "overlap_warnings": sorted(overlap) if overlap else [],
+        },
+        "warnings": warnings,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 13.3b-1: Shallow Section Plan Seed
 # ──────────────────────────────────────────────────────────────────────
 

@@ -26,8 +26,8 @@
 | **12** | **Generation Schema Redesign** | **done** | marker/content 분리, template observation, target unit planning |
 | 13 | Unit-Aware Generation | **in progress** | 13.0 done, 13.3b-1 done, 13.1 deferred |
 | **13.4b** | **Chapter Template Plan Seed** | **in progress** | template-driven chapter loop, broad source fallback, 2b template context |
-| **13.5** | **Attachment/Table Preserve** | **blocker** | chapter route에서 attachment 삭제됨 — preserve_indices 확장 필요 |
-| **13.6** | **Source Allocation Decision Gate** | **next** | 2a→source split 불안정 해결 방식 선택. multi-section append/document context 관측 |
+| **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **in progress** | region action plan + unanalyzed section preserve safety |
+| **13.6** | **Multi-Section Analysis + Source Allocation Gate** | **next** | extract_section_xml multi-section 지원 (CC11 blocker) + source split 불안정 해결 |
 | 13.7 | Source-to-Template Allocation Redesign | not started | source_blocks→generation 연결, split 보완/대체 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
@@ -56,9 +56,9 @@
   |                         |
   |                    13.4b: Chapter Template Plan Seed ← IN PROGRESS
   |                         |
-  |                    13.5: Attachment Preserve ← BLOCKER
+  |                    13.5: Region Action Plan + Section Preserve ← IN PROGRESS
   |                         |
-  |                    13.6: Source Allocation Decision Gate
+  |                    13.6: Multi-Section Analysis + Source Gate (CC11 blocker, CC12 obs)
   |                         |
   |                    13.7: Source Allocation Redesign
   |                         |
@@ -79,8 +79,8 @@
 - 12는 8 + 10(최소) + 11 결정 완료 후
 - 13은 12 이후 (target_unit_plan → generation 연결)
 - **13.4b는 13 이후** (template-driven chapter loop — template intent flow 보존 최소 안전장치)
-- **13.5는 13.4b 이후** (attachment preserve blocker)
-- **13.6은 13.5 이후** (source split 불안정 해결 방식 선택 — "문제인지"가 아니라 "어떻게 고칠지" gate)
+- **13.5는 13.4b 이후** (region action plan + unanalyzed section preserve safety)
+- **13.6은 13.5 이후** (multi-section analysis coverage gap 근본 해결 [CC11 blocker] + source allocation gate + chapter-local pattern 관측 [CC12])
 - **13.7은 13.6 이후** (allocation redesign 구현)
 - **14-table과 14는 13.7 이후, 병렬 가능**
 - **15는 13.7 이후** (allocation 안정 후 coverage validation)
@@ -1076,11 +1076,126 @@ HWPX의 여러 section이 분석에 모두 포함되는지.
 |------|-----------|----------|------|
 | 조달청 | 1 | 전부 | single-section |
 | CC7 | ? | ? | 미확인 |
-| 민원인 | 5 | **section0만** | section4("제2장 - 반복민원 대응") 본문 Part 2 누락 |
+| 민원인 | 5 | **section0만** | section1/2/4 (attachment 85+3+192p) 전부 미분석 |
 
-**현재 상태**: 민원인 section4의 559 p elements (385 with text)가 truncated XML에 미포함. 원인 미조사 (analyze_hwpx 또는 truncate_xml이 section0만 처리하는지, 문단 수 제한인지).
-**영향**: 본문 Part 2 전체가 분석/생성 대상에서 빠짐.
-**재검토 시점**: 13.4b 이후 별도 조사 (1a 분석 단계 이슈).
+**근본 원인 (13.5에서 확인)**: `extract_section_xml()` (hwpx_analyzer.py:96)이 `section_names[0]`만 반환. section0.xml만 1a~1f 분석 대상. sections 1~4는 입력 자체가 안 됨.
+
+**수치**:
+- 민원인 HWPX: 5개 section 파일 (section0: ~2534p, section1: ~373p, section2: ~319p, section3: ~1p, section4: ~559p)
+- 1a 분석: 291 paragraphs (section0의 truncated subset만)
+- assemble: 전체 5개 section 순회 → 분석 안 된 section1/2/4의 body-level 280 paragraphs 전부 삭제
+- Gap: 311 paragraphs가 1a 분석에 포함되지 않음
+
+**13.5 안전장치**: `analyzed_sections={0}` 전달 → assemble에서 unanalyzed sections(1,2,3,4) paragraph removal skip. "unanalyzed section preserve safety"로 명명 — 근본 해결이 아닌 안전 정책.
+
+**왜 안전장치만으로 부족한가**: section1/2/4의 구조, 역할, 채움 대상 여부를 이해하지 못하고 단순 보존만 함. 향후 section 내부에 생성/수정 대상이 있을 수 있음.
+
+**근본 해결 (13.6 blocker)**:
+1. `extract_section_xml()` → 모든 section XML 반환
+2. section별 1a 구조 분석 (role, level, marker, parent)
+3. section-aware structure merge (document-level)
+4. section-aware target_unit_plan (region에 소속 section 정보 포함)
+5. section-aware generation (어느 section의 어느 chapter에 source를 채울지)
+6. section-aware assembly (section별 layout/용지/여백 유지)
+
+**재검토 시점**: 13.6 핵심 항목.
+**주의**: attachment preserve 문제로만 취급하면 안 됨. multi-section 문서 전체 처리 능력의 문제.
+
+### CC12: Chapter-Local Pattern Preservation (대제목별 하위 양식 보존)
+
+> "Top-level chapter flow preservation is not enough. Each top-level chapter owns its local sub-patterns, and those local patterns are part of the chapter's semantic intent. Generation must fill source content within the original chapter-local pattern rather than selecting arbitrary patterns from elsewhere in the template."
+
+**문제**:
+- 13.4b에서 top-level chapter 흐름(Ⅰ→Ⅱ→Ⅲ)은 보존됨
+- 하지만 대제목만 유지하는 것으로 부족. 각 대제목 아래 하위 role pattern/paragraph structure가 다를 수 있음
+- 예: 조달청 `Ⅰ. 추진성과 및 평가`(평가용 하위 구조) vs `Ⅲ. 핵심 추진과제`(과제 설명용 하위 구조)
+- source 내용이 많다고 해서 Ⅲ장용 pattern을 Ⅰ장에 가져다 쓰거나, Ⅰ장용 짧은 pattern을 Ⅲ장에 쓰면 chapter-local intent가 깨짐
+- 현재 2b는 `dominant_chapter_type` 1개의 pattern으로 모든 chapter를 생성 → chapter 간 local pattern 차이를 반영하지 못함
+
+**원칙**:
+- top-level chapter는 제목뿐 아니라 그 chapter에 속한 하위 pattern까지 포함하는 generation unit
+- 각 chapter의 하위 양식은 그 chapter intent를 표현하는 template evidence
+- generation은 source에 맞춰 pattern을 임의 선택하지 않고, 원래 template chapter에 속한 pattern 안에서 내용을 채움
+- source가 해당 chapter pattern을 충분히 채우지 못하면 다른 chapter pattern으로 바꾸지 말고 insufficient_source/preserve/skip으로 처리
+- 반복/확장은 해당 chapter의 grammar, parent context, marker policy가 허용하는 범위 안에서만
+
+**현재 위치**:
+- 13.4b: top-level chapter loop = template-driven (첫 단계 해결)
+- chapter-local 하위 pattern preservation은 미완성
+- 현재 `chapter_types`에 type이 1개인 양식(조달청)에서는 표면화되지 않음
+- type이 여러 개이거나 같은 type 내에서 chapter별 하위 구조가 다른 양식이 나오면 드러남
+
+**조달청에서 확인된 gap (13.5 세션에서 관측)**:
+
+조달청 3개 chapter의 local pattern이 명백히 다름:
+```
+Ⅰ.평가:  17p, roles 6종 (c5/c6/c7/c9),    max_level=3, 얕은 평가 구조
+Ⅱ.여건:  17p, roles 7종 (c10/c11 등장),     max_level=4, 여건/방향 분리 구조
+Ⅲ.과제: 186p, roles 11종 (c12~c18 고유),    max_level=6, 깊은 과제 반복 구조
+```
+
+`chapter_types`에 type_1~type_4까지 4개 type이 정의되어 있음에도, `_find_dominant_chapter_type`이 type_1 하나만 선택하여 3개 chapter 모두에 적용. **chapter-local pattern이 이미 손실되고 있음.**
+
+이 문제는 "나중에 type이 여러 개인 양식이 나오면 보자"가 아니라, **이미 조달청에서 발생 중인 chapter-local pattern detection gap**임.
+
+**13.6 핵심 이슈 후보** — 단순 later/watch가 아님.
+
+**13.6 핵심 해결 후보: Per-template-chapter subtree extraction**
+
+dominant_chapter_type clustering을 개선하는 방향이 아니라, 각 top-level chapter의 실제 paragraph로부터 local subtree를 직접 추출하는 방향.
+
+```
+현재:  chapter_types clustering → dominant_type 1개 선택 → 모든 chapter에 적용  (손실 발생)
+제안:  target_unit_plan region → 해당 region의 paragraphs → local pattern dict 구축  (직접 추출)
+```
+
+**구현 아이디어**:
+1. top-level chapter heading(target_unit_plan의 chapter region)을 기준으로 chapter boundary 결정
+2. 각 chapter region의 paragraph_indices → structure에서 role/level/parent 조회 → local role pattern dict 구축
+3. 해당 chapter의 paragraph exemplar text로 local catalog 구축
+4. 2b 호출 시 global dominant pattern 대신 해당 chapter의 local pattern + catalog 전달
+5. `extract_chapter_template_plan_seed`를 확장: seed에 `local_pattern`, `local_catalog` 추가
+
+**기존 chapter_types와의 관계**:
+- chapter_types는 삭제하지 않음 — grouping/labeling/debug 역할로 유지
+- subtree 추출 실패 시 dominant type으로 fallback
+- generation용 패턴은 per-chapter subtree가 우선
+
+**주의점 — subtree boundary 기준은 고정 level이 아니다**:
+
+`level == 0`으로 자르거나 `Ⅰ/Ⅱ/Ⅲ` 문자열로 자르면 안 됨. 문서에 따라 generation unit 기준 heading이 다를 수 있음:
+- 어떤 양식: Ⅰ/Ⅱ/Ⅲ (level 0) heading이 기준
+- 어떤 양식: 큰 section 아래 1/2/3 (level 1) heading이 실제 chapter 단위
+- 어떤 양식: level 2 heading이나 특정 parent 아래 반복 block이 generation unit
+
+**기준 heading은 evidence 기반으로 판단**:
+- target_unit_plan region (12.2 AI가 판정한 chapter region)
+- parent_idx / sibling order
+- marker_policy (heading marker type)
+- role semantics (heading vs body)
+- chapter region evidence (반복 패턴, depth 분포)
+- grammar / pattern tree
+
+**subtree 추출 방식**:
+- 기준 heading부터 시작 → 같은 parent/context 안에서 다음 동일 기준 heading 전까지를 subtree로 묶음
+- 하위 문단, 하위 heading, 표, bullet, attachment/table placeholder 포함
+- section boundary와 layout boundary는 유지
+
+**fallback**:
+- 기준 heading 확정 불가 시 억지로 level 0으로 자르지 않음 → ambiguity/debug로 남김
+- 필요 시 dominant chapter_type fallback 사용 + fallback 발생 이유 기록
+
+**기타 주의점**:
+- subtree에서 role hierarchy 재구성 시 sibling ordering과 repeatable 판단은 grammar 데이터 교차 필요
+- multi-section analysis (CC11)와 연결: section별 구조를 모두 분석해야 section 간 chapter subtree도 정확히 추출 가능
+
+**원인 분석 (확인됨)**:
+- `chapter_types`에 type_1~4까지 4개 type이 존재하지만, `_find_dominant_chapter_type`이 하나만 선택
+- type_1: c5/c6/c9, type_2: c10→c6, type_3: c10→c5, type_4: c12→c5/c13 — 서로 다른 pattern
+- 조달청 Ⅰ(6 roles, depth 3), Ⅱ(7 roles, depth 4), Ⅲ(11 roles, depth 6)가 각각 다른 type에 해당
+- per-chapter subtree 추출이면 이 문제가 구조적으로 해결됨
+
+**현재 상태**: 13.5 계속 진행. 이 문제는 13.6 핵심 blocker 후보. 조달청 결과 판단 시 "대제목은 유지됐지만 chapter-local pattern 보존은 아직 검증되지 않았다"고 명시.
 
 ---
 

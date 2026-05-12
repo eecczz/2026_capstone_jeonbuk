@@ -751,6 +751,7 @@ def assemble_hwpx_hybrid(
     chapter_trees: list[list[dict]] | None = None,
     content_only_mode: bool = False,
     preserve_indices: set[int] | None = None,
+    analyzed_sections: set[int] | None = None,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -1020,6 +1021,29 @@ def assemble_hwpx_hybrid(
         if _added:
             log.info(f"assemble: preserve_indices added {_added} paragraphs to header set")
 
+    # 13.5 unanalyzed section preserve safety
+    _unanalyzed_section_debug = {}
+    if analyzed_sections is not None:
+        _all_sec_indices = set(_para_to_sec_idx.values())
+        _unanalyzed = _all_sec_indices - analyzed_sections
+        if _unanalyzed:
+            _section_preserved = 0
+            for i in range(_orig_para_count_pre := len(doc.paragraphs)):
+                sec_idx = _para_to_sec_idx.get(i)
+                if sec_idx is not None and sec_idx in _unanalyzed and i not in header_indices:
+                    header_indices.add(i)
+                    _section_preserved += 1
+            _unanalyzed_section_debug = {
+                "analyzed_sections": sorted(analyzed_sections),
+                "unanalyzed_sections": sorted(_unanalyzed),
+                "paragraphs_preserved": _section_preserved,
+            }
+            if _section_preserved:
+                log.info(
+                    f"assemble: unanalyzed section preserve — "
+                    f"sections {sorted(_unanalyzed)}, {_section_preserved} paragraphs preserved"
+                )
+
     _orig_para_count = len(doc.paragraphs)  # remove 전 총 수 (분류용)
     _table_text_skipped = 0  # 13.3 table policy: text replacement skip 횟수
     body_elements = []
@@ -1145,6 +1169,7 @@ def assemble_hwpx_hybrid(
         "secpr_carrier_warnings": _secpr_carrier_warnings,
         "secpr_conflict_warnings": _secpr_conflict_warnings,
         **(_preserve_debug if _preserve_debug else {}),
+        **(_unanalyzed_section_debug if _unanalyzed_section_debug else {}),
         "removed_indices": sorted(_body_para_indices),
         "table_text_replacement_skipped_count": _table_text_skipped,
     }
