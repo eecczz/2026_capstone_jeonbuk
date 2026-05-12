@@ -676,10 +676,10 @@
       appendBubble("bot", reply, sources);
       history.push({ role: "assistant", content: reply, sources });
       saveHistory();
-      playReply(data.audio_url || null, reply);
+      // 텍스트 모드는 음성 답변 OFF — 사용자가 텍스트만 원할 때 TTS 재생 안 함.
+      // 음성 모드는 별도 WebSocket 흐름으로 처리 (이 경로 안 탐).
     } catch (e) {
       appendBubble("bot", `오류가 발생했습니다: ${e.message}`);
-      enterCooldownThenListen();
     } finally {
       sendBtn.disabled = false;
     }

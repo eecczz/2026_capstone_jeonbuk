@@ -320,11 +320,17 @@ def _build_rag_processor(request: Request, websocket=None):
                 import re as _re
                 import uuid as _uuid
 
-                _sentence_pat = _re.compile(r"[.!?。…]|다\s|요\s|니다\s|에요\s|이에요\s")
+                # 종결 매칭 — 소수점/약어 (예: "1.5%", "A.B.C") 잘못 끊지 않도록
+                # "." 뒤에 숫자/영문 오면 무시. 한국어 종결어미 + 문장부호.
+                _sentence_pat = _re.compile(
+                    r"(?<!\d)\.\s|(?<!\d)\.$|[!?。…]|다\s|요\s|니다\s|에요\s|이에요\s|예요\s"
+                )
                 sentence_buffer = ""
                 full_reply = ""
                 sentence_count = 0
                 _stream_t0 = None  # 첫 delta 도착 시점 — streaming 동작 진단
+                # sentence 최소 길이 — 너무 짧은 단편은 다음과 합쳐서 push (악센트 깨짐 방지)
+                MIN_SENT_LEN = 20
 
                 try:
                     from open_webui.routers.public_chatbot import (
@@ -364,18 +370,20 @@ def _build_rag_processor(request: Request, websocket=None):
                                     break
                                 end = m.end()
                                 sentence = sentence_buffer[:end].strip()
+                                # 20자 미만이면 buffer 그대로 두고 다음 종결까지 누적
+                                if len(sentence) < MIN_SENT_LEN:
+                                    break
                                 sentence_buffer = sentence_buffer[end:]
-                                if len(sentence) >= 8:
-                                    sentence_clean = _hum(sentence)
-                                    if sentence_clean.strip():
-                                        sentence_count += 1
-                                        # TTS 만 한국어 발음 (자막은 원본)
-                                        tts_sentence = _tts_text_postprocess(sentence_clean)
-                                        log.info(
-                                            f"[voice_ws] stream sentence #{sentence_count}: "
-                                            f"{tts_sentence[:50]!r}"
-                                        )
-                                        await self.push_frame(TTSSpeakFrame(text=tts_sentence))
+                                sentence_clean = _hum(sentence)
+                                if sentence_clean.strip():
+                                    sentence_count += 1
+                                    # TTS 만 한국어 발음 (자막은 원본)
+                                    tts_sentence = _tts_text_postprocess(sentence_clean)
+                                    log.info(
+                                        f"[voice_ws] stream sentence #{sentence_count}: "
+                                        f"{tts_sentence[:50]!r}"
+                                    )
+                                    await self.push_frame(TTSSpeakFrame(text=tts_sentence))
                         elif kind == "done":
                             final_text = payload or _hum(full_reply)
                             # 남은 buffer 도 한 문장으로 합성

@@ -523,20 +523,25 @@ def _classify_intent(text: str) -> Optional[str]:
 
 
 def _estimate_confidence(text: str, directedness: float, stt_confidence: Optional[float]) -> float:
+    """STT 결과 신뢰도 추정.
+
+    Cohere transcribe 가 confidence 를 안 주므로 default 0.85 (대체로 정확한
+    가정). 너무 짧거나 이상한 문자가 섞이면 감점.
+    """
     if stt_confidence is not None:
         base = stt_confidence
     else:
-        base = 0.76
+        base = 0.85  # Cohere 기본 신뢰도 (이전 0.76 → 0.85)
 
     compacted = _compact(text)
     if len(compacted) <= 2:
         base -= 0.25
     elif len(compacted) <= 5:
-        base -= 0.1
+        base -= 0.05
     if re.search(r"[?？]{2,}|[^\w\s가-힣.,?!~%-]", text):
-        base -= 0.08
+        base -= 0.05
 
-    base = (base * 0.72) + (directedness * 0.28)
+    base = (base * 0.78) + (directedness * 0.22)
     return round(max(0.0, min(1.0, base)), 2)
 
 
@@ -586,7 +591,8 @@ def understand_public_voice(
             corrections=corrections,
         )
 
-    if confidence < 0.6:
+    # Confidence 기준 완화: 정말 못 들은 경우에만 재요청.
+    if confidence < 0.45:
         return VoiceUnderstanding(
             raw_text=raw,
             normalized_text=text,
@@ -599,20 +605,18 @@ def understand_public_voice(
             corrections=corrections,
         )
 
-    if confidence < 0.8 or sensitive or intent in {"apply", "cancel", "eligibility"}:
+    # Confirmation 은 sensitive(부정수급 등) 또는 신청/취소 같은 transactional intent 만.
+    # 자격요건/일정/금액 같은 정보 조회는 그냥 답변 — 확인 거치면 UX 망가짐.
+    if sensitive or intent in {"apply", "cancel"}:
         if sensitive:
             confirmation = (
-                "말씀하신 내용은 부정수급이나 허위 신청과 관련된 민감한 문의로 이해했습니다. "
+                "말씀하신 내용은 부정수급이나 허위 신청과 관련된 민감한 문의로 이해했어요. "
                 "정확한 절차 안내가 필요하니 이 내용으로 확인해 드릴까요?"
             )
-        elif intent == "eligibility":
-            confirmation = f"말씀하신 내용은 자격요건 확인 문의로 이해했습니다. 맞으실까요?"
         elif intent == "apply":
-            confirmation = f"말씀하신 내용은 신청 방법 문의로 이해했습니다. 맞으실까요?"
-        elif intent == "cancel":
-            confirmation = f"말씀하신 내용은 취소나 중단 절차 문의로 이해했습니다. 맞으실까요?"
-        else:
-            confirmation = f"제가 이해한 내용이 맞다면 '{text}'에 대한 문의입니다. 맞으실까요?"
+            confirmation = "말씀하신 내용은 신청 방법 문의로 이해했어요. 맞으실까요?"
+        else:  # cancel
+            confirmation = "말씀하신 내용은 취소나 중단 절차 문의로 이해했어요. 맞으실까요?"
 
         return VoiceUnderstanding(
             raw_text=raw,
