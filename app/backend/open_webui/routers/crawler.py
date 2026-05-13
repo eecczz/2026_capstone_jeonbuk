@@ -169,6 +169,8 @@ async def trigger_incremental_crawl(
 
 class ReingestRequest(BaseModel):
     urls: list[str]
+    skip_entity: bool = True
+    skip_attachment: bool = True
 
 
 @router.post("/reingest")
@@ -186,21 +188,46 @@ async def reingest_urls(
 
     crawler_sites.py 에 site_code 정의 없으면 (시군구 등) PG 의 메타 (institution,
     category) 기반 stub site_config 구성.
+
+    skip_entity=True (default): _process_url 의 LLM 엔티티 추출 단계 건너뜀
+    (entity backfill 이 따로 도므로 중복 호출 회피, 속도 ~10배 향상).
+    skip_attachment=True (default): 첨부 OCR 처리 건너뜀 (별도 작업 가능).
     """
     from urllib.parse import urlparse
     from open_webui.tasks.crawler import _process_url
     from open_webui.tasks.crawler_sites import get_site
+    import os as _os
 
     results = {"ok": 0, "failed": 0, "skipped_not_in_pg": 0, "by_status": {}}
 
-    sem = asyncio.Semaphore(5)  # 동시 처리 제한 — embedding 서버 보호
+    # 스킵 플래그 — process_url 안에서 환경변수 / 설정 체크 우회용으로 사용.
+    # process-local 만 영향 (sub-call) — async task 끝나면 원복.
+    if body.skip_entity:
+        _os.environ["CRAWL_GRAPH_ENTITY_EXTRACT"] = "0"
+    if body.skip_attachment:
+        # request.app.state.config.CRAWL_ATTACHMENTS_ENABLED 를 임시 끄고 finally 에서 복원.
+        cfg = getattr(request.app.state, "config", None)
+        prev_attach = getattr(cfg, "CRAWL_ATTACHMENTS_ENABLED", True) if cfg else True
+        if cfg is not None:
+            try:
+                cfg.CRAWL_ATTACHMENTS_ENABLED = False
+            except Exception:
+                pass
+
+    sem = asyncio.Semaphore(15)  # SQL session pool + Qdrant insert 부하 균형
+
+    import html as _html
 
     async def _one(url: str):
         async with sem:
+            # PG 일부 시군구 URL 은 &amp; HTML entity 로 저장됨 — driver 는 PG 의
+            # 인코딩된 URL 그대로 보내고, 여기서 fetch 시점에 unescape.
             existing = CrawledPages.get_by_url(url)
             if not existing:
                 results["skipped_not_in_pg"] += 1
                 return
+            # fetch + metadata 에 사용할 URL — HTML entity 풀어진 형태.
+            url_for_fetch = _html.unescape(url)
 
             # site_config — 정의된 것 우선, 없으면 PG 메타 기반 stub.
             site_config = get_site(existing.site_code)
@@ -216,25 +243,30 @@ async def reingest_urls(
                 }
 
             # content_hash NULL reset → _process_url 이 changed 로 인식하도록.
+            # CrawledPages.upsert 는 content_hash=None 일 때 skip 하니 직접 SQL.
+            # encoded URL (PG 원본 row) 와 decoded URL (_process_url lookup row) 둘 다.
             try:
-                CrawledPages.upsert(
-                    url=url,
-                    site_code=existing.site_code,
-                    institution=existing.institution or "",
-                    category=existing.category or "",
-                    title=existing.title or "",
-                    content_hash=None,
-                    http_etag=None,
-                    http_last_modified=None,
-                    status="pending",
-                    chunks_count=0,
-                    content_changed=False,
-                )
+                from open_webui.internal.db import get_db_context
+                from open_webui.models.crawler import CrawledPage
+                with get_db_context() as _db:
+                    _db.query(CrawledPage).filter(
+                        CrawledPage.url.in_(list({url, url_for_fetch}))
+                    ).update(
+                        {
+                            CrawledPage.content_hash: None,
+                            CrawledPage.http_etag: None,
+                            CrawledPage.http_last_modified: None,
+                        },
+                        synchronize_session=False,
+                    )
+                    _db.commit()
             except Exception as e:
-                log.warning(f"reingest reset failed {url}: {e}")
+                log.warning(f"reingest hash reset failed {url}: {e}")
 
             try:
-                status_str = await _process_url(request, site_config, url, mode="full")
+                # _process_url 에 url_for_fetch (decoded) 전달 — Crawl4AI fetch +
+                # metadata 의 url 필드 도 decoded 형태로. PG row 의 url 은 그대로 유지.
+                status_str = await _process_url(request, site_config, url_for_fetch, mode="full")
             except Exception as e:
                 log.warning(f"reingest _process_url failed {url}: {e}")
                 results["failed"] += 1
@@ -246,7 +278,20 @@ async def reingest_urls(
             else:
                 results["failed"] += 1
 
-    await asyncio.gather(*(_one(u) for u in body.urls))
+    try:
+        await asyncio.gather(*(_one(u) for u in body.urls))
+    finally:
+        # 스킵 플래그 원복 — 다음 reingest 호출 / 정상 크롤 동작 보호.
+        if body.skip_attachment:
+            cfg = getattr(request.app.state, "config", None)
+            if cfg is not None:
+                try:
+                    cfg.CRAWL_ATTACHMENTS_ENABLED = prev_attach
+                except Exception:
+                    pass
+        # entity extract 환경변수도 원복 (다음 페이지 정상 크롤 영향 안 가도록).
+        if body.skip_entity:
+            _os.environ.pop("CRAWL_GRAPH_ENTITY_EXTRACT", None)
     return results
 
 

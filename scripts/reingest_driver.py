@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 import time
+import html
 import json
 import urllib.request
 
@@ -98,16 +99,26 @@ def main():
     ap.add_argument("--sites", help="comma-separated")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--chunk", type=int, default=10, help="URLs per HTTP request")
+    ap.add_argument("--urls-file", help="newline-separated URL list (skips PG fetch)")
     args = ap.parse_args()
 
-    sites = args.sites.split(",") if args.sites else DEFAULT_TARGETS
-    log.info(f"Target sites: {sites}")
     log.info("Getting admin JWT...")
     jwt = get_admin_jwt()
     log.info(f"JWT acquired ({len(jwt)} chars)")
 
-    urls = fetch_urls(sites, args.limit)
-    log.info(f"PG returned {len(urls):,} URLs")
+    if args.urls_file:
+        with open(args.urls_file) as f:
+            urls = [line.strip() for line in f if line.strip()]
+        log.info(f"URL file {args.urls_file} loaded {len(urls):,} URLs")
+        if args.limit:
+            urls = urls[: args.limit]
+    else:
+        sites = args.sites.split(",") if args.sites else DEFAULT_TARGETS
+        log.info(f"Target sites: {sites}")
+        urls = fetch_urls(sites, args.limit)
+        log.info(f"PG returned {len(urls):,} URLs")
+
+    # URL decode 는 endpoint 가 처리 (PG lookup 은 encoded URL 로).
 
     agg = {"ok": 0, "failed": 0, "skipped_not_in_pg": 0, "errors": 0, "by_status": {}}
     t0 = time.time()
