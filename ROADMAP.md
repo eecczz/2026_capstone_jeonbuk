@@ -28,7 +28,8 @@
 | **13.4b** | **Chapter Template Plan Seed** | **in progress** | template-driven chapter loop, broad source fallback, 2b template context |
 | **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **done** | region action plan + unanalyzed section preserve safety |
 | **13.6** | **Per-Chapter Subtree + Multi-Section/Source Gate** | **done** | B: per-chapter local_pattern→prompt+validation 연결, A: multi-section diagnostic, C: source diagnostic |
-| **13.7** | **Multi-Section Analysis + Section-Aware Assembly** | **next** | document-level analysis, section-aware assembly, title-level body_split 개선 |
+| **13.7a** | **Assembly 수정 (region-first body_split + section-aware)** | **next** | 1a 무변경. body_split을 region-first로, section-aware paragraph 배치 |
+| **13.7b** | **Multi-Section Analysis 확장** | not started | 1a 파이프라인 변경. 모든 section 분석 + document-level merge |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
 | 15 | Source Evidence / Coverage | not started | source coverage validation — 13.7 이후 |
@@ -60,7 +61,9 @@
   |                         |
   |                    13.6: Per-Chapter Subtree + Gate (done, CC12 해결)
   |                         |
-  |                    13.7: Multi-Section Analysis + Section-Aware Assembly (CC11)
+  |                    13.7a: Assembly 수정 (region-first body_split) ← NEXT
+  |                         |
+  |                    13.7b: Multi-Section Analysis 확장 (CC11)
   |                         |
   |              ┌──────────┤
   |              |          |
@@ -81,7 +84,8 @@
 - **13.4b는 13 이후** (template-driven chapter loop — template intent flow 보존 최소 안전장치)
 - **13.5는 13.4b 이후** (region action plan + unanalyzed section preserve safety)
 - **13.6 완료** (CC12 해결: per-chapter subtree extraction + local_pattern_override validation, A/C diagnostic으로 13.7 scope 확정)
-- **13.7은 13.6 이후** (multi-section full analysis [CC11], section-aware assembly, title-level body_split 개선; source allocation redesign은 watch)
+- **13.7a는 13.6 이후** (assembly 수정: region-first body_split + section-aware 배치. 1a 무변경)
+- **13.7b는 13.7a 이후** (analysis 확장: 모든 section 1a 분석 + document-level merge [CC11]. source allocation redesign은 watch)
 - **14-table과 14는 13.7 이후, 병렬 가능**
 - **15는 13.7 이후** (allocation 안정 후 coverage validation)
 - **Assembly 고도화는 독립** (tree→layout, section-aware append. 다른 단계와 의존 없음)
@@ -1253,14 +1257,75 @@ chapter loop debug에 source_diagnostic 추가.
 | AI parent_id 단일 fallback | **watch** | 민원인 Ch1에서 1건, harmless |
 | Marker rewrite fallback debug 이상 | **watch** | tree_available=false의 증상, debug-only (출력 무영향) |
 
-#### 13.7 후보 작업
+#### 왜 13.7을 a/b로 나누는가
 
-1. **extract_section_xml() → 모든 section 반환** (CC11 근본 해결)
-2. **section별 1a 분석** (토큰 비용 고려 — 축소/요약 전략)
-3. **document-level structure merge** (section 간 paragraph 통합)
-4. **section-aware target_unit_plan** (region에 소속 section 정보)
-5. **section-aware assembly** (generated content를 원래 section에 배치, layout 유지)
-6. **title-level-independent body_split** (level=0 가정 제거, tree 직접 사용)
+**한 번에 하면 위험한 이유**: multi-section full analysis(1a 파이프라인 변경)와 section-aware assembly(assemble 변경)는 독립적인 문제다. 1a 파이프라인을 바꾸면 cache, structure, target_unit_plan, grammar, marker_policy 전부에 영향이 가는데, assembly 문제(tree_available=false, body_split 실패)는 analysis 변경 없이 해결 가능하다. 두 작업을 합치면 문제 원인 분리가 어렵고, regression 범위가 커진다.
+
+**13.7a만으로 "양식 골격이 안정적으로 나오는 첫 단계" 충족**: section1~4를 preserve하면서(13.5 safety) body_split/tree alignment만 고치면, 사람이 볼 때 장/section 골격이 망가지지 않는다. section1~4 content 생성은 13.7b에서 해도 됨.
+
+#### 13.7a: Assembly 수정 (1a 파이프라인 무변경)
+
+**해결하는 문제**:
+
+1. **tree_available=false** — 민원인 title(role_cluster_4)이 level=1이라 현재 level=0 기반 body_split이 title을 못 찾음. body_split_count=0 → tree alignment 실패 → marker rewrite fallback.
+
+2. **section-aware content 배치** — 현재 모든 generated content가 section0에 들어감. section별 secPr/layout이 보존되어야 하는데 배치 로직이 section-aware하지 않음.
+
+**해결 방안**:
+
+| 항목 | 현재 | 변경 |
+|------|------|------|
+| body_split boundary | level=0 scan → title_role match | **region-first**: target_unit_plan chapter region paragraph_indices로 boundary 직접 결정 |
+| body_split 우선순위 | level=0 scan만 | 1) target_unit_plan region → 2) region first_paragraph + title_role 확인 → 3) chapter_trees 매핑 → 4) level=0 scan fallback |
+| section tracking | 부분적 (section_info에 일부) | paragraph별 section_id 추적, remove/append 시 section 유지 |
+| content 배치 | section0에 모두 append | section0 generated → section0에 배치. section1~4는 preserve 유지 (13.7a에서는 section0만 분석이므로 실질 변경 없지만, 코드 구조가 section-aware해짐) |
+
+**하지 않는 것**:
+- 1a pipeline 변경 (13.7b)
+- section1~4 content generation (13.7b)
+- source allocation redesign (watch)
+- D11 fix (watch, regression만 확인)
+
+**검증 기준**:
+- 민원인: tree_available=true, body_split_count>0, section1~4 preserve 유지, Ⅰ~Ⅷ 유지, 실제 출력에서 제목 marker 깨짐 없음
+- 조달청: tree_available=true 유지, local_pattern_override 유지, assembly fail=0, 실제 출력 Ⅰ/Ⅱ/Ⅲ 유지
+- CC7: shallow route 불변, 실제 출력 양식 유지
+
+#### 13.7b: Multi-Section Analysis 확장 (13.7a 이후 별도 판단)
+
+**해결하는 문제**:
+
+`extract_section_xml()`이 section0만 반환 → 1a~1f가 section0만 분석 → section1~4 구조 미파악 → 생성/수정 불가 → 13.5 preserve safety로 임시 보존 중.
+
+민원인 수치:
+- section0: 326 body paragraphs (분석됨)
+- section1~4: 284 body paragraphs, 47% (미분석, preserve만)
+- section4 "제2장 - 반복민원 대응": 193p — 본문급 content가 분석 대상 밖
+
+**해결 방안**:
+
+| 항목 | 방안 |
+|------|------|
+| extract_section_xml | 모든 section XML list 반환 |
+| section별 1a 분석 | 토큰 전략 필요. 유력 방안: section0 full + 나머지 lightweight (paragraph count + role hint + heading 추출) |
+| document-level merge | section별 분석 결과 통합. paragraph에 section_id/section_local_idx/global_document_idx 부여 |
+| section-aware target_unit_plan | region에 section_span/section_ids 추가. generation target이 원래 section 기억 |
+| section-aware generation | 2b 호출 시 target section 정보 전달 |
+| cache schema | section 정보 포함으로 확장. 기존 cache invalidation 필요 |
+
+**토큰 비용 추정** (민원인 기준):
+- 현재: section0 1.9MB → truncate 100K chars → 1a 1회 호출
+- section별 독립 호출: 5회 × 토큰 → 비용 높음
+- 하이브리드(유력): section0 full + section1~4 lightweight → 1~2회 추가
+
+**하지 않는 것**: source allocation redesign, table cell filling, emphasis
+
+**검증 기준**:
+- 민원인 section1~4 분석 결과가 structure에 포함
+- section4 (제2장) content가 generation 대상 가능
+- document-level paragraph indexing 일관성
+- 조달청 single-section regression 없음
+- 14-table 진행 가능 여부 최종 판단
 
 ---
 
