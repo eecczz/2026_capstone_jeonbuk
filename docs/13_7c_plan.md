@@ -16,6 +16,13 @@
 
 13.7c는 **generation 품질 보장이 아니라 planning gate**. AI가 chapter별로 무엇을 보존하고 무엇을 adaptation했는지 evidence와 함께 명시하도록 강제한다.
 
+**Template-first 흐름 (핵심)**:
+- step 1: template chapter need 파악 (chapter intent가 frame)
+- step 2: source-to-chapter evidence retrieval (source는 chapter need에 종속된 도구)
+- source가 풍부해도 chapter need 외 내용은 사용 X
+- source 주제가 문서 방향을 결정하지 않음 — chapter intent가 결정
+- 14단계 KB/RAG가 광범위한 source를 줄 수 있으므로 13.7c가 chapter need 기준 필터 역할
+
 ### 1.1 진단된 문제
 
 13.7a 완료 후 민원인+조달청 PDF (mismatch source) 실행 결과:
@@ -40,17 +47,18 @@
 
 ---
 
-## 2. 설계 원칙 (최종 9개)
+## 2. 설계 원칙 (최종 10개)
 
-1. **의미 판단은 AI**. code는 의미 판단 안 함.
-2. **코드는 JSON/schema, 필수 필드, 명백한 계약 위반만 본다.**
-3. **heuristic은 hard fail 금지.** token overlap, length ratio, substring match는 정책에 영향 X.
-4. **evidence 관련 수치는 참고 metric으로만**. `_debug.reference_metrics`에 보관. warning 아님.
-5. **preserve 강등은 명백한 경우만**: AI 호출 실패, parse 실패, schema 위반, 필수 evidence 없음, action 모순.
-6. **title adaptation 허용**, 단 AI가 preserved/adapted/counter evidence를 명시해야 한다.
-7. **13.7c는 generation 품질 보장이 아니라 planning gate**. 의미 적합성의 final gate는 사용자 눈검증.
-8. **broad source 유지**. source slice는 후속 stage 후보.
-9. **13.7b 이후 chapter/section 확장 시 adaptation mapping은 부분 재실행/확장**. schema는 유지하되 target set이 늘어남.
+1. **Template-first 흐름**. step 1은 template chapter need(frame), step 2는 source-to-chapter evidence retrieval(도구). source가 문서 방향 결정 금지. source 주제가 chapter intent를 덮어쓰면 안 됨.
+2. **의미 판단은 AI**. code는 의미 판단 안 함.
+3. **코드는 JSON/schema, 필수 필드, 명백한 계약 위반만 본다.**
+4. **heuristic은 hard fail 금지.** token overlap, length ratio, substring match는 정책에 영향 X.
+5. **evidence 관련 수치는 참고 metric으로만**. `_debug.reference_metrics`에 보관. warning 아님.
+6. **preserve 강등은 명백한 경우만**: AI 호출 실패, parse 실패, schema 위반, 필수 evidence 없음, action 모순.
+7. **title adaptation 허용**, 단 AI가 preserved/adapted/counter evidence를 명시해야 한다. adaptation은 chapter intent + source 구체화 형태이며, source 주제로 chapter intent를 대체 X.
+8. **13.7c는 generation 품질 보장이 아니라 planning gate**. 의미 적합성의 final gate는 사용자 눈검증.
+9. **broad source 유지**. source slice는 후속 stage 후보.
+10. **13.7b 이후 chapter/section 확장 시 adaptation mapping은 부분 재실행/확장**. schema는 유지하되 target set이 늘어남.
 
 ---
 
@@ -159,7 +167,7 @@
 
 ## 4. AI 호출
 
-### 4.1 Source topic extraction (1회)
+### 4.1 Source inventory extraction (1회) — template-first의 도구
 
 **Input**:
 - broad source 전문 (현재 `_broad_source`)
@@ -167,24 +175,39 @@
 **Output schema** (JSON):
 ```python
 {
-  "summary": str,                # source의 main subject 요약 (1~3 문장)
-  "key_themes": [str],            # 핵심 주제 키워드 (3~7개)
+  "summary": str,                 # source가 다루는 영역의 brief description (1~2 문장)
+                                  # — chapter intent를 결정짓지 않음
+  "available_topics": [str],      # source가 다루는 영역/키워드 (선택지로, 결정적 진술 X)
   "main_headings": [str],         # source의 주요 heading/section title 목록
   "confidence": "high" | "medium" | "low",
-  "evidence_samples": [str],      # source에서 짧은 인용 (2~5개)
+  "evidence_samples": [str],      # source에서 짧은 인용 (검색 도구로 사용됨)
 }
 ```
 
-**원칙**:
-- AI 자유 응답이 아니라 schema-constrained.
+**Template-first 원칙**:
+- 이 단계는 source inventory를 정리하는 것일 뿐 source 주제를 frame으로 만들지 않음.
+- AI에게 "이 source의 주제는 X다"라는 결정적 진술을 피하도록 prompt 지시.
+- inventory는 다음 step 2 (chapter mapping)에서 도구로만 사용.
 - 양식 도메인 가정 없음 (원칙 14).
 
-### 4.2 Chapter mapping batch (1회 또는 split)
+**함수**: `build_source_inventory_prompt`, `parse_source_inventory_from_llm`
 
-**Input**:
-- source_topic (4.1 결과)
-- chapter list: 각 chapter의 `{idx, original_title, description, local_pattern, local_catalog}` (chapter_template_plan_seed에서 derive)
-- broad source 전문 (참조용)
+### 4.2 Chapter mapping batch (1회 또는 split) — template-first
+
+**Template-first prompt 구조**:
+- Step 1: chapter need 파악 (frame, 우선)
+- Step 2: source evidence retrieval (도구, chapter need에 종속)
+- Step 3: 각 chapter 결정
+
+**Input (순서 중요)**:
+- **chapter list (frame, 첫째)**: `{idx, original_title, description, local_pattern_summary, local_catalog_summary}` — chapter_template_plan_seed에서 derive. 이게 frame.
+- **source_inventory (도구, 둘째)**: 4.1 결과. chapter need 매칭 도구로만 사용.
+- **broad_source_preview (참조용)**: source의 일부, evidence retrieval 용.
+
+prompt에 명시 지시:
+- "chapter need에 매칭되는 source evidence만 사용"
+- "source의 다른 풍부한 내용은 chapter need와 안 맞으면 무시"
+- "title adaptation은 chapter intent를 보존하면서 source 구체화 (예: 'Ⅰ.목적' + 'X 정책' → 'X 정책 목적'). source 주제가 chapter intent를 대체하면 안 됨."
 
 **Output schema** (JSON):
 ```python
@@ -196,6 +219,8 @@
 ```
 
 각 항목은 3.1 schema의 `action`, `adapted_title`, `preserved_aspects`, `adapted_aspects`, `supporting_evidence`, `counter_evidence`, `ambiguity_flags`, `adaptation_degree`, `confidence`, `preserve_reason`, `preserve_reason_detail` 채움.
+
+**함수**: `build_adaptation_plan_prompt`, `parse_adaptation_plan_from_llm`
 
 ### 4.3 Batch split 정책
 
@@ -407,6 +432,8 @@ Schema 유지:
 | 항목 | 사유 |
 |------|------|
 | intent_role enum 강제 (purpose/background/...) | 원칙 2 (하드코딩) + 원칙 14 (over-fit) 위배 |
+| source 주제로 chapter 방향 결정 | 원칙 3 (Template-first) 위배. source는 chapter need 매칭 도구이지 frame 아님 |
+| source의 풍부한 내용을 chapter need와 무관하게 모든 chapter에 펼치기 | 원칙 3 위배. 14단계 KB/RAG가 광범위한 source 줄 수 있으므로 13.7c가 chapter need 기준 필터 역할 |
 | token overlap / length / substring을 hard fail로 | 원칙 21 (AI 의미 책임) — paraphrase 정상 |
 | adaptation_degree="large" → 자동 강등 | AI self-evaluation 존중 (사용자 정책) |
 | chapter 수 고정 batch split 기준 | 운영 하드코딩 — 입력 크기 동적 기준 사용 |

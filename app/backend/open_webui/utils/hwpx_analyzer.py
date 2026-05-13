@@ -11087,14 +11087,18 @@ CONFIDENCE_LEVELS = ("high", "medium", "low")
 ADAPTATION_DEGREES = ("none", "small", "medium", "large")
 
 
-def build_source_topic_prompt(
+def build_source_inventory_prompt(
     broad_source: str,
     max_source_chars: int = 30000,
 ) -> list[dict]:
-    """13.7c: source topic extraction prompt 생성.
+    """13.7c: source inventory 추출 prompt 생성.
 
-    AI에게 source의 main subject / themes / headings / evidence를
-    schema-constrained로 추출 요청. broad_source 너무 길면 truncate.
+    원칙 (template-first):
+    - source의 "주제"를 결정짓는 진술 X
+    - source가 가진 "사용 가능한 evidence inventory"만 정리
+    - 14단계 KB/RAG가 광범위한 source를 줄 수 있으므로, 이 단계는
+      목록 inventory이지 frame이 아님
+    - chapter mapping은 이 inventory를 도구로만 사용, 방향은 chapter need가 결정
 
     Returns: messages list (system + user)
     """
@@ -11105,27 +11109,31 @@ def build_source_topic_prompt(
     )
 
     system_msg = (
-        "당신은 문서의 핵심 주제를 분석하는 도구입니다. "
+        "당신은 source 문서에서 사용 가능한 evidence inventory를 정리하는 도구입니다. "
+        "source가 다루는 내용을 결정짓지 마세요. "
+        "이 inventory는 다음 단계의 template chapter mapping에서 도구로만 사용됩니다. "
         "JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
     )
 
     user_msg = (
-        "다음 source 문서의 핵심 주제를 추출하세요.\n\n"
+        "다음 source 문서에서 사용 가능한 evidence inventory를 정리하세요.\n\n"
         "source 문서:\n```\n"
         f"{_truncated}{_truncated_note}\n"
         "```\n\n"
         "다음 JSON schema로 응답하세요:\n"
         "{\n"
-        '  "summary": "source의 main subject 1~3 문장 요약",\n'
-        '  "key_themes": ["핵심 주제 키워드 3~7개"],\n'
+        '  "summary": "source가 다루는 영역의 간단한 description (1~2 문장, chapter intent를 결정짓지 않음)",\n'
+        '  "available_topics": ["source가 다루는 영역의 영역/키워드 3~7개 (선택지로, 결정적 진술 X)"],\n'
         '  "main_headings": ["source의 주요 heading/section title 목록"],\n'
         '  "confidence": "high|medium|low",\n'
-        '  "evidence_samples": ["source에서 짧은 인용 2~5개"]\n'
+        '  "evidence_samples": ["source에서 짧은 인용 2~5개 (검색 도구로 사용됨)"]\n'
         "}\n\n"
         "원칙:\n"
         "- 양식 도메인을 가정하지 않습니다 (정부/계약/매뉴얼/논문 등 어떤 양식도 가능).\n"
+        "- source의 \"주제는 X\"라는 결정적 진술을 피합니다.\n"
+        "- 이 inventory는 chapter need에 매칭될 도구이지 chapter need의 frame이 아닙니다.\n"
         "- evidence_samples는 source 원문 그대로 인용.\n"
-        "- confidence는 source의 주제 명확도 기준.\n"
+        "- confidence는 source inventory 정리의 명확도 기준.\n"
     )
 
     return [
@@ -11134,13 +11142,13 @@ def build_source_topic_prompt(
     ]
 
 
-def parse_source_topic_from_llm(llm_raw_response: str) -> dict:
-    """13.7c: source topic LLM 응답 parse + schema validation.
+def parse_source_inventory_from_llm(llm_raw_response: str) -> dict:
+    """13.7c: source inventory LLM 응답 parse + schema validation.
 
     Returns:
         {
-          "summary": str,
-          "key_themes": list[str],
+          "summary": str,                # source 영역 brief description (frame 아님)
+          "available_topics": list[str],  # 선택지 (이전 key_themes의 의미 약화)
           "main_headings": list[str],
           "confidence": str (enum),
           "evidence_samples": list[str],
@@ -11153,7 +11161,7 @@ def parse_source_topic_from_llm(llm_raw_response: str) -> dict:
     _raw = (llm_raw_response or "").strip()
     _result = {
         "summary": "",
-        "key_themes": [],
+        "available_topics": [],
         "main_headings": [],
         "confidence": "low",
         "evidence_samples": [],
@@ -11191,11 +11199,13 @@ def parse_source_topic_from_llm(llm_raw_response: str) -> dict:
         _summary = ""
     _result["summary"] = _summary
 
-    _kt = _parsed.get("key_themes", [])
-    if not isinstance(_kt, list) or not all(isinstance(x, str) for x in _kt):
-        _result["_validation"]["errors"].append("key_themes_not_string_list")
-        _kt = []
-    _result["key_themes"] = _kt
+    # available_topics (이전 key_themes — template-first 정정으로 이름 변경)
+    # key_themes로 들어오는 경우 호환 처리 (혹시 LLM이 옛 이름 사용)
+    _at = _parsed.get("available_topics", _parsed.get("key_themes", []))
+    if not isinstance(_at, list) or not all(isinstance(x, str) for x in _at):
+        _result["_validation"]["errors"].append("available_topics_not_string_list")
+        _at = []
+    _result["available_topics"] = _at
 
     _mh = _parsed.get("main_headings", [])
     if not isinstance(_mh, list) or not all(isinstance(x, str) for x in _mh):
@@ -11222,27 +11232,36 @@ def parse_source_topic_from_llm(llm_raw_response: str) -> dict:
 
 
 def build_adaptation_plan_prompt(
-    source_topic: dict,
+    source_inventory: dict,
     chapter_inputs: list[dict],
     broad_source_preview: str = "",
     max_source_preview_chars: int = 10000,
 ) -> list[dict]:
     """13.7c: chapter mapping batch prompt 생성.
 
+    Template-first 흐름:
+    - chapter intent (need)가 frame
+    - source는 chapter need를 채울 evidence inventory (도구)
+    - source의 다른 내용으로 chapter 방향을 바꾸지 않음
+    - source가 chapter need와 안 맞으면 preserve
+
     Args:
-        source_topic: parse_source_topic_from_llm 결과 (summary, key_themes, etc)
+        source_inventory: parse_source_inventory_from_llm 결과
+                          (summary, available_topics, main_headings, evidence_samples)
+                          — chapter mapping의 frame이 아니라 도구로만 사용
         chapter_inputs: [{idx, original_title, description, local_pattern_summary,
                           local_catalog_summary}, ...]
-        broad_source_preview: 참조용 source 일부 (optional)
+        broad_source_preview: 참조용 source 일부 (optional, evidence retrieval용)
 
     Returns: messages list
     """
     import json as _json
 
-    _topic_brief = {
-        "summary": source_topic.get("summary", ""),
-        "key_themes": source_topic.get("key_themes", []),
-        "main_headings": source_topic.get("main_headings", []),
+    _inv_brief = {
+        "summary": source_inventory.get("summary", ""),
+        "available_topics": source_inventory.get("available_topics", []),
+        "main_headings": source_inventory.get("main_headings", []),
+        "evidence_samples": source_inventory.get("evidence_samples", []),
     }
     _ch_brief = []
     for ch in chapter_inputs:
@@ -11257,19 +11276,30 @@ def build_adaptation_plan_prompt(
     _src_preview = (broad_source_preview or "")[:max_source_preview_chars]
 
     system_msg = (
-        "당신은 source 문서를 template chapter 구조에 매핑하는 도구입니다. "
+        "당신은 template chapter 구조 안에 source 내용을 배치하는 도구입니다. "
+        "**Template-first 원칙**: 각 chapter가 요구하는 내용(chapter need)을 먼저 보고, "
+        "source에서 그 need에 맞는 evidence만 골라 사용합니다. "
+        "source가 다른 풍부한 내용을 갖고 있어도 chapter need와 안 맞으면 사용하지 않습니다. "
+        "source가 chapter 방향을 결정하지 못합니다 (chapter need가 frame). "
         "JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
     )
 
     user_msg = (
-        "source 주제와 template chapter들을 보고, 각 chapter에 대해 "
-        "source-to-template adaptation 계획을 결정하세요.\n\n"
-        "[source_topic]\n"
-        f"{_json.dumps(_topic_brief, ensure_ascii=False, indent=2)}\n\n"
+        "**Step 1 — template chapter need 파악 (frame, 우선)**:\n"
+        "각 chapter의 original_title, description, local_pattern_summary, "
+        "local_catalog_summary를 보고 chapter가 어떤 내용을 요구하는지 파악하세요. "
+        "이게 frame입니다.\n\n"
         "[chapters]\n"
         f"{_json.dumps(_ch_brief, ensure_ascii=False, indent=2)}\n\n"
+        "**Step 2 — source evidence retrieval (도구, chapter need에 종속)**:\n"
+        "다음 source inventory를 chapter need 매칭의 도구로만 사용합니다. "
+        "이 inventory가 chapter 방향을 정하지 않습니다.\n\n"
+        "[source_inventory]\n"
+        f"{_json.dumps(_inv_brief, ensure_ascii=False, indent=2)}\n\n"
         + (f"[broad_source_preview]\n```\n{_src_preview}\n```\n\n" if _src_preview else "")
-        + "다음 JSON schema로 응답하세요:\n"
+        + "**Step 3 — 각 chapter에 대한 결정**:\n"
+        "chapter need에 매칭되는 source evidence만 사용해서 결정하세요.\n\n"
+        "다음 JSON schema로 응답하세요:\n"
         "{\n"
         '  "chapter_decisions": [\n'
         "    {\n"
@@ -11277,15 +11307,15 @@ def build_adaptation_plan_prompt(
         '      "action": "generate" | "adapted_title_generate" | "preserve",\n'
         '      "adapted_title": "..." | null,\n'
         '      "preserved_aspects": [\n'
-        '        {"aspect": "어느 측면이 보존됐는지 자유 텍스트",\n'
+        '        {"aspect": "chapter need 중 어느 측면이 보존됐는지 자유 텍스트",\n'
         '         "template_evidence": "template description/local_pattern/original_title에서 인용"}\n'
         "      ],\n"
         '      "adapted_aspects": [\n'
         '        {"original": "template 측 표현", "adapted": "source 측 표현",\n'
         '         "reason": "...", "source_evidence": "source 인용/근거"}\n'
         "      ],\n"
-        '      "supporting_evidence": ["source에서 인용 (substring 또는 paraphrase)"],\n'
-        '      "counter_evidence": ["adaptation 위험 신호 (self-reflection)"],\n'
+        '      "supporting_evidence": ["source에서 chapter need에 맞는 evidence 인용"],\n'
+        '      "counter_evidence": ["adaptation 위험 신호 (예: chapter need와 source가 어색하게 결합)"],\n'
         '      "ambiguity_flags": ["..."],\n'
         '      "adaptation_degree": "none|small|medium|large",\n'
         '      "confidence": "high|medium|low",\n'
@@ -11294,10 +11324,14 @@ def build_adaptation_plan_prompt(
         "    }, ...\n"
         "  ]\n"
         "}\n\n"
-        "원칙:\n"
-        "- chapter의 역할/흐름은 보존. source 주제에 맞게 title adaptation 가능.\n"
-        "- source 근거가 없는 chapter는 action='preserve', preserve_reason='source_gap'.\n"
-        "- action='generate'면 adapted_title은 original_title과 동일해야 합니다.\n"
+        "원칙 (template-first):\n"
+        "- chapter의 역할/흐름은 chapter need로 결정됩니다. source가 결정하지 않음.\n"
+        "- source에서 chapter need에 맞는 evidence만 사용. source의 다른 내용은 무시.\n"
+        "- chapter need와 source가 안 맞으면 action='preserve', preserve_reason='source_gap'.\n"
+        "- title adaptation은 chapter intent를 보존하면서 source의 구체 주제를 incorporate.\n"
+        "  예: chapter '목적' + source '정책품질관리' → adapted_title '정책품질관리 평가 목적' (intent 보존 + source 구체화).\n"
+        "  반례: source 주제 '정책품질관리'를 chapter intent와 무관하게 8개 chapter에 펼침 (template-first 위반).\n"
+        "- action='generate'면 adapted_title은 original_title과 동일.\n"
         "- action='adapted_title_generate'면 adapted_title 필수, preserved_aspects/adapted_aspects 채움.\n"
         "- action='preserve'면 preserve_reason과 preserve_reason_detail 필수.\n"
         "- confidence high를 주려면 supporting_evidence (generate/adapted_title_generate) 또는 counter_evidence/ambiguity_flags (preserve) 명시 필수.\n"
