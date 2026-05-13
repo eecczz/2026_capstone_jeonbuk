@@ -10682,6 +10682,373 @@ def _compare_section_layouts(sections: list[dict]) -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 13.7a-0: Title Role Consistency Measurement (debug-only, A0-1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def measure_title_role_consistency(
+    structure: dict,
+    chapter_template_plan: dict | None,
+) -> dict:
+    """
+    1d `chapter_types[*].title_role` vs chapter_template_plan
+    `seed.chapters[*].local_title_role` 일관성 측정.
+
+    13.7a-0 measurement. debug-only — 정책에 영향 X.
+    13.6-B per-chapter local_pattern은 generation에서 우회했지만,
+    assemble은 여전히 1d title_role에만 의존하므로 mismatch가
+    body_split 실패로 이어진다. 양식별로 mismatch 발생 여부를
+    수치화해 1d-fix stage 우선순위 판단 자료로 사용.
+
+    Returns:
+        {
+            "chapter_types_title_roles": {type_id: role, ...},
+            "chapter_types_title_roles_set": [sorted unique],
+            "local_title_roles_per_chapter": [{idx, role}, ...],
+            "local_title_roles_set": [sorted unique],
+            "mismatch_summary": {
+                "all_local_in_1d_set": bool,
+                "missing_from_1d_set": [...],
+                "extra_in_1d_set": [...],
+            },
+            "per_chapter": [
+                {"idx": int, "local_title_role": str,
+                 "in_1d_title_roles_set": bool},
+                ...,
+            ],
+            "status": "ok" | "no_plan" | "no_chapter_types" | "empty_plan",
+        }
+    """
+    chapter_types = (structure or {}).get("chapter_types", {}) or {}
+    ct_title_roles_map = {}
+    for type_id, ct in chapter_types.items():
+        tr = (ct or {}).get("title_role", "")
+        if tr:
+            ct_title_roles_map[type_id] = tr
+    ct_title_roles_set = sorted(set(ct_title_roles_map.values()))
+
+    if not chapter_template_plan:
+        return {
+            "chapter_types_title_roles": ct_title_roles_map,
+            "chapter_types_title_roles_set": ct_title_roles_set,
+            "local_title_roles_per_chapter": [],
+            "local_title_roles_set": [],
+            "mismatch_summary": {
+                "all_local_in_1d_set": None,
+                "missing_from_1d_set": [],
+                "extra_in_1d_set": [],
+            },
+            "per_chapter": [],
+            "status": "no_plan",
+        }
+
+    if not chapter_types:
+        # no 1d chapter_types — 비교 불가
+        return {
+            "chapter_types_title_roles": {},
+            "chapter_types_title_roles_set": [],
+            "local_title_roles_per_chapter": [],
+            "local_title_roles_set": [],
+            "mismatch_summary": {
+                "all_local_in_1d_set": None,
+                "missing_from_1d_set": [],
+                "extra_in_1d_set": [],
+            },
+            "per_chapter": [],
+            "status": "no_chapter_types",
+        }
+
+    seed = chapter_template_plan.get("seed") or {}
+    plan_chapters = seed.get("chapters") or []
+
+    local_per_chapter = []
+    per_chapter = []
+    local_roles_set_builder = set()
+    ct_set = set(ct_title_roles_set)
+
+    for i, ch in enumerate(plan_chapters):
+        ltr = (ch or {}).get("local_title_role", "")
+        local_per_chapter.append({"idx": i, "role": ltr})
+        per_chapter.append({
+            "idx": i,
+            "local_title_role": ltr,
+            "in_1d_title_roles_set": (ltr in ct_set) if ltr else False,
+        })
+        if ltr:
+            local_roles_set_builder.add(ltr)
+
+    local_title_roles_set = sorted(local_roles_set_builder)
+
+    if not plan_chapters:
+        return {
+            "chapter_types_title_roles": ct_title_roles_map,
+            "chapter_types_title_roles_set": ct_title_roles_set,
+            "local_title_roles_per_chapter": [],
+            "local_title_roles_set": [],
+            "mismatch_summary": {
+                "all_local_in_1d_set": None,
+                "missing_from_1d_set": [],
+                "extra_in_1d_set": ct_title_roles_set,
+            },
+            "per_chapter": [],
+            "status": "empty_plan",
+        }
+
+    missing_from_1d = sorted(local_roles_set_builder - ct_set)
+    extra_in_1d = sorted(ct_set - local_roles_set_builder)
+    all_in = len(missing_from_1d) == 0
+
+    return {
+        "chapter_types_title_roles": ct_title_roles_map,
+        "chapter_types_title_roles_set": ct_title_roles_set,
+        "local_title_roles_per_chapter": local_per_chapter,
+        "local_title_roles_set": local_title_roles_set,
+        "mismatch_summary": {
+            "all_local_in_1d_set": all_in,
+            "missing_from_1d_set": missing_from_1d,
+            "extra_in_1d_set": extra_in_1d,
+        },
+        "per_chapter": per_chapter,
+        "status": "ok",
+    }
+
+
+def diagnose_chapter_empty_reason(section_fill_result: dict) -> dict:
+    """
+    chapter가 비어있다면 어느 단계에서 비었는지 진단 (debug-only, A0-2).
+
+    process_section_fill_result가 노출하는 debug_entry 필드만 사용.
+    process_section_fill_result 자체는 변경하지 않는다.
+
+    stage:
+        - "none"           : 비어있지 않음 (is_empty=False)
+        - "llm_response"   : LLM 응답 길이 0
+        - "parse"          : raw_items 0
+        - "grammar_reject" : normalize 0 + grammar violations > 0
+        - "normalize"      : normalize 0 (grammar 검증 정보 없음)
+        - "shallow_skipped": shallow_mode (chapter 단위 진단 의미 약함)
+        - "unknown"        : 위 어디에도 안 잡힘
+
+    Returns:
+        {
+            "is_empty": bool,
+            "stage": str,
+            "evidence": {
+                "llm_raw_response_len": int,
+                "raw_items_count": int,
+                "normalized_items_count": int,
+                "grammar_violations_count": int,
+                "grammar_failure_type": str | None,
+                "section_pdf_text_len": int,
+            },
+        }
+    """
+    debug_entry = (section_fill_result or {}).get("debug_entry") or {}
+    items_count = (section_fill_result or {}).get("items_count", 0) or 0
+    shallow_mode = bool(debug_entry.get("shallow_mode", False))
+
+    llm_raw = debug_entry.get("llm_raw_response", "") or ""
+    llm_len = len(llm_raw)
+    raw_items = debug_entry.get("raw_items") or []
+    raw_count = len(raw_items) if isinstance(raw_items, list) else 0
+
+    grammar_val = debug_entry.get("grammar_validation") or {}
+    grammar_violations = grammar_val.get("violations") or []
+    violations_count = len(grammar_violations) if isinstance(grammar_violations, list) else 0
+    failure_type = grammar_val.get("failure_type") if isinstance(grammar_val, dict) else None
+
+    source_len = debug_entry.get("section_pdf_text_len", 0) or 0
+    is_empty = items_count == 0
+
+    evidence = {
+        "llm_raw_response_len": llm_len,
+        "raw_items_count": raw_count,
+        "normalized_items_count": items_count,
+        "grammar_violations_count": violations_count,
+        "grammar_failure_type": failure_type,
+        "section_pdf_text_len": source_len,
+    }
+
+    if shallow_mode:
+        stage = "shallow_skipped"
+    elif not is_empty:
+        stage = "none"
+    elif llm_len == 0:
+        stage = "llm_response"
+    elif raw_count == 0:
+        stage = "parse"
+    elif violations_count > 0:
+        stage = "grammar_reject"
+    elif raw_count > 0:
+        stage = "normalize"
+    else:
+        stage = "unknown"
+
+    return {
+        "is_empty": is_empty,
+        "stage": stage,
+        "evidence": evidence,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.7a-A1: Chapter Object Helpers (chapter-grouped assembly)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def build_chapter_object(
+    source_chapter_idx: int,
+    target_region: dict | None,
+    section_fill_result: dict,
+    empty_reason: dict | None = None,
+) -> dict:
+    """
+    13.7a-A1: chapter-grouped assembly용 chapter object 생성.
+
+    chapter는 generation unit이다. process_section_fill_result가 chapter
+    단위로 들고 있는 nodes/items와 target_unit_plan region metadata를
+    하나의 chapter object로 합쳐 assemble까지 보존한다.
+
+    schema (확정):
+        {
+          "source_chapter_idx": int,
+          "target_region_id": int | None,
+          "section_id": int,              # 13.7a 기본값 0, 13.7b에서 실 값
+          "first_paragraph_idx": int | None,
+          "paragraph_indices": [int, ...],
+          "title_item": {role, text} | None,
+          "title_node": {id, parent_id, role, text} | None,
+          "body_items": [{role, text}, ...],   # derived view of body_nodes
+          "body_nodes": [{id, parent_id, role, text, ...}, ...],
+          "status": "ok" | "empty" | "fail",
+          "_debug": {...},
+        }
+
+    title_item과 title_node는 derived view 관계. invariant은
+    assert_chapter_object_invariants()로 검증.
+
+    shallow route는 chapter object를 만들지 않는다 (content["body"]
+    flat path 유지). 호출부에서 분기.
+    """
+    region = target_region or {}
+    region_id = region.get("region_id")
+    paragraph_indices = list(region.get("paragraph_indices") or [])
+    first_paragraph_idx = paragraph_indices[0] if paragraph_indices else None
+    # 13.7a: section_id 기본값 0. 13.7b에서 region.section_span 기반으로 매핑.
+    section_id = 0
+
+    body_items_full = (section_fill_result or {}).get("body_items") or []
+    chapter_tree_nodes = (section_fill_result or {}).get("chapter_tree_nodes") or []
+
+    # process_section_fill_result는 body_items / chapter_tree_nodes 둘 다 title 포함.
+    # chapter object schema는 title/body 분리 (alignment 검증 명시화).
+    title_item = None
+    title_node = None
+    body_items: list[dict] = []
+    body_nodes: list[dict] = []
+
+    if body_items_full:
+        title_item = body_items_full[0]
+        body_items = list(body_items_full[1:])
+    if chapter_tree_nodes:
+        title_node = chapter_tree_nodes[0]
+        body_nodes = list(chapter_tree_nodes[1:])
+
+    items_count = (section_fill_result or {}).get("items_count", 0) or 0
+    # items_count는 process_section_fill_result의 debug_body_items count (title 제외).
+    if items_count == 0:
+        status = "empty"
+    else:
+        status = "ok"
+
+    debug = {}
+    if empty_reason:
+        debug["empty_reason"] = empty_reason
+    debug_entry = (section_fill_result or {}).get("debug_entry") or {}
+    if debug_entry:
+        debug["chapter_context"] = debug_entry.get("chapter_context")
+        debug["validation_grammar_source"] = debug_entry.get("validation_grammar_source")
+        debug["grammar_passed"] = (section_fill_result or {}).get("grammar_passed", False)
+        if debug_entry.get("override_root_roles") is not None:
+            debug["override_root_roles"] = debug_entry.get("override_root_roles")
+        if debug_entry.get("override_grammar_role_count") is not None:
+            debug["override_grammar_role_count"] = debug_entry.get("override_grammar_role_count")
+
+    return {
+        "source_chapter_idx": source_chapter_idx,
+        "target_region_id": region_id,
+        "section_id": section_id,
+        "first_paragraph_idx": first_paragraph_idx,
+        "paragraph_indices": paragraph_indices,
+        "title_item": title_item,
+        "title_node": title_node,
+        "body_items": body_items,
+        "body_nodes": body_nodes,
+        "status": status,
+        "_debug": debug,
+    }
+
+
+def assert_chapter_object_invariants(chapter_obj: dict) -> list[str]:
+    """
+    chapter object invariant check. 위반 리스트 반환 (빈 리스트=통과).
+
+    검증 항목 (13.7a-A1 합의):
+        - title_item ↔ title_node role/text 일치
+        - len(body_items) == len(body_nodes)
+        - body_items[i].role/text == body_nodes[i].role/text
+
+    status="empty"는 alignment 검증 생략 (region 전체 preserve).
+    status="fail"은 호출자가 별도 처리.
+
+    raise하지 않는다. 호출자가 위반 리스트를 보고 status="fail"로
+    설정하거나 assemble validation fail로 다룬다 (원칙 13 — hard gate
+    전환은 evidence 축적 후).
+    """
+    violations: list[str] = []
+    status = (chapter_obj or {}).get("status")
+
+    if status == "empty":
+        return violations
+
+    title_item = chapter_obj.get("title_item") or {}
+    title_node = chapter_obj.get("title_node") or {}
+    body_items = chapter_obj.get("body_items") or []
+    body_nodes = chapter_obj.get("body_nodes") or []
+
+    if title_item.get("role") != title_node.get("role"):
+        violations.append(
+            f"title_role_mismatch: item={title_item.get('role')!r} "
+            f"node={title_node.get('role')!r}"
+        )
+    if (title_item.get("text") or "") != (title_node.get("text") or ""):
+        violations.append(
+            f"title_text_mismatch: item_len="
+            f"{len(title_item.get('text') or '')} "
+            f"node_len={len(title_node.get('text') or '')}"
+        )
+
+    if len(body_items) != len(body_nodes):
+        violations.append(
+            f"body_length_mismatch: items={len(body_items)} "
+            f"nodes={len(body_nodes)}"
+        )
+    else:
+        for i, (it, nd) in enumerate(zip(body_items, body_nodes)):
+            if it.get("role") != nd.get("role"):
+                violations.append(
+                    f"body_role_mismatch[{i}]: item={it.get('role')!r} "
+                    f"node={nd.get('role')!r}"
+                )
+            if (it.get("text") or "") != (nd.get("text") or ""):
+                violations.append(
+                    f"body_text_mismatch[{i}]"
+                )
+
+    return violations
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 13.3b-1: Shallow Section Plan Seed
 # ──────────────────────────────────────────────────────────────────────
 
@@ -11964,36 +12331,8 @@ def apply_parent_id_fallback(
     return items
 
 
-def build_chapter_trees(
-    section_fills: list[dict],
-) -> list[list[dict]]:
-    """
-    validated section_fill 결과를 chapter 단위 tree node list로 변환합니다.
-
-    assemble_hwpx_hybrid의 chapter_trees 파라미터용.
-    chapter title은 포함하지 않습니다 (body items만).
-
-    Args:
-        section_fills: [{"items": [...], "chapter_context": {...}, ...}, ...]
-            각 items는 validate → fallback 완료된 normalized items
-
-    Returns:
-        [[{"id": N, "parent_id": M, "role": ..., "text": ...}, ...], ...]
-        chapter 당 하나의 list, title 제외한 body nodes만 포함
-    """
-    chapter_trees = []
-    for sf in section_fills:
-        items = sf.get("items", [])
-        nodes = []
-        for it in items:
-            nodes.append({
-                "id": it["id"],
-                "parent_id": it["parent_id"],
-                "role": it["role"],
-                "text": it["text"],
-            })
-        chapter_trees.append(nodes)
-    return chapter_trees
+# 13.7a-A1: build_chapter_trees는 호출처 0건 dead code였음 — 삭제됨.
+# chapter object는 build_chapter_object()로 생성 (위 13.7a-A1 section).
 
 
 def process_section_fill_result(

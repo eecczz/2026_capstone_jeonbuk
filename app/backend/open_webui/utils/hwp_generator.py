@@ -741,6 +741,211 @@ def assemble_hwpx(
     )
 
 
+def _process_chapter_objects(
+    chapter_objects: list[dict],
+) -> dict:
+    """
+    13.7a-A1: chapter_objects를 평탄화하여 assemble path가 필요로 하는
+    구조를 만든다.
+
+    - non-empty chapter (status="ok"): title + body를 body_items로 평탄화,
+      node_lookup/chapter_idx_lookup/chapter_node_maps에 등록.
+    - empty chapter (status="empty"): body_items 평탄화에서 제외 + paragraph_indices를
+      empty_preserve_indices에 적재(region 전체 preserve).
+    - status="fail": 평탄화 skip, fail 카운트만.
+
+    chapter_objects가 들어오면 _chapter_title_roles는 1d structure가 아니라
+    chapter object의 title_item.role union으로 구성한다 (1d 의존 제거).
+
+    Returns:
+        {
+          "body_items": list[dict],            # 평탄화된 (role, text)
+          "node_lookup": dict[int, dict],      # bi → node
+          "chapter_idx_lookup": dict[int, int],
+          "chapter_title_roles": set[str],
+          "chapter_node_maps": list[dict[int, dict]],
+          "empty_preserve_indices": set[int],
+          "rewrite_alignment": {...},          # 새 schema
+          "tree_available": bool,
+          "invariant_violations": list[dict],
+        }
+    """
+    from open_webui.utils.hwpx_analyzer import (
+        assert_chapter_object_invariants,
+    )
+
+    body_items: list[dict] = []
+    node_lookup: dict[int, dict] = {}
+    chapter_idx_lookup: dict[int, int] = {}
+    chapter_title_roles: set[str] = set()
+    chapter_node_maps: list[dict[int, dict]] = []
+    empty_preserve_indices: set[int] = set()
+    invariant_violations: list[dict] = []
+    per_chapter: list[dict] = []
+
+    fail_count = 0
+    ok_count = 0
+    empty_count = 0
+
+    for ci, chapter_obj in enumerate(chapter_objects or []):
+        status = chapter_obj.get("status", "ok")
+        violations = assert_chapter_object_invariants(chapter_obj)
+        if violations:
+            invariant_violations.append({
+                "chapter_idx": ci,
+                "source_chapter_idx": chapter_obj.get("source_chapter_idx"),
+                "violations": violations,
+            })
+
+        paragraph_indices = chapter_obj.get("paragraph_indices") or []
+        target_region_id = chapter_obj.get("target_region_id")
+        section_id = chapter_obj.get("section_id", 0)
+        first_paragraph_idx = chapter_obj.get("first_paragraph_idx")
+
+        if status == "empty":
+            empty_count += 1
+            # region 전체 preserve — paragraph_indices 합산
+            empty_preserve_indices.update(p for p in paragraph_indices)
+            per_chapter.append({
+                "chapter_idx": ci,
+                "source_chapter_idx": chapter_obj.get("source_chapter_idx"),
+                "target_region_id": target_region_id,
+                "section_id": section_id,
+                "first_paragraph_idx": first_paragraph_idx,
+                "status": "empty",
+                "title_aligned": None,
+                "body_aligned": None,
+                "body_items_count": 0,
+                "body_nodes_count": 0,
+                "invariant_violations": violations,
+            })
+            continue
+
+        if status == "fail":
+            fail_count += 1
+            per_chapter.append({
+                "chapter_idx": ci,
+                "source_chapter_idx": chapter_obj.get("source_chapter_idx"),
+                "target_region_id": target_region_id,
+                "section_id": section_id,
+                "first_paragraph_idx": first_paragraph_idx,
+                "status": "fail",
+                "title_aligned": False,
+                "body_aligned": False,
+                "body_items_count": 0,
+                "body_nodes_count": 0,
+                "invariant_violations": violations,
+            })
+            continue
+
+        # status == "ok"
+        ok_count += 1
+        title_item = chapter_obj.get("title_item") or {}
+        title_node = chapter_obj.get("title_node") or {}
+        body_items_ch = chapter_obj.get("body_items") or []
+        body_nodes_ch = chapter_obj.get("body_nodes") or []
+
+        title_aligned = (
+            title_item.get("role") == title_node.get("role")
+            and (title_item.get("text") or "") == (title_node.get("text") or "")
+        )
+        body_aligned = (
+            len(body_items_ch) == len(body_nodes_ch)
+            and all(
+                it.get("role") == nd.get("role")
+                and (it.get("text") or "") == (nd.get("text") or "")
+                for it, nd in zip(body_items_ch, body_nodes_ch)
+            )
+        )
+
+        # chapter title role union (1d 의존 제거)
+        if title_item.get("role"):
+            chapter_title_roles.add(title_item["role"])
+
+        # node_id → node dict (chapter 단위)
+        node_map: dict[int, dict] = {}
+        if title_node:
+            tid = title_node.get("id")
+            if tid is not None:
+                node_map[tid] = title_node
+        for nd in body_nodes_ch:
+            nid = nd.get("id")
+            if nid is not None:
+                node_map[nid] = nd
+        chapter_node_maps.append(node_map)
+
+        # 평탄화: title + body 순으로 body_items에 append
+        # title부터 추가하여 marker rewrite에서 chapter title boundary로 인식
+        if title_item:
+            bi = len(body_items)
+            body_items.append({
+                "role": title_item.get("role", ""),
+                "text": title_item.get("text", ""),
+            })
+            if title_node:
+                node_lookup[bi] = title_node
+            chapter_idx_lookup[bi] = ci
+
+        for k, (it, nd) in enumerate(zip(body_items_ch, body_nodes_ch)):
+            bi = len(body_items)
+            body_items.append({
+                "role": it.get("role", ""),
+                "text": it.get("text", ""),
+            })
+            node_lookup[bi] = nd
+            chapter_idx_lookup[bi] = ci
+
+        per_chapter.append({
+            "chapter_idx": ci,
+            "source_chapter_idx": chapter_obj.get("source_chapter_idx"),
+            "target_region_id": target_region_id,
+            "section_id": section_id,
+            "first_paragraph_idx": first_paragraph_idx,
+            "status": "ok",
+            "title_aligned": title_aligned,
+            "body_aligned": body_aligned,
+            "body_items_count": len(body_items_ch),
+            "body_nodes_count": len(body_nodes_ch),
+            "invariant_violations": violations,
+        })
+
+    chapter_count = len(chapter_objects or [])
+    tree_available = (
+        chapter_count > 0
+        and fail_count == 0
+        and all(pc["status"] != "fail" for pc in per_chapter)
+        and all(
+            pc["title_aligned"] in (True, None) and pc["body_aligned"] in (True, None)
+            for pc in per_chapter
+        )
+    )
+
+    rewrite_alignment = {
+        "path": "chapter_objects",
+        "tree_available": tree_available,
+        "chapter_count": chapter_count,
+        "ok_count": ok_count,
+        "empty_count": empty_count,
+        "fail_count": fail_count,
+        "invariant_violations_count": sum(
+            len(iv["violations"]) for iv in invariant_violations
+        ),
+        "per_chapter": per_chapter,
+    }
+
+    return {
+        "body_items": body_items,
+        "node_lookup": node_lookup,
+        "chapter_idx_lookup": chapter_idx_lookup,
+        "chapter_title_roles": chapter_title_roles,
+        "chapter_node_maps": chapter_node_maps,
+        "empty_preserve_indices": empty_preserve_indices,
+        "rewrite_alignment": rewrite_alignment,
+        "tree_available": tree_available,
+        "invariant_violations": invariant_violations,
+    }
+
+
 def assemble_hwpx_hybrid(
     template_source,
     structure: dict,
@@ -748,7 +953,6 @@ def assemble_hwpx_hybrid(
     removed_indices: list[int] = None,
     idx_map: dict = None,
     enable_marker_rewrite: bool = True,
-    chapter_trees: list[list[dict]] | None = None,
     content_only_mode: bool = False,
     preserve_indices: set[int] | None = None,
     analyzed_sections: set[int] | None = None,
@@ -765,12 +969,20 @@ def assemble_hwpx_hybrid(
     5. body 항목마다 role의 exemplar를 복제 + 텍스트 교체
     6. 완성된 문서를 bytes로 반환
 
+    13.7a-A1: chapter route는 content["chapters"]에 chapter object list를
+    전달한다. assemble은 이를 평탄화하여 body_items / node_lookup /
+    chapter_title_roles 를 구성하고, empty chapter는 region 전체 preserve.
+    shallow route / files.py legacy는 content["body"] flat path.
+    chapter_trees 파라미터는 제거됨 (chapter object 안으로 흡수).
+
     Args:
         template_source: 양식 HWPX 파일 경로(str), bytes, 또는 file-like
         structure: parse_structure_from_llm() 반환값 (role 포함)
                    {"paragraphs": [{"idx": N, "role": "...", ...}], "tables": [...]}
-        content: parse_role_content_from_structure_llm() 반환값
-                 {"header": {"title": ..., "date": ..., "org": ...}, "body": [{"role": ..., "text": ...}]}
+        content: 다음 형태 중 하나
+                 - chapter route: {"header": {...}, "chapters": [chapter_obj, ...]}
+                 - shallow/legacy: {"header": {...}, "body": [{"role": ..., "text": ...}]}
+                 둘 다 들어오면 chapters 우선 + 경고.
         removed_indices: truncate_xml()에서 제거된 인덱스 목록
 
     Returns:
@@ -787,6 +999,28 @@ def assemble_hwpx_hybrid(
         doc = HwpxDocument.open(io.BytesIO(template_source))
     else:
         doc = HwpxDocument.open(template_source)
+
+    # ── 13.7a-A1: chapter_objects 사전 처리 ──
+    # content["chapters"]가 있으면 chapter route, 평탄화한 body_items와
+    # node_lookup을 구성. 없으면 legacy/shallow path.
+    # content["body"]와 content["chapters"]가 둘 다 있으면 chapters 우선 + 경고.
+    _chapter_objects = content.get("chapters")
+    _chapter_proc: dict | None = None
+    if _chapter_objects is not None:
+        if content.get("body"):
+            log.warning(
+                "assemble: content has BOTH 'chapters' and 'body'. "
+                "Using 'chapters' (chapter-grouped path). 'body' ignored. "
+                "원칙: chapter/shallow route 둘 다 채우는 호출은 금지."
+            )
+        _chapter_proc = _process_chapter_objects(_chapter_objects)
+        log.info(
+            f"assemble: chapter-grouped path. chapters={len(_chapter_objects)}, "
+            f"body_items_flat={len(_chapter_proc['body_items'])}, "
+            f"empty_preserve={len(_chapter_proc['empty_preserve_indices'])}, "
+            f"tree_available={_chapter_proc['tree_available']}, "
+            f"invariant_violations={_chapter_proc['rewrite_alignment']['invariant_violations_count']}"
+        )
 
     paragraphs_info = structure.get("paragraphs", [])
     errors = []
@@ -1021,6 +1255,23 @@ def assemble_hwpx_hybrid(
         if _added:
             log.info(f"assemble: preserve_indices added {_added} paragraphs to header set")
 
+    # 13.7a-A1: empty chapter region 전체 preserve (안전장치, 13.7a 한정)
+    _empty_chapter_preserve_debug = {}
+    if _chapter_proc and _chapter_proc["empty_preserve_indices"]:
+        _eci = _chapter_proc["empty_preserve_indices"]
+        _before_e = len(header_indices)
+        header_indices |= _eci
+        _added_e = len(header_indices) - _before_e
+        _empty_chapter_preserve_debug = {
+            "empty_chapter_preserve_indices": sorted(_eci),
+            "empty_chapter_preserve_count": _added_e,
+        }
+        if _added_e:
+            log.info(
+                f"assemble: empty chapter preserve added {_added_e} paragraphs "
+                f"({len(_eci)} indices from empty chapters)"
+            )
+
     # 13.5 unanalyzed section preserve safety
     _unanalyzed_section_debug = {}
     if analyzed_sections is not None:
@@ -1170,10 +1421,10 @@ def assemble_hwpx_hybrid(
         "secpr_conflict_warnings": _secpr_conflict_warnings,
         **(_preserve_debug if _preserve_debug else {}),
         **(_unanalyzed_section_debug if _unanalyzed_section_debug else {}),
+        **(_empty_chapter_preserve_debug if _empty_chapter_preserve_debug else {}),
         "removed_indices": sorted(_body_para_indices),
         "table_text_replacement_skipped_count": _table_text_skipped,
     }
-    body_items = content.get("body", [])
     prev_role = None
     prev_level = None
 
@@ -1184,143 +1435,42 @@ def assemble_hwpx_hybrid(
     _marker_rewrite_log = []
     REWRITE_ALLOWED_POLICIES = {"arabic_sequence", "circled_sequence", "fixed_char"}
 
-    # chapter title roles
-    _chapter_title_roles = set()
-    for _ct in structure.get("chapter_types", {}).values():
-        tr = _ct.get("title_role", "")
-        if tr:
-            _chapter_title_roles.add(tr)
+    # 13.7a-A1: body_items / chapter title roles / node lookup 두 path
+    # · chapter route: _chapter_proc 결과 사용 (평탄화된 body_items, node_lookup,
+    #   chapter_title_roles는 chapter object의 title_item.role union)
+    # · shallow/legacy: content["body"] flat + 1d structure.chapter_types 의존
+    _tree_split_projection = None  # 9.3 (legacy path만 사용)
+    _tree_scan_agreement = None    # 9.3 (legacy path만 사용)
 
-    # ── chapter_trees 기반 node lookup 구축 ──
-    # body_items를 title_role 기준으로 chapter 분할 → node 매칭
-    _node_lookup: dict[int, dict] = {}  # body_items index → tree node
-    _chapter_idx_lookup: dict[int, int] = {}  # body_items index → chapter_idx
-    _tree_available = False
-    _tree_split_projection = None  # 9.3
-    _tree_scan_agreement = None  # 9.3
-
-    # rewrite alignment tracking (C2/C3 structured logging)
-    _rewrite_alignment = {
-        "tree_available": False,
-        "body_split_count": 0,
-        "tree_chapter_count": len(chapter_trees) if chapter_trees else 0,
-        "chapter_count_match": False,
-        "per_chapter": [],
-    }
-
-    if chapter_trees:
-        chapters_split = []  # [(start_idx_in_body, [item_indices_excluding_title])]
-        current_start = None
-        current_indices = []
-        for bi, item in enumerate(body_items):
-            if item.get("role", "") in _chapter_title_roles:
-                if current_start is not None:
-                    chapters_split.append((current_start, current_indices))
-                current_start = bi
-                current_indices = []
-                _chapter_idx_lookup[bi] = len(chapters_split)
-            else:
-                if current_start is not None:
-                    current_indices.append(bi)
-                    _chapter_idx_lookup[bi] = len(chapters_split)
-        if current_start is not None:
-            chapters_split.append((current_start, current_indices))
-
-        _rewrite_alignment["body_split_count"] = len(chapters_split)
-
-        # 9.3: tree split projection — tree node count 기반 순차 분할과 title-scan 비교
-        _tree_proj_indices = []
-        _offset = 0
-        for _ci, _nodes in enumerate(chapter_trees):
-            _n = len(_nodes)
-            _tree_proj_indices.append(list(range(_offset, _offset + _n)))
-            _offset += _n
-        _tree_split_projection = _tree_proj_indices
-
-        _title_scan_indices = []
-        for _ts_title, _ts_body in chapters_split:
-            _title_scan_indices.append([_ts_title] + _ts_body)
-
-        _ts_ch_match = len(_tree_proj_indices) == len(_title_scan_indices)
-        _ts_per_ch = []
-        _ts_fully = _ts_ch_match
-        if _ts_ch_match:
-            for _ci in range(len(_tree_proj_indices)):
-                _t_idx = _tree_proj_indices[_ci]
-                _s_idx = _title_scan_indices[_ci]
-                _idx_match = _t_idx == _s_idx
-
-                _title_role_ok = False
-                if _t_idx and _t_idx[0] < len(body_items):
-                    _title_role_ok = body_items[_t_idx[0]].get("role", "") in _chapter_title_roles
-
-                _title_text_ok = False
-                if _t_idx and _ci < len(chapter_trees) and chapter_trees[_ci]:
-                    _tree_title = chapter_trees[_ci][0].get("text", "")
-                    _body_title = body_items[_t_idx[0]].get("text", "") if _t_idx[0] < len(body_items) else ""
-                    _title_text_ok = _tree_title == _body_title
-
-                _ts_per_ch.append({
-                    "chapter_idx": _ci,
-                    "index_sequence_match": _idx_match,
-                    "title_role_match": _title_role_ok,
-                    "title_text_match": _title_text_ok,
-                    "tree_count": len(_t_idx),
-                    "scan_count": len(_s_idx),
-                })
-                if not _idx_match:
-                    _ts_fully = False
-
-        _tree_scan_agreement = {
-            "chapter_count_match": _ts_ch_match,
-            "per_chapter": _ts_per_ch,
-            "fully_agreed": _ts_fully,
+    if _chapter_proc:
+        body_items = _chapter_proc["body_items"]
+        _node_lookup = _chapter_proc["node_lookup"]
+        _chapter_idx_lookup = _chapter_proc["chapter_idx_lookup"]
+        _chapter_title_roles = _chapter_proc["chapter_title_roles"]
+        _chapter_node_maps = _chapter_proc["chapter_node_maps"]
+        _tree_available = _chapter_proc["tree_available"]
+        _rewrite_alignment = _chapter_proc["rewrite_alignment"]
+    else:
+        body_items = content.get("body", [])
+        _chapter_title_roles = set()
+        for _ct in structure.get("chapter_types", {}).values():
+            tr = _ct.get("title_role", "")
+            if tr:
+                _chapter_title_roles.add(tr)
+        _node_lookup: dict[int, dict] = {}
+        _chapter_idx_lookup: dict[int, int] = {}
+        _chapter_node_maps: list[dict[int, dict]] = []
+        _tree_available = False
+        _rewrite_alignment = {
+            "path": "flat_legacy",
+            "tree_available": False,
+            "chapter_count": 0,
+            "ok_count": 0,
+            "empty_count": 0,
+            "fail_count": 0,
+            "invariant_violations_count": 0,
+            "per_chapter": [],
         }
-
-        # 매칭: chapter_trees[ci]의 nodes vs chapters_split[ci]
-        # 8.0b: title node가 chapter_trees에 포함되므로 title_bi도 매핑
-        if len(chapters_split) == len(chapter_trees):
-            _rewrite_alignment["chapter_count_match"] = True
-            _tree_available = True
-            for ci, (title_bi, body_indices) in enumerate(chapters_split):
-                nodes = chapter_trees[ci]
-                # 8.0b: all_indices = title + body → nodes 1:1
-                all_indices = [title_bi] + body_indices
-                aligned = len(all_indices) == len(nodes)
-                _rewrite_alignment["per_chapter"].append({
-                    "chapter_idx": ci,
-                    "body_count": len(all_indices),
-                    "tree_count": len(nodes),
-                    "aligned": aligned,
-                })
-                if aligned:
-                    for node_idx, bi in enumerate(all_indices):
-                        _node_lookup[bi] = nodes[node_idx]
-                        _chapter_idx_lookup[bi] = ci
-                else:
-                    log.warning(
-                        f"marker_rewrite: chapter {ci} node count mismatch "
-                        f"(body={len(body_indices)} vs tree={len(nodes)}), skipping tree"
-                    )
-                    _tree_available = False
-                    _node_lookup.clear()
-                    break
-        else:
-            _rewrite_alignment["chapter_count_match"] = False
-            log.warning(
-                f"marker_rewrite: chapter count mismatch "
-                f"(body_split={len(chapters_split)} vs trees={len(chapter_trees)}), skipping tree"
-            )
-
-    _rewrite_alignment["tree_available"] = _tree_available
-
-    # parent_id → role lookup (from tree nodes)
-    # chapter별로 node id → node dict
-    _chapter_node_maps: list[dict[int, dict]] = []
-    if _tree_available and chapter_trees:
-        for nodes in chapter_trees:
-            node_map = {n["id"]: n for n in nodes}
-            _chapter_node_maps.append(node_map)
 
     # sibling counter: key = (chapter_idx, parent_id, role) → count
     _sibling_counter: dict[tuple, int] = {}
@@ -1823,12 +1973,20 @@ def assemble_hwpx_hybrid(
     # marker rewrite log + alignment를 structure에 저장 (debug용)
     changed = sum(1 for r in _marker_rewrite_log if r.get("changed"))
 
-    # 9.5: chapter_split / marker_rewrite nested keys (기존 top-level key 유지)
-    _rewrite_alignment["chapter_split"] = {
-        "split_method": "title_scan",
-        "tree_split_available": _tree_split_projection is not None,
-        "tree_scan_agreement": _tree_scan_agreement,
-    }
+    # 9.5: chapter_split / marker_rewrite nested keys
+    # 13.7a-A1: chapter_objects path는 split이 없음 (chapter object 단위 직접 처리).
+    if _chapter_proc:
+        _rewrite_alignment["chapter_split"] = {
+            "split_method": "chapter_objects_direct",
+            "tree_split_available": True,
+            "tree_scan_agreement": None,
+        }
+    else:
+        _rewrite_alignment["chapter_split"] = {
+            "split_method": "title_scan",
+            "tree_split_available": _tree_split_projection is not None,
+            "tree_scan_agreement": _tree_scan_agreement,
+        }
     _mr_total = len(_marker_rewrite_log)
     _mr_title = sum(1 for r in _marker_rewrite_log if r.get("is_chapter_title"))
     _mr_applied = sum(1 for r in _marker_rewrite_log if r.get("rewrite_applied"))
