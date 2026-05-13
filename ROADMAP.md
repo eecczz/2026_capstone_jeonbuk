@@ -81,8 +81,7 @@
 - **13.4b는 13 이후** (template-driven chapter loop — template intent flow 보존 최소 안전장치)
 - **13.5는 13.4b 이후** (region action plan + unanalyzed section preserve safety)
 - **13.6 완료** (CC12 해결: per-chapter subtree extraction + local_pattern_override validation, A/C diagnostic으로 13.7 scope 확정)
-- **13.7은 13.6 이후** (multi-section full analysis [CC11], section-aware assembly, title-level body_split 개선)
-- **13.7은 13.6 이후** (allocation redesign 구현)
+- **13.7은 13.6 이후** (multi-section full analysis [CC11], section-aware assembly, title-level body_split 개선; source allocation redesign은 watch)
 - **14-table과 14는 13.7 이후, 병렬 가능**
 - **15는 13.7 이후** (allocation 안정 후 coverage validation)
 - **Assembly 고도화는 독립** (tree→layout, section-aware append. 다른 단계와 의존 없음)
