@@ -10901,9 +10901,12 @@ def build_chapter_object(
     target_region: dict | None,
     section_fill_result: dict,
     empty_reason: dict | None = None,
+    adaptation_decision: dict | None = None,
+    reference_metrics: dict | None = None,
 ) -> dict:
     """
     13.7a-A1: chapter-grouped assembly용 chapter object 생성.
+    13.7c: adaptation_decision + reference_metrics _debug attach.
 
     chapter는 generation unit이다. process_section_fill_result가 chapter
     단위로 들고 있는 nodes/items와 target_unit_plan region metadata를
@@ -10921,7 +10924,11 @@ def build_chapter_object(
           "body_items": [{role, text}, ...],   # derived view of body_nodes
           "body_nodes": [{id, parent_id, role, text, ...}, ...],
           "status": "ok" | "empty" | "fail",
-          "_debug": {...},
+          "_debug": {
+            "adaptation_decision": {...} | None,   # 13.7c
+            "reference_metrics": {...} | None,      # 13.7c (debug-only)
+            ...
+          },
         }
 
     title_item과 title_node는 derived view 관계. invariant은
@@ -10973,6 +10980,12 @@ def build_chapter_object(
             debug["override_root_roles"] = debug_entry.get("override_root_roles")
         if debug_entry.get("override_grammar_role_count") is not None:
             debug["override_grammar_role_count"] = debug_entry.get("override_grammar_role_count")
+
+    # 13.7c: adaptation_decision + reference_metrics (debug-only)
+    if adaptation_decision is not None:
+        debug["adaptation_decision"] = adaptation_decision
+    if reference_metrics is not None:
+        debug["reference_metrics"] = reference_metrics
 
     return {
         "source_chapter_idx": source_chapter_idx,
@@ -11046,6 +11059,690 @@ def assert_chapter_object_invariants(chapter_obj: dict) -> list[str]:
                 )
 
     return violations
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.7c: Source-to-Template Adaptation Planning
+# ──────────────────────────────────────────────────────────────────────
+#
+# 원칙 (docs/13_7c_plan.md):
+# - 의미 판단은 AI. code는 JSON/schema, 필수 필드, 명백한 계약 위반만 본다.
+# - heuristic은 hard fail 금지. token overlap/length/substring/
+#   reference_metrics/adaptation_degree는 정책에 영향 X (debug 참고값만).
+# - preserve 강등은 AI 호출 실패, parse 실패, schema 위반, 필수 evidence
+#   없음, action 모순 같은 명백 case만.
+# - title adaptation 허용. evidence (preserved/adapted/supporting/counter)
+#   명시 강제.
+# - broad source 유지. source slice는 후속 stage.
+# ──────────────────────────────────────────────────────────────────────
+
+
+# action enum
+ADAPTATION_ACTIONS = ("generate", "adapted_title_generate", "preserve")
+PRESERVE_REASONS = (
+    "source_gap", "low_confidence", "validation_failed",
+    "adaptation_risk", "plan_unavailable", "other",
+)
+CONFIDENCE_LEVELS = ("high", "medium", "low")
+ADAPTATION_DEGREES = ("none", "small", "medium", "large")
+
+
+def build_source_topic_prompt(
+    broad_source: str,
+    max_source_chars: int = 30000,
+) -> list[dict]:
+    """13.7c: source topic extraction prompt 생성.
+
+    AI에게 source의 main subject / themes / headings / evidence를
+    schema-constrained로 추출 요청. broad_source 너무 길면 truncate.
+
+    Returns: messages list (system + user)
+    """
+    _truncated = (broad_source or "")[:max_source_chars]
+    _truncated_note = (
+        f"\n\n(주의: source가 길어 앞 {max_source_chars}자만 표시)"
+        if len(broad_source or "") > max_source_chars else ""
+    )
+
+    system_msg = (
+        "당신은 문서의 핵심 주제를 분석하는 도구입니다. "
+        "JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
+    )
+
+    user_msg = (
+        "다음 source 문서의 핵심 주제를 추출하세요.\n\n"
+        "source 문서:\n```\n"
+        f"{_truncated}{_truncated_note}\n"
+        "```\n\n"
+        "다음 JSON schema로 응답하세요:\n"
+        "{\n"
+        '  "summary": "source의 main subject 1~3 문장 요약",\n'
+        '  "key_themes": ["핵심 주제 키워드 3~7개"],\n'
+        '  "main_headings": ["source의 주요 heading/section title 목록"],\n'
+        '  "confidence": "high|medium|low",\n'
+        '  "evidence_samples": ["source에서 짧은 인용 2~5개"]\n'
+        "}\n\n"
+        "원칙:\n"
+        "- 양식 도메인을 가정하지 않습니다 (정부/계약/매뉴얼/논문 등 어떤 양식도 가능).\n"
+        "- evidence_samples는 source 원문 그대로 인용.\n"
+        "- confidence는 source의 주제 명확도 기준.\n"
+    )
+
+    return [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_source_topic_from_llm(llm_raw_response: str) -> dict:
+    """13.7c: source topic LLM 응답 parse + schema validation.
+
+    Returns:
+        {
+          "summary": str,
+          "key_themes": list[str],
+          "main_headings": list[str],
+          "confidence": str (enum),
+          "evidence_samples": list[str],
+          "_validation": {"ok": bool, "errors": list[str], "raw_response_len": int},
+        }
+    """
+    import json as _json
+    import re as _re
+
+    _raw = (llm_raw_response or "").strip()
+    _result = {
+        "summary": "",
+        "key_themes": [],
+        "main_headings": [],
+        "confidence": "low",
+        "evidence_samples": [],
+        "_validation": {"ok": False, "errors": [], "raw_response_len": len(_raw)},
+    }
+
+    if not _raw:
+        _result["_validation"]["errors"].append("empty_response")
+        return _result
+
+    # JSON parse — strip code fences if any
+    _stripped = _raw
+    _m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", _raw, _re.DOTALL)
+    if _m:
+        _stripped = _m.group(1)
+    else:
+        _m2 = _re.search(r"(\{.*\})", _raw, _re.DOTALL)
+        if _m2:
+            _stripped = _m2.group(1)
+
+    try:
+        _parsed = _json.loads(_stripped)
+    except Exception as e:
+        _result["_validation"]["errors"].append(f"json_parse_failed: {e}")
+        return _result
+
+    if not isinstance(_parsed, dict):
+        _result["_validation"]["errors"].append("response_not_object")
+        return _result
+
+    # Schema validation — 명백한 형식만
+    _summary = _parsed.get("summary", "")
+    if not isinstance(_summary, str):
+        _result["_validation"]["errors"].append("summary_not_string")
+        _summary = ""
+    _result["summary"] = _summary
+
+    _kt = _parsed.get("key_themes", [])
+    if not isinstance(_kt, list) or not all(isinstance(x, str) for x in _kt):
+        _result["_validation"]["errors"].append("key_themes_not_string_list")
+        _kt = []
+    _result["key_themes"] = _kt
+
+    _mh = _parsed.get("main_headings", [])
+    if not isinstance(_mh, list) or not all(isinstance(x, str) for x in _mh):
+        _result["_validation"]["errors"].append("main_headings_not_string_list")
+        _mh = []
+    _result["main_headings"] = _mh
+
+    _conf = _parsed.get("confidence", "")
+    if _conf not in CONFIDENCE_LEVELS:
+        _result["_validation"]["errors"].append(f"confidence_invalid: {_conf!r}")
+        _conf = "low"
+    _result["confidence"] = _conf
+
+    _es = _parsed.get("evidence_samples", [])
+    if not isinstance(_es, list) or not all(isinstance(x, str) for x in _es):
+        _result["_validation"]["errors"].append("evidence_samples_not_string_list")
+        _es = []
+    _result["evidence_samples"] = _es
+
+    _result["_validation"]["ok"] = (
+        not _result["_validation"]["errors"] and bool(_summary)
+    )
+    return _result
+
+
+def build_adaptation_plan_prompt(
+    source_topic: dict,
+    chapter_inputs: list[dict],
+    broad_source_preview: str = "",
+    max_source_preview_chars: int = 10000,
+) -> list[dict]:
+    """13.7c: chapter mapping batch prompt 생성.
+
+    Args:
+        source_topic: parse_source_topic_from_llm 결과 (summary, key_themes, etc)
+        chapter_inputs: [{idx, original_title, description, local_pattern_summary,
+                          local_catalog_summary}, ...]
+        broad_source_preview: 참조용 source 일부 (optional)
+
+    Returns: messages list
+    """
+    import json as _json
+
+    _topic_brief = {
+        "summary": source_topic.get("summary", ""),
+        "key_themes": source_topic.get("key_themes", []),
+        "main_headings": source_topic.get("main_headings", []),
+    }
+    _ch_brief = []
+    for ch in chapter_inputs:
+        _ch_brief.append({
+            "idx": ch.get("idx"),
+            "original_title": ch.get("original_title", ""),
+            "description": ch.get("description", ""),
+            "local_pattern_summary": ch.get("local_pattern_summary", ""),
+            "local_catalog_summary": ch.get("local_catalog_summary", ""),
+        })
+
+    _src_preview = (broad_source_preview or "")[:max_source_preview_chars]
+
+    system_msg = (
+        "당신은 source 문서를 template chapter 구조에 매핑하는 도구입니다. "
+        "JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
+    )
+
+    user_msg = (
+        "source 주제와 template chapter들을 보고, 각 chapter에 대해 "
+        "source-to-template adaptation 계획을 결정하세요.\n\n"
+        "[source_topic]\n"
+        f"{_json.dumps(_topic_brief, ensure_ascii=False, indent=2)}\n\n"
+        "[chapters]\n"
+        f"{_json.dumps(_ch_brief, ensure_ascii=False, indent=2)}\n\n"
+        + (f"[broad_source_preview]\n```\n{_src_preview}\n```\n\n" if _src_preview else "")
+        + "다음 JSON schema로 응답하세요:\n"
+        "{\n"
+        '  "chapter_decisions": [\n'
+        "    {\n"
+        '      "chapter_idx": int,\n'
+        '      "action": "generate" | "adapted_title_generate" | "preserve",\n'
+        '      "adapted_title": "..." | null,\n'
+        '      "preserved_aspects": [\n'
+        '        {"aspect": "어느 측면이 보존됐는지 자유 텍스트",\n'
+        '         "template_evidence": "template description/local_pattern/original_title에서 인용"}\n'
+        "      ],\n"
+        '      "adapted_aspects": [\n'
+        '        {"original": "template 측 표현", "adapted": "source 측 표현",\n'
+        '         "reason": "...", "source_evidence": "source 인용/근거"}\n'
+        "      ],\n"
+        '      "supporting_evidence": ["source에서 인용 (substring 또는 paraphrase)"],\n'
+        '      "counter_evidence": ["adaptation 위험 신호 (self-reflection)"],\n'
+        '      "ambiguity_flags": ["..."],\n'
+        '      "adaptation_degree": "none|small|medium|large",\n'
+        '      "confidence": "high|medium|low",\n'
+        '      "preserve_reason": "source_gap|low_confidence|validation_failed|adaptation_risk|plan_unavailable|other" | null,\n'
+        '      "preserve_reason_detail": "free text" | null\n'
+        "    }, ...\n"
+        "  ]\n"
+        "}\n\n"
+        "원칙:\n"
+        "- chapter의 역할/흐름은 보존. source 주제에 맞게 title adaptation 가능.\n"
+        "- source 근거가 없는 chapter는 action='preserve', preserve_reason='source_gap'.\n"
+        "- action='generate'면 adapted_title은 original_title과 동일해야 합니다.\n"
+        "- action='adapted_title_generate'면 adapted_title 필수, preserved_aspects/adapted_aspects 채움.\n"
+        "- action='preserve'면 preserve_reason과 preserve_reason_detail 필수.\n"
+        "- confidence high를 주려면 supporting_evidence (generate/adapted_title_generate) 또는 counter_evidence/ambiguity_flags (preserve) 명시 필수.\n"
+        "- counter_evidence와 ambiguity_flags는 모든 action에서 필드 존재. 비어있어도 OK이나 key는 있어야 함.\n"
+        "- adaptation_degree는 self-evaluation. 양식 도메인 가정하지 않음.\n"
+    )
+
+    return [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_adaptation_plan_from_llm(
+    llm_raw_response: str,
+    expected_chapter_indices: list[int],
+) -> dict:
+    """13.7c: adaptation_plan LLM 응답 parse.
+
+    Returns:
+        {
+          "chapter_decisions": [decision, ...],
+          "_validation": {"ok": bool, "errors": list[str],
+                          "missing_indices": list[int],
+                          "raw_response_len": int}
+        }
+    """
+    import json as _json
+    import re as _re
+
+    _raw = (llm_raw_response or "").strip()
+    _result = {
+        "chapter_decisions": [],
+        "_validation": {
+            "ok": False,
+            "errors": [],
+            "missing_indices": list(expected_chapter_indices),
+            "raw_response_len": len(_raw),
+        },
+    }
+
+    if not _raw:
+        _result["_validation"]["errors"].append("empty_response")
+        return _result
+
+    _stripped = _raw
+    _m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", _raw, _re.DOTALL)
+    if _m:
+        _stripped = _m.group(1)
+    else:
+        _m2 = _re.search(r"(\{.*\})", _raw, _re.DOTALL)
+        if _m2:
+            _stripped = _m2.group(1)
+
+    try:
+        _parsed = _json.loads(_stripped)
+    except Exception as e:
+        _result["_validation"]["errors"].append(f"json_parse_failed: {e}")
+        return _result
+
+    if not isinstance(_parsed, dict):
+        _result["_validation"]["errors"].append("response_not_object")
+        return _result
+
+    _decisions = _parsed.get("chapter_decisions")
+    if not isinstance(_decisions, list):
+        _result["_validation"]["errors"].append("chapter_decisions_not_list")
+        return _result
+
+    _seen_indices = set()
+    _valid_decisions = []
+    for i, d in enumerate(_decisions):
+        if not isinstance(d, dict):
+            _result["_validation"]["errors"].append(f"decision[{i}]_not_object")
+            continue
+        idx = d.get("chapter_idx")
+        if not isinstance(idx, int):
+            _result["_validation"]["errors"].append(f"decision[{i}]_chapter_idx_not_int")
+            continue
+        _seen_indices.add(idx)
+        _valid_decisions.append(d)
+
+    _result["chapter_decisions"] = _valid_decisions
+    _result["_validation"]["missing_indices"] = [
+        i for i in expected_chapter_indices if i not in _seen_indices
+    ]
+    _result["_validation"]["ok"] = (
+        not _result["_validation"]["errors"]
+        and not _result["_validation"]["missing_indices"]
+    )
+    return _result
+
+
+def validate_adaptation_decision(decision: dict) -> dict:
+    """13.7c: per-chapter adaptation_decision validation.
+
+    원칙 (docs/13_7c_plan.md §5.1):
+    - 명백한 case만 hard fail.
+    - heuristic (token overlap, length, substring)은 사용 X.
+    - action별로 다른 요구사항.
+
+    Returns:
+        {
+          "valid": bool,
+          "should_demote": bool,           # preserve로 강등할지
+          "demote_reason": str | None,     # preserve_reason 값 (강등 시)
+          "violations": list[str],
+        }
+
+    decision은 mutate하지 않음. 호출자가 should_demote=True면 별도로
+    decision["action"] = "preserve" + preserve_reason 설정.
+    """
+    violations: list[str] = []
+
+    # 1. action enum 확인
+    action = decision.get("action")
+    if action not in ADAPTATION_ACTIONS:
+        violations.append(f"action_invalid: {action!r}")
+        return {
+            "valid": False,
+            "should_demote": True,
+            "demote_reason": "validation_failed",
+            "violations": violations,
+        }
+
+    # 2. 공통 필수 필드 (key 존재)
+    for required_key in (
+        "chapter_idx", "confidence", "counter_evidence",
+        "ambiguity_flags", "adaptation_degree",
+    ):
+        if required_key not in decision:
+            violations.append(f"missing_key:{required_key}")
+
+    # confidence enum
+    confidence = decision.get("confidence")
+    if confidence not in CONFIDENCE_LEVELS:
+        violations.append(f"confidence_invalid: {confidence!r}")
+
+    # adaptation_degree enum (debug-only이지만 enum 검증은 함)
+    ad = decision.get("adaptation_degree")
+    if ad is not None and ad not in ADAPTATION_DEGREES:
+        violations.append(f"adaptation_degree_invalid: {ad!r}")
+
+    # counter_evidence와 ambiguity_flags: 필드 존재 + list 타입
+    ce = decision.get("counter_evidence")
+    if not isinstance(ce, list):
+        violations.append("counter_evidence_not_list")
+    af = decision.get("ambiguity_flags")
+    if not isinstance(af, list):
+        violations.append("ambiguity_flags_not_list")
+
+    adapted_title = decision.get("adapted_title")
+    original_title = decision.get("original_title", "")
+
+    # 3. action별 요구사항
+    if action == "generate":
+        # adapted_title is null or equals original_title
+        if adapted_title not in (None, "", original_title):
+            violations.append(
+                f"generate_adapted_title_must_equal_original: "
+                f"adapted={adapted_title!r} original={original_title!r}"
+            )
+        # supporting_evidence non-empty if confidence=high
+        se = decision.get("supporting_evidence")
+        if confidence == "high" and not (isinstance(se, list) and len(se) > 0):
+            violations.append("generate_high_confidence_requires_supporting_evidence")
+
+    elif action == "adapted_title_generate":
+        # adapted_title 필수
+        if not isinstance(adapted_title, str) or not adapted_title.strip():
+            violations.append("adapted_title_required")
+        # preserved_aspects, adapted_aspects 필수 non-empty
+        pa = decision.get("preserved_aspects")
+        if not isinstance(pa, list) or len(pa) == 0:
+            violations.append("preserved_aspects_required_non_empty")
+        aa = decision.get("adapted_aspects")
+        if not isinstance(aa, list) or len(aa) == 0:
+            violations.append("adapted_aspects_required_non_empty")
+        # supporting_evidence non-empty if confidence=high
+        se = decision.get("supporting_evidence")
+        if confidence == "high" and not (isinstance(se, list) and len(se) > 0):
+            violations.append(
+                "adapted_title_generate_high_confidence_requires_supporting_evidence"
+            )
+
+    elif action == "preserve":
+        # preserve_reason / preserve_reason_detail 필수
+        pr = decision.get("preserve_reason")
+        if pr not in PRESERVE_REASONS:
+            violations.append(f"preserve_reason_invalid: {pr!r}")
+        prd = decision.get("preserve_reason_detail")
+        if not isinstance(prd, str) or not prd.strip():
+            violations.append("preserve_reason_detail_required")
+        # counter_evidence 또는 ambiguity_flags 중 하나는 non-empty
+        ce_empty = not (isinstance(ce, list) and len(ce) > 0)
+        af_empty = not (isinstance(af, list) and len(af) > 0)
+        # plan_unavailable은 AI 호출 실패 fallback이므로 둘 다 empty 허용
+        if pr != "plan_unavailable" and ce_empty and af_empty:
+            violations.append(
+                "preserve_requires_counter_evidence_or_ambiguity_flags"
+            )
+
+    # 4. 강등 판단
+    # preserve 자체는 정당 — preserve_reason_detail이 비어도 자동 채움 (강등 X)
+    # 그 외 violations 있으면 강등
+    if not violations:
+        return {
+            "valid": True,
+            "should_demote": False,
+            "demote_reason": None,
+            "violations": [],
+        }
+
+    # preserve action에서 preserve_reason_detail만 누락된 경우는 강등 안 함
+    if (
+        action == "preserve"
+        and len(violations) == 1
+        and violations[0] == "preserve_reason_detail_required"
+    ):
+        return {
+            "valid": False,
+            "should_demote": False,
+            "demote_reason": None,
+            "violations": violations,
+        }
+
+    return {
+        "valid": False,
+        "should_demote": True,
+        "demote_reason": "validation_failed",
+        "violations": violations,
+    }
+
+
+def compute_reference_metrics(
+    decision: dict,
+    broad_source: str = "",
+    generated_body_text: str = "",
+) -> dict:
+    """13.7c: debug-only 참고 metric 계산.
+
+    원칙: 정책 판단에 사용 X. 다음 모든 용도 금지:
+        - preserve 강등
+        - validation fail
+        - confidence 조정
+        - hallucination 확정
+    좋은 paraphrase에서도 낮을 수 있음. broad source 한계나 evidence
+    trace를 관찰하기 위한 참고 지표.
+
+    Returns:
+        {
+          "supporting_evidence_substring_match_ratio": float | None,
+          "generated_body_evidence_overlap_ratio": float | None,
+        }
+    """
+    metrics = {
+        "supporting_evidence_substring_match_ratio": None,
+        "generated_body_evidence_overlap_ratio": None,
+    }
+
+    # supporting_evidence가 source 원문에 substring match된 비율 (paraphrase면 낮음, OK)
+    se = decision.get("supporting_evidence") or []
+    if isinstance(se, list) and se and broad_source:
+        _match_count = 0
+        _total = 0
+        for ev in se:
+            if not isinstance(ev, str) or not ev.strip():
+                continue
+            _total += 1
+            # 짧은 fragment (앞 40자)만 비교 — 긴 paraphrase 영향 최소화
+            _frag = ev.strip()[:40]
+            if _frag and _frag in broad_source:
+                _match_count += 1
+        if _total > 0:
+            metrics["supporting_evidence_substring_match_ratio"] = round(
+                _match_count / _total, 3
+            )
+
+    # generated_body가 evidence hint의 source fragment를 포함한 비율
+    if isinstance(se, list) and se and generated_body_text:
+        _frag_count = 0
+        _hit_count = 0
+        for ev in se:
+            if not isinstance(ev, str) or not ev.strip():
+                continue
+            _frag = ev.strip()[:40]
+            if not _frag:
+                continue
+            _frag_count += 1
+            if _frag in generated_body_text:
+                _hit_count += 1
+        if _frag_count > 0:
+            metrics["generated_body_evidence_overlap_ratio"] = round(
+                _hit_count / _frag_count, 3
+            )
+
+    return metrics
+
+
+def should_split_adaptation_batch(
+    prompt_text: str,
+    model_context_char_budget: int = 100000,
+    safety_ratio: float = 0.6,
+) -> bool:
+    """13.7c: batch split 동적 기준.
+
+    원칙: 고정 chapter 수 기준이 아니라 입력 크기 기준. char 길이로
+    rough token 추정 (의미 판단 아님).
+
+    model_context_char_budget의 safety_ratio 넘으면 split 권고.
+    안전 마진은 운영 기준 (의미 하드코딩 아님).
+    """
+    if not prompt_text:
+        return False
+    return len(prompt_text) > model_context_char_budget * safety_ratio
+
+
+def normalize_adaptation_decision(
+    decision: dict,
+    original_title: str,
+) -> dict:
+    """13.7c: AI 출력 decision을 chapter object._debug.adaptation_decision
+    schema에 맞추도록 normalize. validation 전 호출.
+
+    - missing optional 필드는 default 값으로 채움
+    - original_title 주입
+    - AI가 안 채운 field는 None / [] 로
+    """
+    return {
+        "chapter_idx": decision.get("chapter_idx"),
+        "source_chapter_idx": decision.get("source_chapter_idx", decision.get("chapter_idx")),
+        "original_title": original_title,
+        "action": decision.get("action"),
+        "adapted_title": decision.get("adapted_title"),
+        "preserved_aspects": decision.get("preserved_aspects") or [],
+        "adapted_aspects": decision.get("adapted_aspects") or [],
+        "supporting_evidence": decision.get("supporting_evidence") or [],
+        "counter_evidence": decision.get("counter_evidence") or [],
+        "ambiguity_flags": decision.get("ambiguity_flags") or [],
+        "adaptation_degree": decision.get("adaptation_degree"),
+        "confidence": decision.get("confidence"),
+        "preserve_reason": decision.get("preserve_reason"),
+        "preserve_reason_detail": decision.get("preserve_reason_detail"),
+    }
+
+
+def make_unavailable_decision(
+    chapter_idx: int,
+    original_title: str,
+    reason_detail: str,
+) -> dict:
+    """13.7c: AI 호출 실패 시 fallback adaptation_decision.
+
+    전체 chapter를 preserve로 강등할 때 사용.
+    """
+    return {
+        "chapter_idx": chapter_idx,
+        "source_chapter_idx": chapter_idx,
+        "original_title": original_title,
+        "action": "preserve",
+        "adapted_title": None,
+        "preserved_aspects": [],
+        "adapted_aspects": [],
+        "supporting_evidence": [],
+        "counter_evidence": [],
+        "ambiguity_flags": [],
+        "adaptation_degree": None,
+        "confidence": "low",
+        "preserve_reason": "plan_unavailable",
+        "preserve_reason_detail": reason_detail,
+    }
+
+
+def make_validation_failed_decision(
+    chapter_idx: int,
+    original_title: str,
+    violations: list[str],
+) -> dict:
+    """13.7c: schema validation 실패 시 preserve 강등 decision."""
+    return {
+        "chapter_idx": chapter_idx,
+        "source_chapter_idx": chapter_idx,
+        "original_title": original_title,
+        "action": "preserve",
+        "adapted_title": None,
+        "preserved_aspects": [],
+        "adapted_aspects": [],
+        "supporting_evidence": [],
+        "counter_evidence": [],
+        "ambiguity_flags": [],
+        "adaptation_degree": None,
+        "confidence": "low",
+        "preserve_reason": "validation_failed",
+        "preserve_reason_detail": "schema_validation_failures: " + "; ".join(violations[:5]),
+    }
+
+
+def summarize_adaptation_plan(
+    decisions: list[dict],
+    source_topic: dict,
+    ai_call_info: dict | None = None,
+    batch_strategy: str = "single",
+    batch_split_reason: str | None = None,
+) -> dict:
+    """13.7c: _debug_payload["adaptation_plan"] summary 구성."""
+    action_dist = {a: 0 for a in ADAPTATION_ACTIONS}
+    preserve_reason_dist = {r: 0 for r in PRESERVE_REASONS}
+    validation_failure_count = 0
+    confidence_counts = {c: 0 for c in CONFIDENCE_LEVELS}
+
+    for d in decisions:
+        a = d.get("action")
+        if a in action_dist:
+            action_dist[a] += 1
+        if a == "preserve":
+            pr = d.get("preserve_reason")
+            if pr in preserve_reason_dist:
+                preserve_reason_dist[pr] += 1
+            if pr == "validation_failed":
+                validation_failure_count += 1
+        c = d.get("confidence")
+        if c in confidence_counts:
+            confidence_counts[c] += 1
+
+    # average confidence는 mode (가장 흔한 등급) 또는 None
+    _max_c = max(confidence_counts.values(), default=0)
+    _avg = None
+    if _max_c > 0:
+        for c in CONFIDENCE_LEVELS:
+            if confidence_counts[c] == _max_c:
+                _avg = c
+                break
+
+    return {
+        "source_topic": source_topic,
+        "chapter_count": len(decisions),
+        "action_distribution": action_dist,
+        "preserve_reason_distribution": preserve_reason_dist,
+        "validation_failure_count": validation_failure_count,
+        "confidence_distribution": confidence_counts,
+        "average_confidence": _avg,
+        "ai_calls": ai_call_info or {},
+        "batch_strategy": batch_strategy,
+        "batch_split_reason": batch_split_reason,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
