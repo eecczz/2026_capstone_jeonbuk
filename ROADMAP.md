@@ -3,7 +3,7 @@
 이 파일은 HWPX 파이프라인의 단계별 로드맵입니다.
 각 단계에서 무엇을 했고, 무엇이 남았고, 다른 단계에서 기억해야 할 것이 무엇인지 기록합니다.
 
-최종 수정: 2026-05-13 (13.7a 완료)
+최종 수정: 2026-05-13 (13.7c 완료)
 
 ---
 
@@ -29,6 +29,7 @@
 | **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **done** | region action plan + unanalyzed section preserve safety |
 | **13.6** | **Per-Chapter Subtree + Multi-Section/Source Gate** | **done** | B: per-chapter local_pattern→prompt+validation 연결, A: multi-section diagnostic, C: source diagnostic |
 | **13.7a** | **Chapter-Grouped Assembly + Region-Aware Placement** | **done** | content["chapters"] 도입, chapter_trees 파라미터 제거, flat chapter split path 제거, build_chapter_trees dead code 삭제, empty chapter region preserve(안전장치), A0 measurement. 3개 양식 검증 통과 (민원인 tree_available=true, 조달청 3/3 ok, CC7 shallow 불변, invariant 0). |
+| **13.7c** | **Source-to-Template Adaptation Planning** | **done** | Template-first 흐름. source inventory + chapter mapping (AI 2회). action: generate / adapted_title_generate / preserve (+ preserve_reason 6개 + detail). evidence-driven (preserved/adapted_aspects, supporting/counter_evidence, ambiguity_flags). heuristic은 debug-only. 민원인 hallucinate→adapted_title 해소, 조달청 mismatch에서 안전 preserve. |
 | **13.7b** | **Multi-Section Analysis 확장** | not started | 1a 파이프라인 변경. 모든 section 분석 + document-level merge + chapter object의 (section, region, chapter) 단위 확장 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
@@ -63,6 +64,8 @@
   |                         |
   |                    13.7a: Chapter-Grouped Assembly + Region-Aware Placement (done)
   |                         |
+  |                    13.7c: Source-to-Template Adaptation Planning (done)
+  |                         |
   |                    13.7b: Multi-Section Analysis 확장 (CC11)
   |                         |
   |              ┌──────────┤
@@ -85,7 +88,8 @@
 - **13.5는 13.4b 이후** (region action plan + unanalyzed section preserve safety)
 - **13.6 완료** (CC12 해결: per-chapter subtree extraction + local_pattern_override validation, A/C diagnostic으로 13.7 scope 확정)
 - **13.7a 완료** (chapter-grouped + region-aware placement. content["chapters"] 도입, chapter_trees 흡수, flat split path 제거, build_chapter_trees dead code 삭제. 1a 무변경. 검증 결과는 아래 "13.7a 완료 근거" 참조)
-- **13.7b는 13.7a 이후** (analysis 확장: 모든 section 1a 분석 + document-level merge [CC11] + chapter object section_id에 실 값. source allocation redesign은 watch)
+- **13.7c 완료** (Template-first source-to-template adaptation planning. AI 2회 (source inventory + chapter mapping batch), evidence-driven, heuristic debug-only. 검증 결과는 아래 "13.7c 완료 근거" 참조)
+- **13.7b는 13.7c 이후** (analysis 확장: 모든 section 1a 분석 + document-level merge [CC11] + chapter object section_id에 실 값. source allocation redesign은 watch)
 - **13.7 진단 정정** (2026-05-13 rev): 이전 가설 "민원인 title=level=1 → level=0 paragraph scan 실패"는 코드와 불일치. 실제 원인은 `_chapter_title_roles`가 1d title_role(role_cluster_3, 부정확)에 의존. 13.7a-A1으로 의존 자체 제거. 1d 정확도는 A0 measurement 후 별도 stage 후보.
 
 ---
@@ -133,6 +137,85 @@
 - ok chapters (Ch0/1/5): llm_len 384/1247/1109, items 2/6/6
 - empty chapters (Ch2/3/4/6/7): llm_len 12~17, raw_items=0, stage="parse"
 - → LLM 응답 부재가 원인. source 충분 (41,272자 동일), grammar reject 0건.
+
+---
+
+## 13.7c 완료 근거 (2026-05-13)
+
+**커밋**: `9b371cc` (도입) + `79124c0` (template-first 정정)
+**계획서**: `docs/13_7c_plan.md`
+
+### 진단된 문제 (13.7a 후)
+
+13.7a 실행 시 mismatch source (조달청 PDF + 민원인 양식)에서:
+- title은 template 원문 유지 + body는 source 주제 → title-body mismatch
+- AI가 hallucinate (예: Ch0 "Ⅰ.목적" 그대로 + body "정책품질관리 시스템")
+- 원칙 3 위배 (template intent 보존 명목으로 source 내용 펴내는 흐름)
+
+### 정정 방향 (template-first)
+
+**Step 1**: template chapter need 파악 (frame, 우선)
+**Step 2**: source-to-chapter evidence retrieval (도구, chapter need에 종속)
+**Step 3**: 각 chapter 결정
+
+- source가 풍부해도 chapter need 외 내용 사용 X
+- source 주제가 문서 방향 결정 X — chapter intent가 결정
+- 14단계 KB/RAG의 광범위한 source에 대한 chapter need 기준 필터
+
+### 검증 결과 (민원인 + 조달청)
+
+| 양식 | action 분포 | preserve_reason | adapted_title 예 | 분석 |
+|------|------------|----------------|-----------------|------|
+| 민원인 (8 ch) | gen=0, adapt=5, pre=3 | source_gap × 3 | "Ⅰ . 검토배경 및 목적" (intent 보존 + source incorporate), "Ⅲ . 제도운영 기본방향" (intent "기본방향" 보존) | hallucinate 해소, title-body 일치 |
+| 조달청 (3 ch) | gen=0, adapt=1, pre=2 | source_gap × 2 | "Ⅰ. 정책품질관리·문제정책 관리제도 운영성과 및 평가" | template-first 정확 동작 — 양식(2024 미래계획) + source(2005 자료) gap을 정직하게 preserve |
+| CC7 | (shallow, 13.7c 미진입) | — | — | regression 보장 (chapter_template_plan_seed=None path) |
+
+- invariant_violations 0
+- assembly fail 0
+- AI 호출 retry 0 (둘 다 첫 호출 통과)
+- confidence high × 9, medium × 2, low × 0 (전반적 high evidence)
+- preserve_reason_detail이 chapter need를 frame으로 source 매칭 부재 분석 (예: Ch4 "특이민원 대응방안에 필요한 사건 유형, 증거확보, 절차도, 현장조치가 source에 전혀 보이지 않는다")
+
+### 13.7c 핵심 변경 (코드)
+
+- `extract_source_topic` → `extract_source_inventory` (이름 + schema 의미 약화). source가 frame이 아니라 도구임을 명시.
+- `build_adaptation_plan_prompt` 구조: chapter list 첫째(frame) → source inventory 둘째(도구) → 결정.
+- preserve_reason 6개 enum + preserve_reason_detail free text.
+- evidence-driven (preserved_aspects.template_evidence + adapted_aspects.source_evidence + supporting/counter_evidence + ambiguity_flags).
+- heuristic (token overlap, substring match, length)은 `_debug.reference_metrics`로만, 정책 영향 X.
+- chapter object._debug.adaptation_decision에 결정 attach.
+
+### 13.7c 범위 밖 (별도 stage 후보)
+
+- **user_request-aware planning**: 사용자 채팅 요청을 planner input으로 받기. 14단계 KB/RAG와 함께 진입. 13.7c 확장으로 user_request optional param 추가 예정.
+- **2a chapter planner family 물리적 통합**: 13.4b + 2a + 13.7c가 같은 책임 family. 현재 sub-step 분리 유지가 디버깅/fallback 측면에서 정당. 운영 안정화 후 (15+) super-planner 통합 검토.
+- **source slice (chapter별 source 추출)**: 현재 broad source 그대로. 13.7c 후속 stage 또는 14 이후.
+- **Coverage validation**: 15 Source Evidence/Coverage.
+
+---
+
+## 2a Chapter Planner Family (개념적 그룹화)
+
+13.4b, 2a, 13.7c는 chapter-level planning이라는 같은 책임 family에 속한다. 코드는 분리 유지하되 ROADMAP에서 family로 묶어 운영적 의미를 명시.
+
+| sub-step | 책임 | stage |
+|----------|------|-------|
+| 13.4b `chapter_template_plan_seed` | template chapter intent + local_pattern + local_catalog 추출 | done |
+| 2a `chapter_classify` | chapter type/pattern 선택 | done |
+| 13.7c `adaptation_plan` | source-template fit + adapted_title + action 결정 | done |
+
+**개념적 통합 의미**:
+- chapter-level planning은 위 세 단계를 함께 본다
+- 14단계 진입 시 user_request input이 13.7c에 추가됨 → planner family가 (template + source + user_request) 3 input 처리
+- 장기 (15+ 이후) 물리적 통합 (super-planner, 한 AI 호출) 검토 가능. 단 prompt 복잡도/debug 분리/fallback 측면에서 현재 분리 유지가 안전.
+
+**user_request-aware planning** (14단계 진입 시):
+- 14: user_request → RAG → 파일 선택 (source 후보)
+- 13.7c 확장: (template, source, user_request) 3 input. user_request 있으면 adaptation strictness 조정:
+  - user_request 명시 ("이 자료로 만들어줘") → 적극 adapted_title_generate
+  - user_request 모호 → ambiguity_flag 표기, 보수적 동작
+  - user_request 없음 → 현재 동작 (default)
+- 별도 stage 아니라 14 + 13.7c 확장으로 묶여 진입
 - **14-table과 14는 13.7 이후, 병렬 가능**
 - **15는 13.7 이후** (allocation 안정 후 coverage validation)
 - **Assembly 고도화는 독립** (tree→layout, section-aware append. 다른 단계와 의존 없음)
