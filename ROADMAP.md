@@ -1307,7 +1307,7 @@ chapter loop debug에 source_diagnostic 추가.
 | 항목 | 방안 |
 |------|------|
 | extract_section_xml | 모든 section XML list 반환 |
-| section별 1a 분석 | 토큰 전략 필요. 유력 방안: section0 full + 나머지 lightweight (paragraph count + role hint + heading 추출) |
+| section별 1a 분석 | 토큰 전략 필요. section별 content significance 진단 후 analysis depth 동적 결정. 본문성 content가 있는 section(예: section4 "제2장" 193p)은 lightweight로 축소하지 않음. 목표는 토큰 최소화가 아니라 문서 구조 정확 이해 |
 | document-level merge | section별 분석 결과 통합. paragraph에 section_id/section_local_idx/global_document_idx 부여 |
 | section-aware target_unit_plan | region에 section_span/section_ids 추가. generation target이 원래 section 기억 |
 | section-aware generation | 2b 호출 시 target section 정보 전달 |

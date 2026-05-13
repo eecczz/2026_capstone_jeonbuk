@@ -159,20 +159,29 @@ python-hwpx의 `doc.paragraphs`는 모든 section을 순회한다. 현재 sectio
 
 토큰 관리 전략 필요:
 
-| section | 크기 (민원인) | 전략 |
+| section | 크기 (민원인) | 비고 |
 |---------|-------------|------|
 | section0 | 1.9MB | 기존 truncate_xml (100K chars) |
-| section1 | 260KB | 축소 truncate 또는 별도 budget |
-| section2 | 250KB | 동일 |
-| section3 | 3.5KB | 전체 분석 가능 |
-| section4 | 425KB | 축소 truncate |
+| section1 | 260KB | 86 body paragraphs |
+| section2 | 250KB | 4 body paragraphs (서식 위주) |
+| section3 | 3.5KB | 1 body paragraph (빈 페이지) |
+| section4 | 425KB | 193 body paragraphs — **본문성 content ("제2장 - 반복민원 대응")** |
 
-선택지:
+호출 구조 선택지:
 - A: section별 독립 1a 호출 (토큰 × section 수, 비용 높음)
 - B: 전체 section merge 후 단일 1a 호출 (토큰 budget 내 truncation 필요)
-- C: section0 full 분석 + 나머지 section lightweight 분석 (하이브리드)
+- C: section별 분석 depth를 동적으로 결정 (significance 기반)
 
-**C가 유력**: section0는 기존 full analysis, section1~4는 paragraph count + role hint + heading 추출 정도의 lightweight 분석. 13.7b 설계 시 결정.
+13.7b 설계 시 결정. 아래 원칙을 준수.
+
+**Section analysis depth 원칙**:
+
+1. lightweight analysis는 **확정 전략이 아니라 후보 전략**이다. 토큰 비용을 이유로 section1~4를 자동 축소 분석하지 않는다.
+2. 먼저 section별 **content significance를 진단**한다: heading density, body paragraph count, table presence, layout difference, generation target 가능성. 13.6-A diagnostic 결과를 활용.
+3. **significance가 높거나 generation 대상 가능성이 있는 section은 full 또는 deeper analysis로 승격**한다. 특히 민원인 section4처럼 본문성 content(193p, "제2장")가 관측된 section은 lightweight만으로 처리하지 않는다.
+4. lightweight 결과가 section의 heading/target region/본문 구조를 **안정적으로 복원하지 못하면 사용하지 않는다**. 불완전한 lightweight 결과를 억지로 merge하면 document-level structure가 망가진다.
+5. 13.7b의 목표는 **토큰 비용 최소화가 아니라 multi-section 문서 구조를 정확히 이해하는 것**이다. 비용 최적화는 정확도를 해치지 않는 범위에서만 적용한다.
+6. section3(빈 페이지, 1p)처럼 content가 실질적으로 없는 section은 lightweight로 충분하다. 기준은 section index가 아니라 **관측된 content significance**.
 
 #### B3. Document-level structure merge
 
