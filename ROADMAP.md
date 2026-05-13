@@ -3,7 +3,7 @@
 이 파일은 HWPX 파이프라인의 단계별 로드맵입니다.
 각 단계에서 무엇을 했고, 무엇이 남았고, 다른 단계에서 기억해야 할 것이 무엇인지 기록합니다.
 
-최종 수정: 2026-05-12
+최종 수정: 2026-05-13
 
 ---
 
@@ -26,9 +26,9 @@
 | **12** | **Generation Schema Redesign** | **done** | marker/content 분리, template observation, target unit planning |
 | 13 | Unit-Aware Generation | **in progress** | 13.0 done, 13.3b-1 done, 13.1 deferred |
 | **13.4b** | **Chapter Template Plan Seed** | **in progress** | template-driven chapter loop, broad source fallback, 2b template context |
-| **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **in progress** | region action plan + unanalyzed section preserve safety |
-| **13.6** | **Multi-Section Analysis + Source Allocation Gate** | **next** | extract_section_xml multi-section 지원 (CC11 blocker) + source split 불안정 해결 |
-| 13.7 | Source-to-Template Allocation Redesign | not started | source_blocks→generation 연결, split 보완/대체 |
+| **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **done** | region action plan + unanalyzed section preserve safety |
+| **13.6** | **Per-Chapter Subtree + Multi-Section/Source Gate** | **done** | B: per-chapter local_pattern→prompt+validation 연결, A: multi-section diagnostic, C: source diagnostic |
+| **13.7** | **Multi-Section Analysis + Section-Aware Assembly** | **next** | document-level analysis, section-aware assembly, title-level body_split 개선 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
 | 15 | Source Evidence / Coverage | not started | source coverage validation — 13.7 이후 |
@@ -56,11 +56,11 @@
   |                         |
   |                    13.4b: Chapter Template Plan Seed ← IN PROGRESS
   |                         |
-  |                    13.5: Region Action Plan + Section Preserve ← IN PROGRESS
+  |                    13.5: Region Action Plan + Section Preserve (done)
   |                         |
-  |                    13.6: Multi-Section Analysis + Source Gate (CC11 blocker, CC12 obs)
+  |                    13.6: Per-Chapter Subtree + Gate (done, CC12 해결)
   |                         |
-  |                    13.7: Source Allocation Redesign
+  |                    13.7: Multi-Section Analysis + Section-Aware Assembly (CC11)
   |                         |
   |              ┌──────────┤
   |              |          |
@@ -80,7 +80,8 @@
 - 13은 12 이후 (target_unit_plan → generation 연결)
 - **13.4b는 13 이후** (template-driven chapter loop — template intent flow 보존 최소 안전장치)
 - **13.5는 13.4b 이후** (region action plan + unanalyzed section preserve safety)
-- **13.6은 13.5 이후** (multi-section analysis coverage gap 근본 해결 [CC11 blocker] + source allocation gate + chapter-local pattern 관측 [CC12])
+- **13.6 완료** (CC12 해결: per-chapter subtree extraction + local_pattern_override validation, A/C diagnostic으로 13.7 scope 확정)
+- **13.7은 13.6 이후** (multi-section full analysis [CC11], section-aware assembly, title-level body_split 개선)
 - **13.7은 13.6 이후** (allocation redesign 구현)
 - **14-table과 14는 13.7 이후, 병렬 가능**
 - **15는 13.7 이후** (allocation 안정 후 coverage validation)
@@ -1195,7 +1196,72 @@ dominant_chapter_type clustering을 개선하는 방향이 아니라, 각 top-le
 - 조달청 Ⅰ(6 roles, depth 3), Ⅱ(7 roles, depth 4), Ⅲ(11 roles, depth 6)가 각각 다른 type에 해당
 - per-chapter subtree 추출이면 이 문제가 구조적으로 해결됨
 
-**현재 상태**: 13.5 계속 진행. 이 문제는 13.6 핵심 blocker 후보. 조달청 결과 판단 시 "대제목은 유지됐지만 chapter-local pattern 보존은 아직 검증되지 않았다"고 명시.
+**현재 상태**: **13.6에서 해결됨.** `extract_per_chapter_pattern()`으로 per-chapter subtree 직접 추출 + `pattern_to_grammar()`로 local grammar 변환 + `process_section_fill_result(override_grammar=)` 연결.
+
+조달청 검증: Ch0=[c5,c6,c9], Ch1=[c10], Ch2=[c12] — 3개 chapter 각각 다른 local_pattern으로 validation 통과. grammar_violation=0, fallback=0.
+
+---
+
+### 13.6 완료 기록 (2026-05-13)
+
+#### 13.6 = gate 단계. 확인된 gap 1개 구현 + 의심 항목 2개 측정.
+
+**B: Per-Chapter Subtree Extraction — 구현 완료 (CC12 해결)**
+
+| 구현 | 내용 |
+|------|------|
+| `extract_per_chapter_pattern()` | chapter region paragraphs → parent_idx 기반 tree 구축 → local_pattern/catalog 추출 |
+| `pattern_to_grammar()` | local_pattern → grammar 변환 (validate/fallback/reconstruct용) |
+| `extract_chapter_template_plan_seed()` 확장 | seed에 local_pattern, local_catalog, local_title_role, pattern_source 추가 |
+| `process_section_fill_result()` 확장 | override_grammar, override_root_roles 파라미터로 per-chapter grammar 사용 |
+| DB tool | per-chapter pattern/catalog 전달 + override_grammar 전달 |
+
+검증 결과:
+
+| 양식 | pattern_source | grammar_violation (before→after) | fallback (before→after) | assembly |
+|------|---------------|----------------------------------|------------------------|----------|
+| 조달청 | 3/3 per_chapter_subtree | Ch1: 4→**0**, Ch2: 15→**0** | Ch1: 5→**0**, Ch2: 16→**0** | 20/0 |
+| 민원인 | 8/8 per_chapter_subtree | 대부분 0 (Ch1: 1건 AI 실수) | Ch1: 1건 | 27/0 |
+| CC7 | N/A (shallow) | N/A | N/A | 22/0 |
+
+**A: Multi-Section Diagnostic — 관측 완료**
+
+`diagnose_multi_section()`: section role classification 없이 관측값 중심.
+- observations 3축: layout_heterogeneity, content_significance, preserve_adequacy
+- gate_decision: 관측에서 파생된 결론 (분리)
+
+민원인 결과:
+- 5 sections, layout heterogeneous (orientation/margin 차이)
+- unanalyzed: 284p (47%)
+- gate: **blocker** — multi-section full analysis + section-aware assembly 필요
+
+조달청/CC7: single-section → skip
+
+**C: Source Diagnostic — 관측 완료**
+
+chapter loop debug에 source_diagnostic 추가.
+- 조달청: 41K chars, 31K total tokens (3 chapters), anomalies=0, 전부 filled
+- 민원인: broad source × 8 chapters, 4/8 insufficient_source — source coverage 부족 가능성
+
+#### 13.7 Scope 확정 (gate decision)
+
+| 항목 | 판정 | 근거 |
+|------|------|------|
+| Multi-section full analysis + section-aware assembly | **blocker** | 민원인 47% unanalyzed, layout heterogeneous, section4에 본문 content 존재 |
+| Title-level-independent body_split/tree alignment | **blocker** | 민원인 title=level=1 → body_split 실패 → tree_available=false (pre-existing) |
+| Source-to-template allocation redesign | **watch** | C diagnostic에서 clear blocker evidence 없음. insufficient_source는 source coverage 부족 가능성 |
+| D11 dual-use title/slot concat | **watch** | pre-existing, 13.6에서 악화 없음 |
+| AI parent_id 단일 fallback | **watch** | 민원인 Ch1에서 1건, harmless |
+| Marker rewrite fallback debug 이상 | **watch** | tree_available=false의 증상, debug-only (출력 무영향) |
+
+#### 13.7 후보 작업
+
+1. **extract_section_xml() → 모든 section 반환** (CC11 근본 해결)
+2. **section별 1a 분석** (토큰 비용 고려 — 축소/요약 전략)
+3. **document-level structure merge** (section 간 paragraph 통합)
+4. **section-aware target_unit_plan** (region에 소속 section 정보)
+5. **section-aware assembly** (generated content를 원래 section에 배치, layout 유지)
+6. **title-level-independent body_split** (level=0 가정 제거, tree 직접 사용)
 
 ---
 
@@ -1217,12 +1283,12 @@ dominant_chapter_type clustering을 개선하는 방향이 아니라, 각 top-le
 |------|------|----------|-------------------|--------|
 | 1 | 조달청 업무계획 | 1 (single) | 3 (Ⅰ.성과/Ⅱ.여건/Ⅲ.과제) | top-level fixed flow, 내부 과제별 반복 |
 | 2 | 민원인 위법행위 대응지침 | 5 (multi) | 8 (Ⅰ~Ⅷ) | multi-section, secPr, attachment 101p, section4 Part2 누락 |
-| 3 | CC7 주간보고 | ? | shallow (non-chapter) | shallow route, section plan seed |
+| 3 | CC7 주간보고 | 1 (single) | shallow (non-chapter) | shallow route, section plan seed |
 
 테스트 시 양식 번호에 따라 다른 검증 포인트:
-- 양식1: template-driven 3장 유지, grammar, marker rewrite, broad source regression
-- 양식2: template-driven 8장 유지, multi-section, attachment preserve (13.5), section4 누락 (CC11)
-- 양식3: shallow route 불변, section plan seed 동작
+- 양식1: template-driven 3장 유지, per-chapter local_pattern, grammar, marker rewrite, broad source
+- 양식2: template-driven 8장 유지, per-chapter local_pattern, multi-section (5 sections, layout diff), attachment preserve (13.5), tree_available=false (title level=1), section4 누락 (CC11)
+- 양식3: shallow route 불변, section plan seed 동작, 13.6 변경에 영향 없음
 
 ---
 

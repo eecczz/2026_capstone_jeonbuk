@@ -8789,6 +8789,10 @@ def write_stage_debug_files(
                 ch_entry["parent_id_stats"] = sf["parent_id_stats"]
             if sf.get("chapter_context"):
                 ch_entry["chapter_context"] = sf["chapter_context"]
+            # 13.6-B: grammar override debug
+            for _gf in ("validation_grammar_source", "override_root_roles", "override_grammar_role_count"):
+                if sf.get(_gf) is not None:
+                    ch_entry[_gf] = sf[_gf]
             chapters_gen.append(ch_entry)
 
         _write("08_2b_generation_by_chapter.json", {
@@ -9763,7 +9767,15 @@ def extract_chapter_template_plan_seed(
             first_para = para_by_idx.get(first_idx, {})
             region_desc = first_para.get("description", "")
 
-        chapters.append({
+        # --- 13.6-B: per-chapter local pattern/catalog ---
+        ch_pattern_result = extract_per_chapter_pattern(pi, structure, idx_full_texts)
+        use_local = (
+            ch_pattern_result.get("extraction_confidence") != "low"
+            and ch_pattern_result.get("local_pattern")
+            and not ch_pattern_result.get("fallback_to_dominant")
+        )
+
+        ch_entry = {
             "template_title": raw_title.strip() if raw_title else f"Chapter {position + 1}",
             "description": region_desc,
             "position": position,
@@ -9771,7 +9783,23 @@ def extract_chapter_template_plan_seed(
             "paragraph_count": len(pi),
             "region_id": region.get("region_id"),
             "first_paragraph_idx": first_idx,
-        })
+        }
+        if use_local:
+            ch_entry["local_pattern"] = ch_pattern_result["local_pattern"]
+            ch_entry["local_catalog"] = ch_pattern_result["local_catalog"]
+            ch_entry["local_title_role"] = ch_pattern_result["local_title_role"]
+            ch_entry["pattern_source"] = "per_chapter_subtree"
+        else:
+            ch_entry["pattern_source"] = "dominant_type_fallback"
+
+        ch_entry["_pattern_extraction"] = {
+            "confidence": ch_pattern_result.get("extraction_confidence"),
+            "stats": ch_pattern_result.get("stats"),
+            "extraction_detail": ch_pattern_result.get("extraction_detail"),
+            "repeatable_detail": ch_pattern_result.get("repeatable_detail"),
+        }
+
+        chapters.append(ch_entry)
 
     if not chapters:
         return None
@@ -9874,6 +9902,309 @@ def _find_dominant_chapter_type(
         return next(iter(chapter_types), None)
 
     return max(type_counts, key=type_counts.get)
+
+
+def pattern_to_grammar(pattern: dict) -> tuple[dict, list[str]]:
+    """
+    local_pattern → (grammar, root_roles) 변환.
+
+    local_pattern format:
+        {role: {"repeatable": bool, "children": {child_role: {...}}}}
+
+    grammar format:
+        {role: {"allowed_children": [child_roles...]}}
+
+    root_roles: pattern의 top-level keys (title 직속 자식).
+    """
+    grammar: dict[str, dict] = {}
+
+    def _walk(pat: dict) -> None:
+        for role, info in pat.items():
+            children = info.get("children", {})
+            child_keys = sorted(children.keys())
+            if role not in grammar:
+                grammar[role] = {"allowed_children": child_keys}
+            else:
+                # merge: union of allowed_children (cycle-safe)
+                existing = set(grammar[role].get("allowed_children", []))
+                existing.update(child_keys)
+                grammar[role]["allowed_children"] = sorted(existing)
+            if children:
+                _walk(children)
+
+    _walk(pattern)
+    root_roles = sorted(pattern.keys())
+    return grammar, root_roles
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.6-B: Per-Chapter Subtree Extraction
+# ──────────────────────────────────────────────────────────────────────
+
+
+def extract_per_chapter_pattern(
+    paragraph_indices: list[int],
+    structure: dict,
+    idx_full_texts: dict | None = None,
+) -> dict:
+    """
+    chapter region의 paragraph에서 local pattern/catalog을 직접 추출.
+
+    parent_idx 기반으로 tree를 먼저 구축하고, tree에서 role hierarchy와
+    repeatable 여부를 파생한다.
+
+    Returns:
+        dict with local_pattern, local_catalog, local_title_role,
+        stats, extraction_confidence, extraction_detail, repeatable_detail.
+    """
+    if not paragraph_indices:
+        return _empty_chapter_pattern("no_paragraph_indices")
+
+    idx_full_texts = idx_full_texts or {}
+
+    # --- paragraph lookup ---
+    para_by_idx: dict[int, dict] = {}
+    for p in structure.get("paragraphs", []):
+        pidx = p.get("idx")
+        if pidx is not None:
+            para_by_idx[pidx] = p
+
+    pi_set = set(paragraph_indices)
+    first_idx = paragraph_indices[0]
+    title_para = para_by_idx.get(first_idx, {})
+    title_role = title_para.get("role", "")
+
+    # --- body paragraphs (title 제외) ---
+    body_indices = [i for i in paragraph_indices[1:] if i in para_by_idx]
+    if not body_indices:
+        return _empty_chapter_pattern("no_body_paragraphs")
+
+    # --- exclusion tracking ---
+    excluded = {"table": 0, "empty": 0}
+    usable_indices = []
+    for idx in body_indices:
+        p = para_by_idx[idx]
+        if p.get("is_tbl_box"):
+            excluded["table"] += 1
+            continue
+        usable_indices.append(idx)
+
+    # --- parent_idx analysis ---
+    parent_outside_region = []
+    parent_coverage = 0
+    for idx in usable_indices:
+        p = para_by_idx[idx]
+        pi = p.get("parent_idx")
+        if pi is not None:
+            parent_coverage += 1
+            if pi not in pi_set:
+                parent_outside_region.append(idx)
+
+    # --- build role-level parent-child relationships ---
+    # For each paragraph, map its role to its parent's role
+    from collections import defaultdict
+
+    role_children: dict[str, set[str]] = defaultdict(set)
+    # Track per-(parent_idx, child_role) → list of child indices (for repeatable)
+    sibling_groups: dict[tuple[int, str], list[int]] = defaultdict(list)
+
+    for idx in usable_indices:
+        p = para_by_idx[idx]
+        child_role = p.get("role", "")
+        pi = p.get("parent_idx")
+        if pi is not None and pi in para_by_idx:
+            parent_role = para_by_idx[pi].get("role", "")
+            if parent_role and child_role and parent_role != child_role:
+                role_children[parent_role].add(child_role)
+            sibling_groups[(pi, child_role)].append(idx)
+
+    # --- repeatable: same role appears 2+ under same parent ---
+    repeatable_roles: set[str] = set()
+    repeatable_detail: dict[str, dict] = {}
+    for (parent_idx, role), indices in sibling_groups.items():
+        if len(indices) >= 2:
+            repeatable_roles.add(role)
+    # Build detail per repeatable role
+    for role in repeatable_roles:
+        groups = [(pi, idxs) for (pi, r), idxs in sibling_groups.items()
+                  if r == role and len(idxs) >= 2]
+        total_count = sum(len(p_list) for p_list in
+                          [idxs for (pi, r), idxs in sibling_groups.items() if r == role])
+        distinct_parents = len([(pi, r) for (pi, r), idxs in sibling_groups.items() if r == role])
+        repeatable_detail[role] = {
+            "source": "parent_sibling",
+            "count": total_count,
+            "distinct_parents": distinct_parents,
+        }
+
+    # --- identify root roles (direct children of title paragraph) ---
+    title_child_roles: list[str] = []
+    title_child_roles_seen: set[str] = set()
+    for idx in usable_indices:
+        p = para_by_idx[idx]
+        if p.get("parent_idx") == first_idx:
+            role = p.get("role", "")
+            if role and role not in title_child_roles_seen:
+                title_child_roles.append(role)
+                title_child_roles_seen.add(role)
+
+    # --- build pattern tree recursively ---
+    def _build_subtree(role: str, visited: set[str] | None = None) -> dict:
+        if visited is None:
+            visited = set()
+        if role in visited:
+            return {"repeatable": role in repeatable_roles, "children": {}}
+        visited = visited | {role}
+        children: dict[str, dict] = {}
+        for child_role in sorted(role_children.get(role, [])):
+            children[child_role] = _build_subtree(child_role, visited)
+        return {
+            "repeatable": role in repeatable_roles,
+            "children": children,
+        }
+
+    local_pattern: dict[str, dict] = {}
+    for root_role in title_child_roles:
+        local_pattern[root_role] = _build_subtree(root_role)
+
+    # --- fallback: if no root roles found via parent_idx, use flat role set ---
+    flat_count_fallback = False
+    if not local_pattern and usable_indices:
+        flat_count_fallback = True
+        role_counts: dict[str, int] = defaultdict(int)
+        for idx in usable_indices:
+            role = para_by_idx[idx].get("role", "")
+            if role and role != title_role:
+                role_counts[role] += 1
+        for role, count in sorted(role_counts.items()):
+            local_pattern[role] = {
+                "repeatable": count >= 2,
+                "children": {},
+            }
+            if count >= 2:
+                repeatable_detail[role] = {
+                    "source": "flat_count_fallback",
+                    "count": count,
+                    "distinct_parents": 0,
+                }
+
+    # --- local catalog: first exemplar per role ---
+    local_catalog: dict[str, dict] = {}
+    role_first_seen: dict[str, bool] = {}
+    role_count: dict[str, int] = defaultdict(int)
+
+    for idx in body_indices:  # include tables in count, exclude from exemplar
+        p = para_by_idx[idx]
+        role = p.get("role", "")
+        if not role or role == title_role:
+            continue
+        role_count[role] += 1
+        if role in role_first_seen:
+            continue
+        role_first_seen[role] = True
+        # exemplar: skip table, skip empty
+        if p.get("is_tbl_box"):
+            local_catalog.setdefault(role, {"exemplar": "(table)", "count": 0})
+            continue
+        text = ""
+        for key in (idx, str(idx)):
+            if key in idx_full_texts:
+                text = str(idx_full_texts[key]).strip()
+                break
+        if not text:
+            local_catalog.setdefault(role, {"exemplar": "(empty)", "count": 0})
+            continue
+        local_catalog[role] = {
+            "exemplar": text[:200],
+            "count": 0,  # filled below
+        }
+    # fill counts
+    for role, count in role_count.items():
+        if role in local_catalog:
+            local_catalog[role]["count"] = count
+
+    # --- stats ---
+    all_roles = set()
+    max_level = 0
+    for idx in body_indices:
+        p = para_by_idx[idx]
+        role = p.get("role", "")
+        if role:
+            all_roles.add(role)
+        lv = p.get("level", 0) or 0
+        if lv > max_level:
+            max_level = lv
+
+    stats = {
+        "role_count": len(all_roles),
+        "max_depth": max_level,
+        "paragraph_count": len(paragraph_indices),
+        "body_paragraph_count": len(body_indices),
+    }
+
+    # --- confidence ---
+    parent_pct = (parent_coverage / len(usable_indices) * 100) if usable_indices else 0
+    confidence_reasons = []
+
+    if parent_pct >= 80:
+        confidence_reasons.append("parent_idx_coverage_high")
+    elif parent_pct >= 50:
+        confidence_reasons.append("parent_idx_coverage_medium")
+    else:
+        confidence_reasons.append("parent_idx_coverage_low")
+
+    if len(all_roles) >= 3:
+        confidence_reasons.append(f"role_count_{len(all_roles)}")
+    elif len(all_roles) >= 1:
+        confidence_reasons.append(f"role_count_low_{len(all_roles)}")
+
+    if not flat_count_fallback and title_child_roles:
+        confidence_reasons.append("tree_built_from_parent_idx")
+    elif flat_count_fallback:
+        confidence_reasons.append("flat_count_fallback_used")
+
+    if parent_pct >= 80 and len(all_roles) >= 3 and not flat_count_fallback:
+        confidence = "high"
+    elif parent_pct >= 50 and len(all_roles) >= 2:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    extraction_detail = {
+        "region_paragraph_count": len(paragraph_indices),
+        "used_for_hierarchy": len(usable_indices),
+        "excluded": excluded,
+        "parent_outside_region_count": len(parent_outside_region),
+        "parent_outside_region_indices": parent_outside_region[:10],
+        "parent_coverage_pct": round(parent_pct, 1),
+        "confidence_reasons": confidence_reasons,
+        "flat_count_fallback": flat_count_fallback,
+    }
+
+    return {
+        "local_pattern": local_pattern,
+        "local_catalog": local_catalog,
+        "local_title_role": title_role,
+        "stats": stats,
+        "extraction_confidence": confidence,
+        "extraction_detail": extraction_detail,
+        "repeatable_detail": repeatable_detail,
+        "fallback_to_dominant": False,
+    }
+
+
+def _empty_chapter_pattern(reason: str) -> dict:
+    """confidence=low empty pattern for fallback."""
+    return {
+        "local_pattern": {},
+        "local_catalog": {},
+        "local_title_role": "",
+        "stats": {"role_count": 0, "max_depth": 0, "paragraph_count": 0, "body_paragraph_count": 0},
+        "extraction_confidence": "low",
+        "extraction_detail": {"fallback_reason": reason},
+        "repeatable_detail": {},
+        "fallback_to_dominant": True,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -10083,6 +10414,271 @@ def compute_region_action_plan(
         },
         "warnings": warnings,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.6-A: Multi-Section Diagnostic
+# ──────────────────────────────────────────────────────────────────────
+
+
+def diagnose_multi_section(hwpx_path: str) -> dict:
+    """
+    HWPX의 모든 section을 관측하여 multi-section analysis/assembly 필요성을 진단.
+
+    section role classification은 하지 않음.
+    layout, content significance, preserve adequacy 관측값만 수집하고
+    gate decision으로 13.7 blocker 여부를 판단.
+
+    Returns:
+        dict with sections, observations, gate_decision.
+    """
+    import zipfile
+    import re
+    from xml.etree import ElementTree as _ET
+
+    try:
+        zf = zipfile.ZipFile(hwpx_path, "r")
+    except Exception as e:
+        return {"error": f"cannot open hwpx: {e}", "section_count": 0}
+
+    with zf:
+        section_names = sorted(
+            n for n in zf.namelist()
+            if "section" in n.lower() and n.endswith(".xml")
+        )
+
+    if len(section_names) <= 1:
+        return {
+            "section_count": len(section_names),
+            "skip_reason": "single_section",
+            "gate_decision": None,
+        }
+
+    sections = []
+    total_doc_paragraphs = 0
+
+    with zipfile.ZipFile(hwpx_path, "r") as zf:
+        for idx, sname in enumerate(section_names):
+            raw_bytes = zf.read(sname)
+            raw = raw_bytes.decode("utf-8", errors="replace")
+            chars = len(raw)
+
+            # Parse XML for accurate counting
+            try:
+                sec_root = _ET.fromstring(raw_bytes)
+            except _ET.ParseError:
+                sec_root = None
+
+            if sec_root is not None:
+                _local_tag = lambda el: el.tag.split("}")[-1] if "}" in el.tag else el.tag
+                # body paragraphs: direct <p> children of root (section element)
+                para_count = sum(
+                    1 for child in sec_root if _local_tag(child) == "p"
+                )
+                # table count: all <tbl> elements (any nesting level)
+                tbl_count = sum(
+                    1 for el in sec_root.iter() if _local_tag(el) == "tbl"
+                )
+            else:
+                # fallback to regex if XML parse fails
+                para_count = len(re.findall(r"<[^>]*\bp\b[^/>]*(?<!/)>", raw))
+                tbl_count = len(re.findall(r"<[^>]*\btbl\b[^/>]*(?<!/)>", raw))
+            total_doc_paragraphs += para_count
+
+            # text preview: extract text from first paragraphs
+            text_preview = _extract_section_text_preview(raw, max_paragraphs=10)
+
+            # layout from secPr > pagePr
+            layout = _extract_section_layout(raw)
+
+            sections.append({
+                "name": sname,
+                "index": idx,
+                "chars": chars,
+                "body_paragraph_count": para_count,
+                "table_count": tbl_count,
+                "text_preview": text_preview,
+                "layout": layout,
+            })
+
+    # --- observations ---
+    # 1. Layout heterogeneity
+    layout_diffs = _compare_section_layouts(sections)
+    layout_homogeneous = len(layout_diffs) == 0
+
+    # 2. Content significance
+    analyzed_sections = [0]  # currently only section0 is analyzed
+    unanalyzed = [s for s in sections if s["index"] not in analyzed_sections]
+    unanalyzed_paras = sum(s["body_paragraph_count"] for s in unanalyzed)
+    unanalyzed_chars = sum(s["chars"] for s in unanalyzed)
+    unanalyzed_pct = (
+        round(unanalyzed_paras / total_doc_paragraphs, 3)
+        if total_doc_paragraphs else 0
+    )
+
+    # 3. Preserve adequacy
+    preserve_assessment = {
+        "method": "13.5_unanalyzed_section_preserve",
+        "preserved_paragraphs": unanalyzed_paras,
+        "preserved_pct_of_document": unanalyzed_pct,
+        "information_loss": "none",
+        "note": (
+            "preserve keeps all original content — "
+            "question is whether some should be generated/modified"
+        ),
+    }
+
+    # --- gate decision ---
+    # Multi-section analysis needed if significant content in unanalyzed
+    content_significant = unanalyzed_paras > 0
+    assembly_needed = not layout_homogeneous or content_significant
+
+    if not layout_homogeneous:
+        priority = "blocker"
+        reasoning = (
+            f"layout differs across sections ({len(layout_diffs)} diffs); "
+            f"{unanalyzed_paras} paragraphs in unanalyzed sections"
+        )
+    elif unanalyzed_pct > 0.3:
+        priority = "blocker"
+        reasoning = (
+            f"{unanalyzed_pct:.0%} of document paragraphs in unanalyzed sections; "
+            "significant content may need generation"
+        )
+    elif unanalyzed_paras > 0:
+        priority = "watch"
+        reasoning = (
+            f"{unanalyzed_paras} paragraphs preserved in unanalyzed sections; "
+            "preserve is safe but may miss generation targets"
+        )
+    else:
+        priority = "later"
+        reasoning = "no unanalyzed sections"
+
+    return {
+        "section_count": len(sections),
+        "sections": sections,
+        "observations": {
+            "layout_heterogeneity": {
+                "homogeneous": layout_homogeneous,
+                "diffs": layout_diffs,
+            },
+            "content_significance": {
+                "analyzed_sections": analyzed_sections,
+                "unanalyzed_sections": [s["index"] for s in unanalyzed],
+                "unanalyzed_total_paragraphs": unanalyzed_paras,
+                "unanalyzed_total_chars": unanalyzed_chars,
+                "unanalyzed_pct_of_document": unanalyzed_pct,
+            },
+            "preserve_adequacy": preserve_assessment,
+        },
+        "gate_decision": {
+            "multi_section_analysis_needed": content_significant,
+            "section_aware_assembly_needed": assembly_needed,
+            "recommendation_priority": priority,
+            "reasoning": reasoning,
+        },
+    }
+
+
+def _extract_section_text_preview(
+    raw_xml: str, max_paragraphs: int = 10
+) -> list[str]:
+    """section XML에서 첫 N 문단의 text를 추출."""
+    import re
+
+    previews: list[str] = []
+    # Find <hp:t> or <t> content
+    # Simple regex approach: find text runs
+    texts = re.findall(r"<[^>]*\bt\b[^/>]*>([^<]*)</[^>]*\bt>", raw_xml)
+    current_text = ""
+    count = 0
+    for t in texts:
+        t = t.strip()
+        if not t:
+            if current_text:
+                previews.append(current_text[:200])
+                current_text = ""
+                count += 1
+                if count >= max_paragraphs:
+                    break
+            continue
+        current_text = (current_text + " " + t).strip() if current_text else t
+
+    if current_text and count < max_paragraphs:
+        previews.append(current_text[:200])
+
+    return previews
+
+
+def _extract_section_layout(raw_xml: str) -> dict:
+    """section XML의 secPr > pagePr에서 layout 정보 추출."""
+    import re
+
+    layout: dict = {"inherited": True}
+
+    # Find pagePr element
+    pagePr_m = re.search(
+        r"<[^>]*\bpagePr\b([^>]*)>(.*?)</[^>]*\bpagePr>",
+        raw_xml, re.DOTALL,
+    )
+    if not pagePr_m:
+        return layout
+
+    layout["inherited"] = False
+    attrs_str = pagePr_m.group(1)
+    inner = pagePr_m.group(2)
+
+    # page size from pagePr attributes
+    w_m = re.search(r'width="(\d+)"', attrs_str)
+    h_m = re.search(r'height="(\d+)"', attrs_str)
+    land_m = re.search(r'landscape="([^"]*)"', attrs_str)
+
+    if w_m:
+        layout["page_width"] = int(w_m.group(1))
+    if h_m:
+        layout["page_height"] = int(h_m.group(1))
+    if land_m:
+        layout["orientation"] = land_m.group(1)
+
+    # margins from <margin> inside pagePr
+    margin_m = re.search(r"<[^>]*\bmargin\b([^/]*)/>", inner)
+    if margin_m:
+        margin_str = margin_m.group(1)
+        for field in ("left", "right", "top", "bottom", "header", "footer", "gutter"):
+            fm = re.search(rf'{field}="(\d+)"', margin_str)
+            if fm:
+                layout[f"margin_{field}"] = int(fm.group(1))
+
+    return layout
+
+
+def _compare_section_layouts(sections: list[dict]) -> list[dict]:
+    """section 간 layout 차이 목록 반환."""
+    if len(sections) < 2:
+        return []
+
+    compare_fields = [
+        "page_width", "page_height", "orientation",
+        "margin_left", "margin_right", "margin_top", "margin_bottom",
+    ]
+
+    ref = sections[0].get("layout", {})
+    diffs: list[dict] = []
+
+    for s in sections[1:]:
+        s_layout = s.get("layout", {})
+        for field in compare_fields:
+            ref_val = ref.get(field)
+            s_val = s_layout.get(field)
+            if ref_val is not None and s_val is not None and ref_val != s_val:
+                diffs.append({
+                    "sections": [0, s["index"]],
+                    "field": field,
+                    "values": [ref_val, s_val],
+                })
+
+    return diffs
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -11411,6 +12007,8 @@ def process_section_fill_result(
     pattern_roles: list | None = None,
     section_pdf_text_len: int = 0,
     shallow_mode: bool = False,
+    override_grammar: dict | None = None,
+    override_root_roles: list[str] | None = None,
 ) -> dict:
     """
     2b LLM 응답을 처리합니다: parse → normalize → validate → fallback → grammar validation.
@@ -11428,6 +12026,8 @@ def process_section_fill_result(
         role_text_types: structure["role_text_types"]
         pattern_roles: 이 chapter 패턴에 사용되는 role 목록
         section_pdf_text_len: source text 길이 (debug용)
+        override_grammar: per-chapter local_pattern에서 변환한 grammar (13.6-B)
+        override_root_roles: per-chapter root roles (13.6-B)
 
     Returns:
         {
@@ -11442,10 +12042,16 @@ def process_section_fill_result(
     raw_items = parse_section_fill_from_llm(llm_response)
     log.info(f"2b[{ch_idx}] 완료: {ch_title} → {len(raw_items)}개 항목")
 
-    # 2. grammar 정보 추출
-    _type_grammar_info = template_grammar.get("per_type", {}).get(ch_type, {})
-    _type_grammar = _type_grammar_info.get("grammar", {})
-    _root_roles = _type_grammar_info.get("root_roles", [])
+    # 2. grammar 정보 추출 — override가 있으면 local grammar 사용
+    if override_grammar and override_root_roles:
+        _type_grammar = override_grammar
+        _root_roles = override_root_roles
+        _grammar_source = "local_pattern_override"
+    else:
+        _type_grammar_info = template_grammar.get("per_type", {}).get(ch_type, {})
+        _type_grammar = _type_grammar_info.get("grammar", {})
+        _root_roles = _type_grammar_info.get("root_roles", [])
+        _grammar_source = "type_grammar_fallback"
 
     # 3. normalize
     _norm_result = normalize_section_items(
@@ -11504,6 +12110,7 @@ def process_section_fill_result(
             "idx": ch_idx,
             "chapter_title": ch_title,
             "chapter_type": ch_type,
+            "validation_grammar_source": _grammar_source,
             "shallow_mode": True,
             "title_injection_skipped_for_shallow": True,
             "pattern_roles": list(pattern_roles) if pattern_roles else [],
@@ -11564,6 +12171,9 @@ def process_section_fill_result(
         "idx": ch_idx,
         "chapter_title": ch_title,
         "chapter_type": ch_type,
+        "validation_grammar_source": _grammar_source,
+        "override_root_roles": override_root_roles if override_grammar else None,
+        "override_grammar_role_count": len(override_grammar) if override_grammar else None,
         "pattern_roles": list(pattern_roles) if pattern_roles else [],
         "section_pdf_text_len": section_pdf_text_len,
         "llm_raw_response": llm_response,
