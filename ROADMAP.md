@@ -3,7 +3,7 @@
 이 파일은 HWPX 파이프라인의 단계별 로드맵입니다.
 각 단계에서 무엇을 했고, 무엇이 남았고, 다른 단계에서 기억해야 할 것이 무엇인지 기록합니다.
 
-최종 수정: 2026-05-13
+최종 수정: 2026-05-13 (rev: 13.7 진단 정정 + chapter-grouped 설계 합의)
 
 ---
 
@@ -28,8 +28,8 @@
 | **13.4b** | **Chapter Template Plan Seed** | **in progress** | template-driven chapter loop, broad source fallback, 2b template context |
 | **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **done** | region action plan + unanalyzed section preserve safety |
 | **13.6** | **Per-Chapter Subtree + Multi-Section/Source Gate** | **done** | B: per-chapter local_pattern→prompt+validation 연결, A: multi-section diagnostic, C: source diagnostic |
-| **13.7a** | **Assembly 수정 (region-first body_split + section-aware)** | **next** | 1a 무변경. body_split을 region-first로, section-aware paragraph 배치 |
-| **13.7b** | **Multi-Section Analysis 확장** | not started | 1a 파이프라인 변경. 모든 section 분석 + document-level merge |
+| **13.7a** | **Chapter-Grouped Assembly + Region-Aware Placement** | **next** | 1a 무변경. `content["chapters"]` 도입으로 chapter boundary를 generation unit으로 보존. flat split path / chapter_trees 파라미터 제거. 자세히는 `docs/13_7_plan.md` (rev). |
+| **13.7b** | **Multi-Section Analysis 확장** | not started | 1a 파이프라인 변경. 모든 section 분석 + document-level merge + chapter object의 (section, region, chapter) 단위 확장 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
 | 15 | Source Evidence / Coverage | not started | source coverage validation — 13.7 이후 |
@@ -61,7 +61,7 @@
   |                         |
   |                    13.6: Per-Chapter Subtree + Gate (done, CC12 해결)
   |                         |
-  |                    13.7a: Assembly 수정 (region-first body_split) ← NEXT
+  |                    13.7a: Chapter-Grouped Assembly + Region-Aware Placement ← NEXT
   |                         |
   |                    13.7b: Multi-Section Analysis 확장 (CC11)
   |                         |
@@ -84,8 +84,9 @@
 - **13.4b는 13 이후** (template-driven chapter loop — template intent flow 보존 최소 안전장치)
 - **13.5는 13.4b 이후** (region action plan + unanalyzed section preserve safety)
 - **13.6 완료** (CC12 해결: per-chapter subtree extraction + local_pattern_override validation, A/C diagnostic으로 13.7 scope 확정)
-- **13.7a는 13.6 이후** (assembly 수정: region-first body_split + section-aware 배치. 1a 무변경)
-- **13.7b는 13.7a 이후** (analysis 확장: 모든 section 1a 분석 + document-level merge [CC11]. source allocation redesign은 watch)
+- **13.7a는 13.6 이후** (chapter-grouped + region-aware placement. content["chapters"] 도입, chapter_trees 흡수, flat split path 제거. 1a 무변경)
+- **13.7b는 13.7a 이후** (analysis 확장: 모든 section 1a 분석 + document-level merge [CC11] + chapter object section_id에 실 값. source allocation redesign은 watch)
+- **13.7 진단 정정** (2026-05-13 rev): 이전 가설 "민원인 title=level=1 → level=0 paragraph scan 실패"는 코드와 불일치. 실제 원인은 `_chapter_title_roles`가 1d title_role(role_cluster_3, 부정확)에 의존. 13.7a-A1으로 의존 자체 제거. 1d 정확도는 A0 measurement 후 별도 stage 후보.
 - **14-table과 14는 13.7 이후, 병렬 가능**
 - **15는 13.7 이후** (allocation 안정 후 coverage validation)
 - **Assembly 고도화는 독립** (tree→layout, section-aware append. 다른 단계와 의존 없음)
@@ -819,23 +820,10 @@ target_unit_plan에서 attachment region (101p)이 section[1,2,4]에 분포. 현
 
 ---
 
-## Stage 13.7: Source-to-Template Allocation Redesign — not started
+## Stage 13.7: ~~Source-to-Template Allocation Redesign~~ (deprecated — 옛 정의)
 
-### 목적
-
-13.6에서 선택한 방식으로 source→chapter allocation을 개선한다.
-
-### 후보 방향 (13.6에서 확정)
-
-1. source_blocks를 generation input으로 연결 (13.1 deferred → 여기서 소비)
-2. chapter title 기반 split 보완 또는 대체
-3. source concentration / empty chapter / coverage 지표 도입
-4. allocation 결과를 debug에 기록 (17_source_allocation.json)
-
-### 의존성
-
-- 13.6 decision gate 결정 후 진입
-- 15 (source coverage)의 선행 — allocation이 안정돼야 coverage 검증이 의미 있음
+> **DEPRECATED (2026-05-13 rev)**: 이 stage 정의는 13.6 결정 이전의 옛 정의. 13.6에서 source allocation은 watch로 보류 결정. 13.7은 13.7a (chapter-grouped assembly) + 13.7b (multi-section analysis)로 재정의됨. 현재 정의는 위 단계 요약 표(line 31~32) 및 `docs/13_7_plan.md` (rev) 참조.
+> source allocation redesign은 13.7b 이후 별도 stage 후보 (B7 source diagnostic schema 확장 결과에 따라 판단).
 
 ---
 
