@@ -3,7 +3,7 @@
 이 파일은 HWPX 파이프라인의 단계별 로드맵입니다.
 각 단계에서 무엇을 했고, 무엇이 남았고, 다른 단계에서 기억해야 할 것이 무엇인지 기록합니다.
 
-최종 수정: 2026-05-13 (rev: 13.7 진단 정정 + chapter-grouped 설계 합의)
+최종 수정: 2026-05-13 (13.7a 완료)
 
 ---
 
@@ -28,7 +28,7 @@
 | **13.4b** | **Chapter Template Plan Seed** | **in progress** | template-driven chapter loop, broad source fallback, 2b template context |
 | **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **done** | region action plan + unanalyzed section preserve safety |
 | **13.6** | **Per-Chapter Subtree + Multi-Section/Source Gate** | **done** | B: per-chapter local_pattern→prompt+validation 연결, A: multi-section diagnostic, C: source diagnostic |
-| **13.7a** | **Chapter-Grouped Assembly + Region-Aware Placement** | **next** | 1a 무변경. `content["chapters"]` 도입으로 chapter boundary를 generation unit으로 보존. flat split path / chapter_trees 파라미터 제거. 자세히는 `docs/13_7_plan.md` (rev). |
+| **13.7a** | **Chapter-Grouped Assembly + Region-Aware Placement** | **done** | content["chapters"] 도입, chapter_trees 파라미터 제거, flat chapter split path 제거, build_chapter_trees dead code 삭제, empty chapter region preserve(안전장치), A0 measurement. 3개 양식 검증 통과 (민원인 tree_available=true, 조달청 3/3 ok, CC7 shallow 불변, invariant 0). |
 | **13.7b** | **Multi-Section Analysis 확장** | not started | 1a 파이프라인 변경. 모든 section 분석 + document-level merge + chapter object의 (section, region, chapter) 단위 확장 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
@@ -61,7 +61,7 @@
   |                         |
   |                    13.6: Per-Chapter Subtree + Gate (done, CC12 해결)
   |                         |
-  |                    13.7a: Chapter-Grouped Assembly + Region-Aware Placement ← NEXT
+  |                    13.7a: Chapter-Grouped Assembly + Region-Aware Placement (done)
   |                         |
   |                    13.7b: Multi-Section Analysis 확장 (CC11)
   |                         |
@@ -84,9 +84,55 @@
 - **13.4b는 13 이후** (template-driven chapter loop — template intent flow 보존 최소 안전장치)
 - **13.5는 13.4b 이후** (region action plan + unanalyzed section preserve safety)
 - **13.6 완료** (CC12 해결: per-chapter subtree extraction + local_pattern_override validation, A/C diagnostic으로 13.7 scope 확정)
-- **13.7a는 13.6 이후** (chapter-grouped + region-aware placement. content["chapters"] 도입, chapter_trees 흡수, flat split path 제거. 1a 무변경)
+- **13.7a 완료** (chapter-grouped + region-aware placement. content["chapters"] 도입, chapter_trees 흡수, flat split path 제거, build_chapter_trees dead code 삭제. 1a 무변경. 검증 결과는 아래 "13.7a 완료 근거" 참조)
 - **13.7b는 13.7a 이후** (analysis 확장: 모든 section 1a 분석 + document-level merge [CC11] + chapter object section_id에 실 값. source allocation redesign은 watch)
 - **13.7 진단 정정** (2026-05-13 rev): 이전 가설 "민원인 title=level=1 → level=0 paragraph scan 실패"는 코드와 불일치. 실제 원인은 `_chapter_title_roles`가 1d title_role(role_cluster_3, 부정확)에 의존. 13.7a-A1으로 의존 자체 제거. 1d 정확도는 A0 measurement 후 별도 stage 후보.
+
+---
+
+## 13.7a 완료 근거 (2026-05-13)
+
+**커밋**: `43da156` feat(hwpx): 13.7a chapter-grouped assembly + A0 measurement
+**계획서**: `docs/13_7_plan.md` (rev)
+
+### 검증 결과 (3개 양식)
+
+| 양식 | path | tree_available | chapter/region | ok/empty/fail | assembly | invariant | A0-1 | 비고 |
+|------|------|----------------|-----------------|---------------|----------|-----------|------|------|
+| 민원인 | `chapter_objects` | **True** | 8/8 | 3/5/0 | 20/0 | 0 | mismatch (role_cluster_4 missing — 예측 적중) | section1~4 preserve 86+4+1+193 paragraphs, remove_per_section[0]=66, secpr_warning=0 |
+| 조달청 | `chapter_objects` | True | 3/3 | **3/0/0** | 42/0 | 0 | 일치 (1d 정확) | local_pattern_override 유지, grammar pass 3/0 |
+| CC7 | `flat_legacy` | False | 0/0 | 0/0/0 | 24/0 | 0 | no_plan (shallow) | shallow path 불변, 08b_shallow_generation=ok |
+
+### 13.7a에서 해결된 것
+
+- 민원인 `tree_available=false` (chapter_count_match=false, body_split_count=0) → True
+- flat content["body"] → split 복원 구조 자체 폐기 (chapter는 generation unit으로 보존)
+- assemble의 1d `chapter_types.title_role` 의존 제거 (chapter route는 chapter object의 title_item.role union 사용)
+- `fallback_role_cluster_*` sibling_group_key 꼬임 (민원인 0건 / 조달청 0건)
+- `build_chapter_trees`(hwpx_analyzer.py:11967) dead code 삭제
+- chapter_trees 파라미터 → chapter object 안으로 흡수
+
+### 13.7a 범위 밖 (별도 stage 후보)
+
+- **민원인 empty 5/8** (Ⅲ/Ⅳ/Ⅴ/Ⅶ/Ⅷ): 2b LLM 응답 12~17자 → parse=0. source 충분(41,272자). source allocation 또는 2b 안정화 별도 stage 후보.
+- **D11 dual-use title/slot concat**: production HWPX 출력 텍스트 직접 확인 미실시. 파일 입수 시 검사, 미입수 시 watch 유지.
+- **1d `chapter_types.title_role` 정확도**: 양식 2개 중 1개 mismatch(민원인). evidence 부족 — 양식 추가 후 1d-fix stage 우선순위 판단.
+- **13.7b multi-section analysis**: 다음 큰 단계.
+- **section1~4 preserve**: "13.7a 한정 안전장치"로 표기. 13.7b에서 분석 기반 판단으로 전환.
+- **empty chapter region 전체 preserve**: "13.7a 한정 안전장치"로 표기. 13.7b 이후 정밀화.
+
+### A0 measurement 결과 (병행, debug-only)
+
+**A0-1 1d title_role 신뢰도** (양식별 mismatch):
+- 조달청: `chapter_types.title_role = ['role_cluster_4']` == `local_title_roles = ['role_cluster_4']` (정확)
+- 민원인: `chapter_types.title_role = ['role_cluster_3', 'role_cluster_19']` ≠ `local_title_roles = ['role_cluster_4']` (mismatch, missing_from_1d_set=['role_cluster_4'])
+- CC7: shallow → status=no_plan (측정 대상 외)
+- → 1d 신뢰도 양식별 편차 확인. 13.7a-A1으로 assemble의 1d 의존은 해소, 1d 자체 수정은 별도 stage.
+
+**A0-2 empty chapter 원인** (민원인):
+- ok chapters (Ch0/1/5): llm_len 384/1247/1109, items 2/6/6
+- empty chapters (Ch2/3/4/6/7): llm_len 12~17, raw_items=0, stage="parse"
+- → LLM 응답 부재가 원인. source 충분 (41,272자 동일), grammar reject 0건.
 - **14-table과 14는 13.7 이후, 병렬 가능**
 - **15는 13.7 이후** (allocation 안정 후 coverage validation)
 - **Assembly 고도화는 독립** (tree→layout, section-aware append. 다른 단계와 의존 없음)
