@@ -162,6 +162,94 @@ async def trigger_incremental_crawl(
     return {"status": "queued", "mode": "incremental", "sites": len(SITES)}
 
 
+####################
+# Reingest — URL list 받아서 BFS 없이 강제 재처리
+####################
+
+
+class ReingestRequest(BaseModel):
+    urls: list[str]
+
+
+@router.post("/reingest")
+async def reingest_urls(
+    body: ReingestRequest,
+    request: Request,
+    user=Depends(get_admin_user),
+):
+    """URL list 를 받아 BFS 없이 _process_url 강제 재호출.
+
+    배경: 4/13~4/28 풀크롤 시기 BGE M3 8192 토큰 limit 으로 Qdrant 적재 실패한
+    페이지들 (PG status=success 인데 Qdrant 청크 0). content_hash 가 PG 에 남아
+    있어서 mode=full 로 다시 돌려도 unchanged 처리됨. 그러므로 content_hash 를
+    NULL reset 후 _process_url 강제 호출.
+
+    crawler_sites.py 에 site_code 정의 없으면 (시군구 등) PG 의 메타 (institution,
+    category) 기반 stub site_config 구성.
+    """
+    from urllib.parse import urlparse
+    from open_webui.tasks.crawler import _process_url
+    from open_webui.tasks.crawler_sites import get_site
+
+    results = {"ok": 0, "failed": 0, "skipped_not_in_pg": 0, "by_status": {}}
+
+    sem = asyncio.Semaphore(5)  # 동시 처리 제한 — embedding 서버 보호
+
+    async def _one(url: str):
+        async with sem:
+            existing = CrawledPages.get_by_url(url)
+            if not existing:
+                results["skipped_not_in_pg"] += 1
+                return
+
+            # site_config — 정의된 것 우선, 없으면 PG 메타 기반 stub.
+            site_config = get_site(existing.site_code)
+            if site_config is None:
+                parsed = urlparse(url)
+                base = f"{parsed.scheme}://{parsed.netloc}"
+                site_config = {
+                    "code": existing.site_code,
+                    "name": existing.institution or existing.site_code,
+                    "base_url": base,
+                    "contact": {},
+                    "default_category": existing.category or "기타",
+                }
+
+            # content_hash NULL reset → _process_url 이 changed 로 인식하도록.
+            try:
+                CrawledPages.upsert(
+                    url=url,
+                    site_code=existing.site_code,
+                    institution=existing.institution or "",
+                    category=existing.category or "",
+                    title=existing.title or "",
+                    content_hash=None,
+                    http_etag=None,
+                    http_last_modified=None,
+                    status="pending",
+                    chunks_count=0,
+                    content_changed=False,
+                )
+            except Exception as e:
+                log.warning(f"reingest reset failed {url}: {e}")
+
+            try:
+                status_str = await _process_url(request, site_config, url, mode="full")
+            except Exception as e:
+                log.warning(f"reingest _process_url failed {url}: {e}")
+                results["failed"] += 1
+                return
+
+            results["by_status"][status_str] = results["by_status"].get(status_str, 0) + 1
+            if status_str in ("new", "updated"):
+                results["ok"] += 1
+            else:
+                results["failed"] += 1
+
+    await asyncio.gather(*(_one(u) for u in body.urls))
+    return results
+
+
 @router.post("/trigger/site/{code}")
 async def trigger_site_crawl(
     code: str,
