@@ -182,6 +182,8 @@ python-hwpx의 `doc.paragraphs`는 모든 section을 순회한다. 현재 sectio
 4. lightweight 결과가 section의 heading/target region/본문 구조를 **안정적으로 복원하지 못하면 사용하지 않는다**. 불완전한 lightweight 결과를 억지로 merge하면 document-level structure가 망가진다.
 5. 13.7b의 목표는 **토큰 비용 최소화가 아니라 multi-section 문서 구조를 정확히 이해하는 것**이다. 비용 최적화는 정확도를 해치지 않는 범위에서만 적용한다.
 6. section3(빈 페이지, 1p)처럼 content가 실질적으로 없는 section은 lightweight로 충분하다. 기준은 section index가 아니라 **관측된 content significance**.
+7. **section별 독립 1a 호출(A)이 정확도 baseline**이다. 비용 최적화 전략(B, C)은 이 baseline과 비교하여 구조 손실이 없을 때만 허용한다.
+8. lightweight를 쓰더라도 **최소 기준**이 있다: section별 heading tree, paragraph-level role/level 후보, table presence, target region 가능성, section-local hierarchy signal. 단순 문단 수/text preview만으로 generation 대상 여부를 판단하지 않는다.
 
 #### B3. Document-level structure merge
 
@@ -210,12 +212,34 @@ section별 분석 결과를 하나의 document-level structure로 통합.
 - 조달청 single-section regression 없음
 - cache schema 호환 (기존 cache invalidation 또는 migration)
 
+### section1~4 preserve의 위치
+
+13.7a에서 section1~4 preserve는 **한정적 임시 안전장치**다. 1a가 section0만 분석하므로 section1~4를 건드릴 수 없어서 보존하는 것이지, "보존이 정답"이라는 결론이 아니다.
+
+13.7b 이후에는 preserve를 기본 결론으로 삼지 않는다. section별 분석 결과에 따라 generation/update/preserve를 다시 판단한다. 특히 section4("제2장")처럼 본문성 content가 있는 section은 분석 후 generation 대상으로 전환될 수 있다.
+
+### Source allocation watch의 의미
+
+source allocation redesign은 13.7 구현 범위 밖이지만, watch는 **무시가 아니라 evidence 축적**이다.
+
+13.7b에서 section별 generation target이 늘어나면 source coverage 부족과 allocation mismatch를 구분할 수 있는 evidence가 자연스럽게 쌓인다. 13.6-C의 source_diagnostic이 이미 있으므로 별도 구현 없이 기존 debug를 유지하면 된다. blocker 승격 판단은 이 evidence를 보고 한다.
+
+### 14-table 착수 판단
+
+13.7b 완료 시 아래가 가능한지 확인:
+- template table이 어느 section/region/chapter에 속하는지 추적 가능한가
+- table의 위치(section/region)가 document-level structure에 포함되는가
+
+table을 preserve할지 cell filling 대상으로 볼지의 판단은 14-table 자체의 설계 범위다. 13.7b에서는 table의 위치 추적까지만 확인.
+
 ### 완료 조건 (13.7b)
 
-- multi-section 분석 결과가 document-level structure에 통합
-- section-aware target_unit_plan 동작
-- 13.7a의 section-aware assembly와 연동
-- 14-table 진행 가능 여부 최종 판단
+1. multi-section 분석 결과가 document-level structure에 통합
+2. section-aware target_unit_plan 동작
+3. 13.7a의 section-aware assembly와 연동
+4. section1~4 preserve가 "임시"에서 "분석 기반 판단"으로 전환
+5. template table의 section/region 위치가 추적 가능한지 확인 → 14-table 착수 판단
+6. source allocation watch evidence가 유지되는지 확인
 
 ---
 
