@@ -421,7 +421,7 @@ empty chapter (`status="empty"`):
 
 ## 12. 검증 실행 절차
 
-- 사용자가 직접 웹에서 양식 실행 (토큰 비용).
+- 사용자가 직접 웹에서 양식 실행 (claude는 사용자 웹 UI 로그인 토큰 없음).
 - claude는 debug 파일 분석:
   - `/tmp/hwpx_debug/10_assemble_result.json` → rewrite_alignment, chapter object alignment
   - `/tmp/hwpx_debug/08_2b_generation_by_chapter.json` → chapter object empty 원인
