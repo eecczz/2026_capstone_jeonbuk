@@ -585,18 +585,33 @@
       title.className = "src-title";
       title.textContent = "📍 출처";
       box.appendChild(title);
-      sources.slice(0, 5).forEach(s => {
-        const row = document.createElement("div");
-        const name = (s.metadata && (s.metadata.institution || s.metadata.name)) || s.source || s.name || "출처";
-        const url = (s.metadata && (s.metadata.url || s.metadata.homepage_url)) || "";
-        const phone = (s.metadata && s.metadata.contact_phone) || "";
-        row.innerHTML =
-          `<strong>${escapeHtml(name)}</strong>` +
-          (phone ? ` · ☎ ${escapeHtml(phone)}` : "") +
-          (url ? ` · <a href="${escapeHtml(url)}" target="_blank" rel="noopener">바로가기</a>` : "");
-        box.appendChild(row);
+      // backend 구조: { source: {id, name, type, legacy}, document: [...], metadata: [{...},...] }
+      // metadata 는 chunk 별 리스트. URL 단위 dedup 후 최대 5개 표시.
+      const seen = new Set();
+      let shown = 0;
+      sources.forEach(s => {
+        const metas = Array.isArray(s.metadata) ? s.metadata : (s.metadata ? [s.metadata] : []);
+        for (const m of metas) {
+          if (shown >= 5) break;
+          if (!m || typeof m !== "object") continue;
+          const url = m.url || m.source || "";
+          const dedupKey = url || (m.title || m.name || "");
+          if (!dedupKey || seen.has(dedupKey)) continue;
+          seen.add(dedupKey);
+          shown++;
+          const name = m.title || m.name || m.institution || (s.source && s.source.name) || "출처";
+          const inst = m.institution || "";
+          const phone = m.contact_phone || "";
+          const row = document.createElement("div");
+          row.innerHTML =
+            `<strong>${escapeHtml(String(name))}</strong>` +
+            (inst && inst !== name ? ` <span class="src-inst">${escapeHtml(String(inst))}</span>` : "") +
+            (phone ? ` · ☎ ${escapeHtml(String(phone))}` : "") +
+            (url ? ` · <a href="${escapeHtml(String(url))}" target="_blank" rel="noopener">바로가기</a>` : "");
+          box.appendChild(row);
+        }
       });
-      msg.appendChild(box);
+      if (shown > 0) msg.appendChild(box);
     }
 
     chatEl.appendChild(msg);
@@ -627,6 +642,11 @@
     // 정책: 답변 음성은 백엔드 Qwen3-TTS (audio_url) 만 사용.
     // 브라우저 내장 SpeechSynthesis 는 사용하지 않는다 (사람 목소리/도청 톤 통일).
     // audio_url 이 없으면 무음으로 텍스트만 표시.
+    // 안전망: 텍스트 모드 (uiMode !== "voice") 에서는 어떤 경로로 호출되든 재생 안 함.
+    if (typeof uiMode !== "undefined" && uiMode !== "voice") {
+      stopAllAudio();
+      return;
+    }
     stopAllAudio();
     stopMediaRecorderFully();
     stopMicLoop();
