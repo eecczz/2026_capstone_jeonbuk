@@ -544,17 +544,26 @@ B0b 결과 + 4개 정책 합의 기록. B3 진입 전 사용자+claude review po
 
 ## 7. 구현 항목 (B1~B7)
 
-### B1. `extract_section_xml` → 모든 section 반환
+### B1. `extract_all_sections_xml()` 신규 함수 (backward compat 패턴)
 
-현재: `section_names[0]`만. 변경: 전체 section XML list.
+기존 `extract_section_xml` signature 유지 (`-> str`, section0만 반환).
+신규 함수 `extract_all_sections_xml()`이 모든 section의 `(name, xml)`
+tuple list 반환 (sorted by section name, document-global 순서).
 
-호출자 영향:
-- `analyze_hwpx` / `analyze_template_full` 등 — multi-section input 수용
-- DB tool — section list 받음
+기존 함수는 `extract_all_sections_xml()[0][1]`을 반환하는 backward
+compat wrapper로 변경. `analyze_hwpx`, legacy `files.py` endpoint 등
+single-section 호출자는 영향 0.
 
-영향 함수:
-- `extract_section_xml` (hwpx_analyzer.py)
-- 1a~1f entry 함수들 (section별 호출 가능하게 시그니처 변경)
+**trade-off**: 계획서 원안 (signature 변경)은 `analyze_hwpx` →
+`files.py` 3곳 (line 1055/1518/1714) legacy endpoint 영향. backward
+compat 패턴이 regression 위험 작음, 13.7c가 chapter route를 신규
+path로 추가한 패턴과 일관.
+
+영향:
+- `hwpx_analyzer.py`: 새 함수 추가 + 기존 함수 wrapper화
+- DB tool: 영향 없음 (B2에서 새 함수 호출자 추가)
+- `files.py` legacy endpoint: 영향 없음
+- 1a~1f entry 함수들: B2에서 시그니처 multi-section 수용 (현 stage 무관)
 
 ### B2. Section별 Full 1a Baseline
 
@@ -1156,7 +1165,7 @@ B3 merge 후 chapter object section_id 실 값에서 자연 채워짐. 13.7c ref
 | 3 | B0a 양식 실행 (3개) | - | AI 호출 0 |
 | 4 | **B0a 결과 검토 + `13_7b_b0a_observation.json` review_decisions 기록 (사용자 + claude review point)** | - | - |
 | 5 | **B6 Cache schema bump (B1 진입 직전)** | 작음 | - |
-| 6 | B1 (extract_section_xml 확장) | 중 | - |
+| 6 | B1 (extract_all_sections_xml 신규, backward compat) | 작음 | - |
 | 7 | B2 (section별 full 1a baseline + section_role_proposal AI sub-step) | 중 | **민원인 5배** |
 | 8 | B2 양식 실행 (3개) | - | 토큰 비용 |
 | 9 | B0b (post-1a measurement + review artifact schema) | 작음 | AI 호출 0 |

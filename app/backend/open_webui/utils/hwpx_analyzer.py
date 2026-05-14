@@ -68,13 +68,37 @@ REMOVE_ATTRS = {
 
 def extract_section_xml(hwpx_source) -> str:
     """
-    HWPX 파일에서 Contents/section0.xml을 추출합니다.
+    HWPX 파일에서 첫 번째 section XML을 추출합니다 (backward compat).
+
+    13.7b B1: section0만 처리하는 기존 호출자 (analyze_hwpx, legacy
+    files.py endpoint)를 위해 유지. multi-section 처리는
+    extract_all_sections_xml() 사용.
 
     Args:
         hwpx_source: 파일 경로(str), bytes, 또는 file-like object
 
     Returns:
-        section0.xml의 원본 문자열
+        첫 번째 section XML의 원본 문자열
+    """
+    sections = extract_all_sections_xml(hwpx_source)
+    if not sections:
+        raise ValueError("HWPX 파일에서 section XML을 찾을 수 없습니다")
+    return sections[0][1]
+
+
+def extract_all_sections_xml(hwpx_source) -> list[tuple[str, str]]:
+    """
+    HWPX 파일에서 모든 section XML을 추출합니다 (13.7b B1).
+
+    section name으로 sorted된 list. document-global 순서 보장 (section0,
+    section1, ...). multi-section 1a baseline (B2)에서 사용.
+
+    Args:
+        hwpx_source: 파일 경로(str), bytes, 또는 file-like object
+
+    Returns:
+        list of (section_name, section_xml_text) tuples.
+        빈 list (section 없으면).
     """
     if isinstance(hwpx_source, str):
         with open(hwpx_source, "rb") as f:
@@ -85,15 +109,14 @@ def extract_section_xml(hwpx_source) -> str:
         data = hwpx_source.read()
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        # section0.xml 찾기 (경로가 다를 수 있음)
-        section_names = [
+        section_names = sorted(
             n for n in zf.namelist()
             if "section" in n.lower() and n.endswith(".xml")
+        )
+        return [
+            (n, zf.read(n).decode("utf-8"))
+            for n in section_names
         ]
-        if not section_names:
-            raise ValueError("HWPX 파일에서 section XML을 찾을 수 없습니다")
-
-        return zf.read(section_names[0]).decode("utf-8")
 
 
 def lighten_xml(xml_str: str) -> str:
@@ -5023,7 +5046,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 4
+CACHE_SCHEMA_VERSION = 5  # 13.7b: B1 multi-section schema 변경 직전 bump
 
 
 def compute_template_hash(template_path: str) -> str:
