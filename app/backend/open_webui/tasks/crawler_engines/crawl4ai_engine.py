@@ -69,12 +69,28 @@ async def load_url(url: str, *, verify_ssl: bool = False) -> list[Document]:
         return []
 
     meta = result.metadata or {}
+    site_title = (meta.get("title") or "").strip()
+    # 도청 사이트들은 <title> 이 사이트 default 만 잡힘 ("전북특별자치도", "정읍시청"
+    # 등). 진짜 게시물 제목은 markdown 본문 첫 #### 또는 ### 헤더에 있음.
+    # 본문 헤더가 더 구체적이면 우선 사용. 단 너무 짧으면 (5자 미만) site_title 폴백.
+    body_title = ""
+    import re as _re
+    m = _re.search(r"^#{2,5}\s+(.+?)$", md, _re.M)
+    if m:
+        cand = m.group(1).strip()
+        # 마크다운 emphasis / 링크 제거
+        cand = _re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cand)
+        cand = _re.sub(r"[\*_`]", "", cand).strip()
+        if 5 <= len(cand) <= 200:
+            body_title = cand
+    title = body_title if (body_title and body_title != site_title) else site_title
     return [
         Document(
             page_content=md,
             metadata={
                 "source": url,
-                "title": meta.get("title") or "",
+                "title": title,
+                "site_title": site_title,
                 "language": meta.get("language") or "ko",
                 "loader": "crawl4ai",
                 "status_code": result.status_code,

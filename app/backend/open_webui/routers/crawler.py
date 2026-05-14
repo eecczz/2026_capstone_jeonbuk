@@ -224,8 +224,33 @@ async def reingest_urls(
             # 인코딩된 URL 그대로 보내고, 여기서 fetch 시점에 unescape.
             existing = CrawledPages.get_by_url(url)
             if not existing:
-                results["skipped_not_in_pg"] += 1
-                return
+                # PG 미등록 URL — 도메인으로 site_code 추론 후 minimal stub row 생성.
+                from urllib.parse import urlparse as _up
+                host = _up(url).netloc.lower()
+                inferred_site = None
+                if "jeonbuk.go.kr" in host and "tour" not in host and "policy" not in host and "stat" not in host:
+                    inferred_site = "jeonbuk_main"
+                if inferred_site is None:
+                    results["skipped_not_in_pg"] += 1
+                    return
+                try:
+                    CrawledPages.upsert(
+                        url=url, site_code=inferred_site,
+                        institution="전북특별자치도",
+                        category="행정",
+                        title="",
+                        content_hash=None,
+                        http_etag=None,
+                        http_last_modified=None,
+                        status="pending",
+                        chunks_count=0,
+                        content_changed=False,
+                    )
+                    existing = CrawledPages.get_by_url(url)
+                except Exception as e:
+                    log.warning(f"reingest stub create failed {url}: {e}")
+                    results["skipped_not_in_pg"] += 1
+                    return
             # fetch + metadata 에 사용할 URL — HTML entity 풀어진 형태.
             url_for_fetch = _html.unescape(url)
 
