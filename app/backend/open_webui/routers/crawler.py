@@ -214,7 +214,7 @@ async def reingest_urls(
             except Exception:
                 pass
 
-    sem = asyncio.Semaphore(15)  # SQL session pool + Qdrant insert 부하 균형
+    sem = asyncio.Semaphore(30)  # SQL session pool + Qdrant insert 부하 균형
 
     import html as _html
 

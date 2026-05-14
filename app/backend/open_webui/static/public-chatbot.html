@@ -430,6 +430,9 @@
 
   function _enqueuePlayback(arrayBuf) {
     if (!pcAudioCtx) return;
+    // 텍스트 모드면 backend 가 보낸 audio frame 무시 (voice → text 토글 후 잔여
+    // frame 들이 들어와 재생되는 케이스 차단).
+    if (typeof uiMode !== "undefined" && uiMode !== "voice") return;
     const i16 = new Int16Array(arrayBuf);
     if (!i16.length) return;
     const f32 = new Float32Array(i16.length);
@@ -535,10 +538,18 @@
     } else {
       modeToggleBtn.textContent = "🎤 음성";
       headerHintEl.textContent = "텍스트로 질문해 주세요";
-      // 음성 모드에서 텍스트 모드로 — WebSocket 정리
-      stopVoicePipecat();
-      if (typeof stopMicLoop === "function") stopMicLoop();
+      // 음성 모드 → 텍스트 모드 전환: 모든 음성 활동 완전 정지
+      stopVoicePipecat();                                    // Pipecat WebSocket + mic stream
+      if (typeof stopMicLoop === "function") stopMicLoop();  // VAD RAF tick 중단
+      if (typeof stopMediaRecorderFully === "function") stopMediaRecorderFully();  // PCM ring buffer clear
+      if (typeof stopAllAudio === "function") stopAllAudio();  // 진행 중 TTS 재생 중단
       if (typeof stopReply === "function") stopReply();
+      // 마이크 stream 도 명시적으로 stop (track 해제 → 브라우저 mic LED 끔)
+      if (typeof micStream !== "undefined" && micStream) {
+        try { micStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+      }
+      pausedByUser = true;
+      if (typeof setMode === "function") setMode("idle", "텍스트 모드", "텍스트로 질문해 주세요");
     }
   }
 
@@ -912,6 +923,13 @@
   }
 
   async function submitVoice(blob) {
+    // 안전망: 텍스트 모드면 /voice-chat 호출 자체를 막음.
+    // (마이크 listening 이 어떤 경로로 남아 있어도 음성 응답 흐름 안 탐)
+    if (typeof uiMode !== "undefined" && uiMode !== "voice") {
+      stopMicLoop();
+      stopMediaRecorderFully();
+      return;
+    }
     sendBtn.disabled = true;
     try {
       const form = new FormData();
@@ -973,6 +991,10 @@
 
   // ─────────── Orb 탭: pause/resume + speaking 중지 ───────────
   async function onOrbTap() {
+    // 텍스트 모드면 Orb 탭으로 음성 listening 시작 안 함.
+    if (typeof uiMode !== "undefined" && uiMode !== "voice") {
+      return;
+    }
     if (mode === "speaking") {
       stopAllAudio();
       enterCooldownThenListen();

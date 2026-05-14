@@ -223,6 +223,8 @@ def _build_rag_processor(request: Request, websocket=None):
         TTSSpeakFrame,
         VADUserStartedSpeakingFrame,
         VADUserStoppedSpeakingFrame,
+        BotStartedSpeakingFrame,
+        BotStoppedSpeakingFrame,
     )
     from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
@@ -239,6 +241,44 @@ def _build_rag_processor(request: Request, websocket=None):
             await websocket.send_text(_json.dumps({"type": kind, "text": text}))
         except Exception as e:
             log.debug(f"voice_ws caption send failed: {e}")
+
+    class _BargeInBroadcaster(FrameProcessor):
+        """봇 발화 중 사용자 VAD started 감지 시 Pipecat broadcast_interruption() 호출.
+
+        Pipecat 1.1 의 정통 interruption 패턴:
+        1) `broadcast_interruption()` → InterruptionTaskFrame upstream push
+        2) Pipeline 이 받아 → InterruptionFrame downstream push
+        3) 모든 FrameProcessor 의 process_task 가 자동 cancel + recreate
+        4) 우리 RAG processor 의 async for LLM loop 도 CancelledError 받고 종료
+
+        VAD started 가 봇 발화 중이 아닐 때 (사용자 첫 발화 / 연속 발화 사이) 는 무시 —
+        false-positive interruption 방지. BotStartedSpeakingFrame / BotStoppedSpeakingFrame
+        으로 봇 발화 상태 추적.
+
+        이 processor 는 VAD 와 RAG 사이에 배치 → RAG 의 LLM loop 에 의존 안 함.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self._bot_speaking: bool = False
+
+        async def process_frame(self, frame, direction):  # type: ignore[override]
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, BotStartedSpeakingFrame):
+                self._bot_speaking = True
+                log.info("[voice_ws] bot started speaking")
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                self._bot_speaking = False
+                log.info("[voice_ws] bot stopped speaking")
+            elif isinstance(frame, VADUserStartedSpeakingFrame) and self._bot_speaking:
+                log.info("[voice_ws] barge-in detected — broadcasting interruption")
+                try:
+                    await self.broadcast_interruption()
+                except Exception as e:
+                    log.warning(f"[voice_ws] broadcast_interruption failed: {e}")
+
+            await self.push_frame(frame, direction)
 
     class _AudioStartCaptionObserver(FrameProcessor):
         """첫 TTSAudioRawFrame 도착 시점에 자막 reply 를 push.
@@ -440,7 +480,8 @@ def _build_rag_processor(request: Request, websocket=None):
 
     caption_observer = _AudioStartCaptionObserver()
     rag = JeonbukRAGProcessor(request, caption_observer)
-    return rag, caption_observer
+    barge_in = _BargeInBroadcaster()
+    return rag, caption_observer, barge_in
 
 
 @router.websocket("/voice-ws")
@@ -560,7 +601,7 @@ async def voice_ws(websocket: WebSocket):
         language=Language.KO_KR,
     )
 
-    rag, caption_observer = _build_rag_processor(owi_request_proxy, websocket=websocket)
+    rag, caption_observer, barge_in = _build_rag_processor(owi_request_proxy, websocket=websocket)
 
     # Pipecat OpenAITTSService 는 voice 를 OpenAI 표준 화이트리스트
     # (alloy/echo/nova/...) 로 강제 검증해서 "Sohee" 입력 시 KeyError 가 난다.
@@ -648,11 +689,15 @@ async def voice_ws(websocket: WebSocket):
         [
             transport.input(),
             vad_processor,
+            # barge-in: VAD started + 봇 발화 중일 때 broadcast_interruption() 호출.
+            # InterruptionFrame downstream → 모든 processor task cancel + recreate
+            # → RAG 의 LLM loop 도 CancelledError 받고 종료. STT 위에 둬서 RAG
+            # 가 LLM await 중이어도 동작.
+            barge_in,
             stt,
             rag,
             tts,
             # TTS 와 transport 사이 — 첫 audio chunk 흐를 때 자막 reply push.
-            # 음성과 자막 동시 시작 (commit 3c0c0de 시점 검증된 fix).
             caption_observer,
             transport.output(),
         ]
