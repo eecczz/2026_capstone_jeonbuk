@@ -10682,6 +10682,132 @@ def _compare_section_layouts(sections: list[dict]) -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 13.7b-B0a: Pre-1a Section Census (debug-only, AI 호출 없음)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def extract_section_census(hwpx_path: str) -> dict:
+    """
+    13.7b B0a: pre-1a section census (debug-only, AI 호출 0).
+
+    모든 section의 basic property를 측정. B2 (full 1a baseline) 진입 비용 추정
+    + B3 설계 evidence + section_role_proposal AI sub-step input.
+
+    docs/13_7b_plan.md §5.5 schema. review_decisions는 빈 상태로 두고
+    B0a review point에서 사용자+claude가 채움.
+    """
+    import zipfile
+    import re
+    from xml.etree import ElementTree as _ET
+
+    try:
+        zf = zipfile.ZipFile(hwpx_path, "r")
+    except Exception as e:
+        return {"error": f"cannot open hwpx: {e}", "section_count": 0}
+
+    with zf:
+        section_names = sorted(
+            n for n in zf.namelist()
+            if "section" in n.lower() and n.endswith(".xml")
+        )
+
+    if not section_names:
+        return {"error": "no section xml found", "section_count": 0}
+
+    sections: list[dict] = []
+    paragraph_offset = 0
+    total_paragraphs = 0
+
+    with zipfile.ZipFile(hwpx_path, "r") as zf:
+        for idx, sname in enumerate(section_names):
+            raw_bytes = zf.read(sname)
+            raw_str = raw_bytes.decode("utf-8", errors="replace")
+            section_xml_size = len(raw_bytes)
+
+            try:
+                sec_root = _ET.fromstring(raw_bytes)
+            except _ET.ParseError:
+                sec_root = None
+
+            if sec_root is not None:
+                _lt = lambda el: el.tag.split("}")[-1] if "}" in el.tag else el.tag
+                para_count = sum(
+                    1 for child in sec_root if _lt(child) == "p"
+                )
+                tbl_count = sum(
+                    1 for el in sec_root.iter() if _lt(el) == "tbl"
+                )
+            else:
+                para_count = len(re.findall(r"<[^>]*\bp\b[^/>]*(?<!/)>", raw_str))
+                tbl_count = len(re.findall(r"<[^>]*\btbl\b[^/>]*(?<!/)>", raw_str))
+
+            previews = _extract_section_text_preview(raw_str, max_paragraphs=10)
+            first_preview = previews[0] if previews else ""
+            last_preview = (
+                previews[-1] if len(previews) > 1
+                else (previews[0] if previews else "")
+            )
+
+            layout = _extract_section_layout(raw_str)
+
+            # secPr element tag detection (namespace 무관)
+            secpr_present = bool(re.search(r"<[^>:\s]*:?secPr\b", raw_str))
+
+            if para_count > 0:
+                idx_start = paragraph_offset
+                idx_end = paragraph_offset + para_count - 1
+                idx_range = [idx_start, idx_end]
+            else:
+                idx_range = [paragraph_offset, paragraph_offset - 1]
+
+            paragraph_offset += para_count
+            total_paragraphs += para_count
+
+            sections.append({
+                "section_id": idx,
+                "name": sname,
+                "paragraph_count": para_count,
+                "table_count": tbl_count,
+                "section_xml_size": section_xml_size,
+                "layout": layout,
+                "first_paragraph_preview": first_preview,
+                "last_paragraph_preview": last_preview,
+                "secpr_present": secpr_present,
+                "idx_range": idx_range,
+            })
+
+    section_paragraph_share: dict[int, float] = {}
+    estimated_b2_token_cost: dict[int, int] = {}
+    for s in sections:
+        sid = s["section_id"]
+        section_paragraph_share[sid] = (
+            round(s["paragraph_count"] / total_paragraphs, 3)
+            if total_paragraphs else 0
+        )
+        # rough proxy: section_xml_size bytes / 4 ≈ input tokens.
+        # reference metric only (§2.8) — B2 비용 추정용. 자동 결정 X.
+        estimated_b2_token_cost[sid] = s["section_xml_size"] // 4
+
+    return {
+        "section_count": len(sections),
+        "sections": sections,
+        "reference_metrics": {
+            "total_paragraphs": total_paragraphs,
+            "section_paragraph_share": section_paragraph_share,
+            "estimated_b2_token_cost_input": estimated_b2_token_cost,
+        },
+        "review_decisions": {
+            "sections_to_analyze_in_b2": [],
+            "sections_to_skip_in_b2": [],
+            "skip_reason": {},
+            "reviewer": "user+claude",
+            "b2_entry_authorized": False,
+            "reasoning": "",
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 13.7a-0: Title Role Consistency Measurement (debug-only, A0-1)
 # ──────────────────────────────────────────────────────────────────────
 
