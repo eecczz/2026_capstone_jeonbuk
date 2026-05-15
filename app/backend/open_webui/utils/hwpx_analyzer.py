@@ -9112,6 +9112,24 @@ def write_stage_debug_files(
         _skip("17_section_role_proposals.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 18. Merge feasibility (13.7b B0b, debug-only)
+    # ═══════════════════════════════════════════════════════════════
+    _mf_dbg = debug_payload.get("merge_feasibility")
+    if _mf_dbg:
+        _write("18_merge_feasibility.json", _mf_dbg)
+    else:
+        _skip("18_merge_feasibility.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 13_7b_b0b_observation.json — review artifact (사용자+claude review 후 채움)
+    # ═══════════════════════════════════════════════════════════════
+    _b0b_artifact = debug_payload.get("b0b_observation_artifact")
+    if _b0b_artifact:
+        _write("13_7b_b0b_observation.json", _b0b_artifact)
+    else:
+        _skip("13_7b_b0b_observation.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
@@ -12413,6 +12431,476 @@ def summarize_section_role_proposals(
         "proposals": proposals,
         "validation_results": validation_results or [],
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.7b B0b: Post-1a Merge Feasibility Measurement
+#
+# B2.1.2 결과 (section_results)와 B0a 결과 (section_census)를 받아
+# section별 비교 metric을 측정. B3 merge 정책 결정 evidence.
+#
+# 원칙:
+# - 측정만. 정책 결정 X (B0b review에서 사용자+claude 합의)
+# - section 간 role_cluster equivalence를 code가 확정하지 않음
+# - chapter_types / marker_policy document-level 통합 X
+# - cross-section parent는 Level 1 (debug only) — Level 2/3은 별도 stage
+# - 모든 수치는 reference metric (§2.8)
+# 참조: docs/13_7b_plan.md §6 / §8 / §10
+# ──────────────────────────────────────────────────────────────────────
+
+
+def detect_cross_section_parent_violations(
+    section_results: dict,
+) -> dict:
+    """13.7b B0b Level 1: cross-section parent reference 검출 (debug-only).
+
+    section_results 각 paragraph의 parent_idx가 section-local 범위를
+    벗어나는 경우를 찾는다. detect만, validation fail X (Level 3은 별도).
+
+    docs/13_7b_plan.md §10.1 / §10.4 schema.
+
+    Returns:
+        {
+          "cross_section_parent_violations": [{...}, ...],
+          "cross_section_parent_violation_count": int,
+          # Level 2 분류 (a/b/c)는 B0b review에서 사용자+claude 합의 후 채움.
+          "cross_section_parent_classifications": {
+              "a_out_of_range": [],
+              "b_section_break_ambiguous": [],
+              "c_legitimate_continuation_candidate": [],
+          }
+        }
+    """
+    violations: list[dict] = []
+
+    if not isinstance(section_results, dict):
+        return {
+            "cross_section_parent_violations": [],
+            "cross_section_parent_violation_count": 0,
+            "cross_section_parent_classifications": {
+                "a_out_of_range": [],
+                "b_section_break_ambiguous": [],
+                "c_legitimate_continuation_candidate": [],
+            },
+        }
+
+    for sid_key, sr in section_results.items():
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        structure = (sr or {}).get("structure", {}) if isinstance(sr, dict) else {}
+        paragraphs = structure.get("paragraphs", []) if isinstance(structure, dict) else []
+        idx_texts = (sr or {}).get("idx_texts", {}) if isinstance(sr, dict) else {}
+
+        if not isinstance(paragraphs, list):
+            continue
+        local_count = len(paragraphs)
+
+        for local_idx, p in enumerate(paragraphs):
+            if not isinstance(p, dict):
+                continue
+            parent_idx = p.get("parent_idx")
+            if parent_idx is None:
+                continue
+            if not isinstance(parent_idx, int):
+                continue
+            if 0 <= parent_idx < local_count:
+                continue
+            # out of section-local bounds — cross-section reference 후보
+            actual_section = "out_of_range"
+            if parent_idx >= 0:
+                for other_sid_key, other_sr in section_results.items():
+                    try:
+                        other_sid_int = int(other_sid_key)
+                    except (TypeError, ValueError):
+                        other_sid_int = other_sid_key
+                    if other_sid_int == sid_int:
+                        continue
+                    _other_paras = (other_sr or {}).get("structure", {}).get("paragraphs", []) if isinstance(other_sr, dict) else []
+                    if isinstance(_other_paras, list) and 0 <= parent_idx < len(_other_paras):
+                        actual_section = other_sid_int
+                        break
+            text_preview = ""
+            if isinstance(idx_texts, dict):
+                _t = idx_texts.get(str(p.get("idx", local_idx)), "")
+                if isinstance(_t, str):
+                    text_preview = _t[:80]
+
+            violations.append({
+                "section_id": sid_int,
+                "section_local_paragraph_idx": local_idx,
+                "reported_parent_idx": parent_idx,
+                "expected_parent_section": sid_int,
+                "actual_parent_section": actual_section,
+                "text_preview": text_preview,
+                "role": p.get("role"),
+            })
+
+    return {
+        "cross_section_parent_violations": violations,
+        "cross_section_parent_violation_count": len(violations),
+        "cross_section_parent_classifications": {
+            "a_out_of_range": [],
+            "b_section_break_ambiguous": [],
+            "c_legitimate_continuation_candidate": [],
+        },
+    }
+
+
+def _compare_section_role_clusters(section_results: dict) -> dict:
+    """section별 role_cluster fingerprint 비교 (reference metric only).
+
+    docs/13_7b_plan.md §8.3 — A 옵션(document_reclustering) vs B 옵션
+    (section_local_mapping) 결정 evidence. code 자동 결정 X.
+    """
+    per_section: dict = {}
+    all_clusters: set[str] = set()
+
+    for sid_key, sr in section_results.items():
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        structure = (sr or {}).get("structure", {}) if isinstance(sr, dict) else {}
+        paragraphs = structure.get("paragraphs", []) if isinstance(structure, dict) else []
+        cluster_counts: dict[str, int] = {}
+        if isinstance(paragraphs, list):
+            for p in paragraphs:
+                if not isinstance(p, dict):
+                    continue
+                r = p.get("role")
+                if isinstance(r, str) and r:
+                    cluster_counts[r] = cluster_counts.get(r, 0) + 1
+                    all_clusters.add(r)
+        per_section[sid_int] = {
+            "distinct_cluster_count": len(cluster_counts),
+            "cluster_counts": cluster_counts,
+            "top_clusters": sorted(
+                cluster_counts.items(), key=lambda kv: kv[1], reverse=True
+            )[:8],
+        }
+
+    # pairwise Jaccard (reference metric only)
+    sids = sorted(per_section.keys(), key=lambda x: (isinstance(x, str), x))
+    pairwise_jaccard: list[dict] = []
+    for i in range(len(sids)):
+        for j in range(i + 1, len(sids)):
+            a = set(per_section[sids[i]]["cluster_counts"].keys())
+            b = set(per_section[sids[j]]["cluster_counts"].keys())
+            if not a and not b:
+                jac = None
+            else:
+                jac = round(len(a & b) / len(a | b), 3) if (a | b) else None
+            pairwise_jaccard.append({
+                "section_a": sids[i],
+                "section_b": sids[j],
+                "shared_clusters_count": len(a & b),
+                "union_clusters_count": len(a | b),
+                "jaccard_similarity": jac,
+            })
+
+    return {
+        "per_section": per_section,
+        "total_distinct_clusters": len(all_clusters),
+        "pairwise_jaccard": pairwise_jaccard,
+    }
+
+
+def _compare_section_chapter_types(section_results: dict) -> dict:
+    """section별 chapter_types 비교 (reference metric only).
+
+    docs/13_7b_plan.md §8.4 — X/Y/Z 옵션 결정 evidence.
+    """
+    per_section: dict = {}
+    all_type_keys: set[str] = set()
+    title_roles_per_section: dict = {}
+
+    for sid_key, sr in section_results.items():
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        chapter_types = (sr or {}).get("chapter_types", {}) if isinstance(sr, dict) else {}
+        type_keys = list(chapter_types.keys()) if isinstance(chapter_types, dict) else []
+        title_roles: list = []
+        for ct_val in (chapter_types.values() if isinstance(chapter_types, dict) else []):
+            if not isinstance(ct_val, dict):
+                continue
+            tr = ct_val.get("title_role")
+            if isinstance(tr, str):
+                title_roles.append(tr)
+            elif isinstance(tr, list):
+                for x in tr:
+                    if isinstance(x, str):
+                        title_roles.append(x)
+        per_section[sid_int] = {
+            "type_count": len(type_keys),
+            "type_keys": type_keys,
+            "title_roles": sorted(set(title_roles)),
+        }
+        title_roles_per_section[sid_int] = set(title_roles)
+        all_type_keys.update(type_keys)
+
+    # title_role overlap (pairwise)
+    sids = sorted(per_section.keys(), key=lambda x: (isinstance(x, str), x))
+    title_role_overlap: list[dict] = []
+    for i in range(len(sids)):
+        for j in range(i + 1, len(sids)):
+            a = title_roles_per_section.get(sids[i], set())
+            b = title_roles_per_section.get(sids[j], set())
+            title_role_overlap.append({
+                "section_a": sids[i],
+                "section_b": sids[j],
+                "shared_title_roles_count": len(a & b),
+                "section_a_title_roles": sorted(a),
+                "section_b_title_roles": sorted(b),
+            })
+
+    return {
+        "per_section": per_section,
+        "total_distinct_type_keys": len(all_type_keys),
+        "title_role_overlap": title_role_overlap,
+    }
+
+
+def _compare_section_marker_policy(section_results: dict) -> dict:
+    """section별 marker_policy_1f 비교 (reference metric only).
+
+    docs/13_7b_plan.md §8.5.
+    """
+    per_section: dict = {}
+    all_roles_with_policy: set[str] = set()
+
+    for sid_key, sr in section_results.items():
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        mp = (sr or {}).get("marker_policy_1f", {}) if isinstance(sr, dict) else {}
+        if not isinstance(mp, dict):
+            mp = {}
+        per_role_types: dict[str, str] = {}
+        types_present: set[str] = set()
+        for role, policy in mp.items():
+            if not isinstance(policy, dict):
+                continue
+            t = policy.get("type")
+            if isinstance(t, str):
+                per_role_types[role] = t
+                types_present.add(t)
+                all_roles_with_policy.add(role)
+        per_section[sid_int] = {
+            "role_count": len(mp),
+            "per_role_types": per_role_types,
+            "types_present": sorted(types_present),
+        }
+
+    # 같은 role이 section 간 다른 type을 가지는 conflict 후보 검출 (debug only)
+    role_type_conflicts: list[dict] = []
+    for role in sorted(all_roles_with_policy):
+        types_seen: dict = {}
+        for sid_int, section_info in per_section.items():
+            t = section_info["per_role_types"].get(role)
+            if t:
+                types_seen.setdefault(t, []).append(sid_int)
+        if len(types_seen) > 1:
+            role_type_conflicts.append({
+                "role": role,
+                "types_to_sections": {t: sids for t, sids in types_seen.items()},
+            })
+
+    return {
+        "per_section": per_section,
+        "role_type_conflict_count": len(role_type_conflicts),
+        "role_type_conflicts": role_type_conflicts,
+    }
+
+
+def _compare_section_format_rules(section_results: dict) -> dict:
+    """section별 format_rules 비교 (reference metric only).
+
+    docs/13_7b_plan.md §8.6 — 차이 없으면 document-level 통합, 있으면
+    section-aware. B0b review에서 합의.
+    """
+    per_section: dict = {}
+    for sid_key, sr in section_results.items():
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        structure = (sr or {}).get("structure", {}) if isinstance(sr, dict) else {}
+        fr = structure.get("format_rules", {}) if isinstance(structure, dict) else {}
+        per_section[sid_int] = {
+            "rule_count": len(fr) if isinstance(fr, dict) else 0,
+            "rule_keys": sorted(fr.keys()) if isinstance(fr, dict) else [],
+        }
+    return {"per_section": per_section}
+
+
+def _measure_section_paragraph_count_consistency(
+    section_results: dict,
+    section_census: dict,
+) -> dict:
+    """1a 분석 paragraph 수 vs section_xml paragraph 수 정합성.
+
+    docs/13_7b_plan.md §6.2 — 1a가 section_xml의 paragraph를 전부 분석했는지.
+    """
+    census_by_sid: dict = {}
+    if isinstance(section_census, dict):
+        for s in section_census.get("sections", []) or []:
+            if isinstance(s, dict):
+                census_by_sid[s.get("section_id")] = s
+
+    per_section: list = []
+    for sid_key, sr in section_results.items():
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        structure = (sr or {}).get("structure", {}) if isinstance(sr, dict) else {}
+        analyzed_count = len(structure.get("paragraphs", [])) if isinstance(structure, dict) else 0
+        census_entry = census_by_sid.get(sid_int, {}) or {}
+        census_count = census_entry.get("paragraph_count")
+        per_section.append({
+            "section_id": sid_int,
+            "analyzed_paragraph_count": analyzed_count,
+            "census_paragraph_count": census_count,
+            "diff": (
+                analyzed_count - census_count
+                if isinstance(census_count, int) else None
+            ),
+        })
+    return {"per_section": per_section}
+
+
+def measure_merge_feasibility(
+    section_results: dict,
+    section_census: dict | None,
+) -> dict:
+    """13.7b B0b: section-aware merge 가능성 측정 (debug-only).
+
+    docs/13_7b_plan.md §6.
+
+    측정만. 정책 결정 X (B0b review에서 사용자+claude 합의).
+    모든 수치는 reference metric (§2.8). hard rule X.
+
+    Returns:
+        {
+          "section_role_cluster_comparison": {...},
+          "section_chapter_types_comparison": {...},
+          "section_marker_policy_comparison": {...},
+          "section_format_rules_comparison": {...},
+          "section_paragraph_count_consistency": {...},
+          "cross_section_parent": {...},  # Level 1 only
+          "13_7c_re_run_feasibility": {...},
+        }
+    """
+    if not isinstance(section_results, dict):
+        return {"error": "section_results not dict"}
+
+    role_cluster_cmp = _compare_section_role_clusters(section_results)
+    chapter_types_cmp = _compare_section_chapter_types(section_results)
+    marker_policy_cmp = _compare_section_marker_policy(section_results)
+    format_rules_cmp = _compare_section_format_rules(section_results)
+    paragraph_count_cmp = _measure_section_paragraph_count_consistency(
+        section_results, section_census or {}
+    )
+    cross_section_parent = detect_cross_section_parent_violations(section_results)
+
+    # 13.7c re-run feasibility — section별 chapter_types에서 chapter 후보 수 추정
+    new_chapter_candidates: dict = {}
+    for sid_key, sr in section_results.items():
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        ct = (sr or {}).get("chapter_types", {}) if isinstance(sr, dict) else {}
+        # chapter_types[type].root_roles에서 root_role을 가진 paragraph 카운트가 chapter 후보 수
+        root_roles_per_type: dict = {}
+        for ct_key, ct_val in (ct.items() if isinstance(ct, dict) else []):
+            if isinstance(ct_val, dict):
+                rr = ct_val.get("root_roles", [])
+                if isinstance(rr, list):
+                    root_roles_per_type[ct_key] = rr
+        paragraphs = (sr or {}).get("structure", {}).get("paragraphs", []) if isinstance(sr, dict) else []
+        # paragraph 중 root_role를 가진 것 카운트 (per type)
+        root_paragraph_counts: dict = {}
+        for type_key, root_roles in root_roles_per_type.items():
+            cnt = sum(
+                1 for p in paragraphs
+                if isinstance(p, dict) and p.get("role") in root_roles
+            )
+            root_paragraph_counts[type_key] = cnt
+        new_chapter_candidates[sid_int] = {
+            "chapter_types": list(root_roles_per_type.keys()),
+            "root_paragraph_counts_per_type": root_paragraph_counts,
+        }
+
+    return {
+        "section_role_cluster_comparison": role_cluster_cmp,
+        "section_chapter_types_comparison": chapter_types_cmp,
+        "section_marker_policy_comparison": marker_policy_cmp,
+        "section_format_rules_comparison": format_rules_cmp,
+        "section_paragraph_count_consistency": paragraph_count_cmp,
+        "cross_section_parent": cross_section_parent,
+        "13_7c_re_run_feasibility": {
+            "new_chapter_candidates": new_chapter_candidates,
+            "note": (
+                "section별 root_role paragraph count. 13.7c re-run 시 chapter 수 확장 후보 "
+                "(B3.2 document-level seed regenerate 입력). code가 chapter 추가 결정 X — review/B3 정책."
+            ),
+        },
+    }
+
+
+def build_b0b_observation_artifact(
+    merge_feasibility: dict,
+    section_role_proposals_summary: dict | None = None,
+) -> dict:
+    """13.7b B0b: `13_7b_b0b_observation.json` artifact 구성.
+
+    docs/13_7b_plan.md §6.5 — review_decisions는 빈 상태로 둠.
+    B0b review point에서 사용자+claude가 4정책 합의 후 채움:
+    - role_clustering_strategy: A (document_level_reclustering) | B (section_local_mapping)
+    - chapter_types_merge_strategy: X | Y | Z
+    - marker_policy_merge_strategy: section_aware | document_level
+    - section_placement_strategy_per_proposal: 각 section을 Case A/B/C/D 매핑
+    """
+    artifact = {
+        "merge_feasibility_metrics": {
+            "section_role_cluster_comparison": merge_feasibility.get(
+                "section_role_cluster_comparison", {}
+            ),
+            "section_chapter_types_comparison": merge_feasibility.get(
+                "section_chapter_types_comparison", {}
+            ),
+            "section_marker_policy_comparison": merge_feasibility.get(
+                "section_marker_policy_comparison", {}
+            ),
+            "section_format_rules_comparison": merge_feasibility.get(
+                "section_format_rules_comparison", {}
+            ),
+            "section_paragraph_count_consistency": merge_feasibility.get(
+                "section_paragraph_count_consistency", {}
+            ),
+        },
+        "cross_section_parent": merge_feasibility.get("cross_section_parent", {}),
+        "13_7c_re_run_feasibility": merge_feasibility.get("13_7c_re_run_feasibility", {}),
+        "section_role_proposals_summary": section_role_proposals_summary or {},
+        "review_decisions": {
+            "role_clustering_strategy": "",
+            "chapter_types_merge_strategy": "",
+            "marker_policy_merge_strategy": "",
+            "section_placement_strategy_per_proposal": [],
+            "reasoning": "",
+            "counter_evidence": [],
+            "unresolved_ambiguity": [],
+            "reviewer": "user+claude",
+            "b3_entry_authorized": False,
+        },
+    }
+    return artifact
 
 
 # ──────────────────────────────────────────────────────────────────────
