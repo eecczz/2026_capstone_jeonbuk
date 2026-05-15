@@ -668,6 +668,34 @@ threshold는 reference metric으로 hard rule X. B0b review point에서 사용�
 
 **detail granularity (slot fill / subtree mix)는 양식 evidence 누적 후 별도 stage.** 13.7b 초기는 default 보수적 동작만.
 
+#### B5.2 Table-dominant section policy (evidence-driven preserve)
+
+**원칙**: B2에서는 table-dominant section도 분석 skip 안 함. 모든 section은 1a~1f 분석 대상. B5/generation 단계에서 보수적 preserve 결정은 evidence-driven.
+
+**B2.1.2 / B2.2 단계**:
+- table 많거나 표만 있는 section도 1a~1f 분석 실행
+- table count / paragraph count로 분석 skip 결정 X
+- 분석 결과는 section_results에 그대로 보관
+
+**B5 / generation 단계 (table-dominant section preserve 판단)**:
+- evidence-driven preserve 근거 (debug 기록):
+  - `table_content_unavailable` — table cell content 읽지 못함
+  - `table_dominant` — section의 content가 거의 table 안에만 있음
+  - `insufficient_table_evidence` — table 구조 evidence 부족
+- 위 evidence가 있으면 해당 section/region을 generation 대상에서 제외, preserve 적용
+- evidence는 chapter object / region 결과 `_debug`에 attach
+
+**금지**:
+- "table count >= N이면 skip" 같은 numeric hard gate (원칙 §2.8)
+- "특정 section만 table-dominant로 미리 분류" (원칙 22 — AI 판단 + evidence)
+- table 중심 section을 분석 skip (원칙 5 — multi-section section-aware)
+
+**재판단 시점**:
+- table cell filling (별도 stage, Stage 24)이 들어오면 table-dominant section preserve 정책 재검토
+- table content analysis가 가능해지면 generation 대상 확장 검토
+
+**근거**: 13.7c가 source_gap에서 보수적 preserve로 간 패턴과 일관. table content는 현재 cell-level read/fill 미지원이므로 generation 시 hallucination 위험 높음. evidence-driven preserve로 안전 처리하되, evidence 자체는 1a 분석 결과(paragraph/table 비율, table content sparsity 등)에서 자연 도출.
+
 ### B6. Cache schema bump — **B1 진입 직전**
 
 - `cache_schema_version` bump (예: v4 → v5)
@@ -1202,6 +1230,8 @@ B3 merge 후 chapter object section_id 실 값에서 자연 채워짐. 13.7c ref
 | Source slice (chapter별 source 추출) | 14단계 또는 별도 stage |
 | Coverage validation | 15 |
 | Large-region replacement detail granularity (slot fill / subtree mix) | 13.7b 초기는 default 보수적 동작만. detail은 양식 evidence 누적 후 |
+| Table count numeric hard gate (table count >= N으로 skip 판단) | 원칙 §2.8 + B5.2 evidence-driven preserve로 대체 |
+| Table-dominant section을 1a~1f 분석 대상에서 제외 | 원칙 §2.5 multi-section section-aware. B2.1.2는 모든 section 분석. preserve 판단은 B5 |
 | section index 또는 role_cluster 번호 하드코딩 | 원칙 2 |
 | code의 "충돌 크기" 자체 판단 | 원칙 §2.2 원칙 11. AI ambiguity / low confidence / 구조 위반만 preserve fallback |
 
