@@ -2225,8 +2225,10 @@ def assemble_hwpx_hybrid(
             # 13.7b: chapter title placeholder fallback —
             # chapter title role이 outer exemplars에 없으면 (section N 전용 role)
             # chapter_anchor element 자체를 exemplar로 deepcopy 시도.
-            # placeholder는 chapter title 다음 첫 body item (single paragraph)이므로
-            # title role의 paragraph style을 빌려 쓰는 게 의미적으로 가까움.
+            # 13.7b fix: exemplars[role] 캐싱 X — 캐싱하면 같은 role의 placeholder들이
+            # 모두 첫 chapter anchor 사용. 각 placeholder가 자기 chapter anchor 사용해야.
+            # 단 _set_cloned_element_text가 chapter title element에서 text 교체 보장 안 됨 →
+            # manual text fallback도 함께.
             _ci_for_role = _chapter_idx_lookup.get(bi_idx, -1) if _chapter_idx_lookup else -1
             _section_n_fallback = False
             if (
@@ -2236,12 +2238,20 @@ def assemble_hwpx_hybrid(
             ):
                 _anchor_for_role = chapter_anchors[_ci_for_role]
                 if _anchor_for_role is not None:
-                    exemplars[role] = _anchor_for_role  # title element를 placeholder exemplar로
-                    role_is_table_box[role] = False  # title은 table box X
+                    # 임시 한 chapter용 exemplar — exemplars[role]에 캐싱 X (그러면 다른 chapter도 같은 element 사용)
+                    # 대신 role을 unique key로 (예: f"{role}__ci{_ci_for_role}") 임시 저장 또는
+                    # 그냥 standard path 진입 시 매번 anchor lookup.
+                    # 가장 단순: exemplars[unique_key]에 chapter별 분리 저장.
+                    _per_chapter_role_key = f"{role}__ci{_ci_for_role}"
+                    if _per_chapter_role_key not in exemplars:
+                        exemplars[_per_chapter_role_key] = _anchor_for_role
+                        role_is_table_box[_per_chapter_role_key] = False
+                    # role을 unique key로 교체 — standard path가 그 unique key로 lookup
+                    role = _per_chapter_role_key
                     _section_n_fallback = True
                     log.info(
-                        f"[13.7b] role '{role}' not in outer exemplars — chapter_anchor "
-                        f"fallback (ci={_ci_for_role}). text='{text[:40]}'"
+                        f"[13.7b] role '{item.get('role')}' not in outer exemplars — chapter_anchor "
+                        f"fallback (ci={_ci_for_role}, unique_key={_per_chapter_role_key}). text='{text[:40]}'"
                     )
             if not _section_n_fallback:
                 errors.append(f"unknown role '{role}', skipping: {text[:50]}")

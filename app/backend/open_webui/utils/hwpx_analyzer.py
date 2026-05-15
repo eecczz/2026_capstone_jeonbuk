@@ -12945,14 +12945,22 @@ def build_b0b_observation_artifact(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def compute_section_offsets(section_results: dict) -> dict:
+def compute_section_offsets(
+    section_results: dict,
+    section_xml_paragraph_counts: dict | None = None,
+) -> dict:
     """13.7b section-local generation-lite: document-global offset per section.
 
-    section_results[N]의 paragraph 수를 누적해 offset 계산.
-    section_offset[N] = sum(section_results[k].paragraph_count for k < N).
+    section_xml_paragraph_counts가 있으면 census 기준 (assembly의
+    _section_top_level_paragraphs idx와 일치). 없으면 1a analyzed count fallback
+    (단 매핑 깨질 위험 — 1a paragraph 누락 영향).
 
     light_xml의 _top_level_paragraphs ordering이 section_id 순서라는 가정
     (B1 extract_all_sections_xml sorted name 결과).
+
+    Args:
+        section_results: section별 1a 결과
+        section_xml_paragraph_counts: {section_id: top_level_p_count} (census 기준)
 
     Returns:
         {section_id: document_global_offset} dict
@@ -12968,17 +12976,121 @@ def compute_section_offsets(section_results: dict) -> dict:
         except (TypeError, ValueError):
             sid_int = sid_key
         offsets[sid_int] = cumulative
-        sr = section_results.get(sid_key) or {}
-        struct = sr.get("structure", {}) if isinstance(sr, dict) else {}
-        paras = struct.get("paragraphs", []) if isinstance(struct, dict) else []
-        cumulative += len(paras) if isinstance(paras, list) else 0
+        if section_xml_paragraph_counts and sid_int in section_xml_paragraph_counts:
+            cumulative += section_xml_paragraph_counts[sid_int]
+        else:
+            sr = section_results.get(sid_key) or {}
+            struct = sr.get("structure", {}) if isinstance(sr, dict) else {}
+            paras = struct.get("paragraphs", []) if isinstance(struct, dict) else []
+            cumulative += len(paras) if isinstance(paras, list) else 0
     return offsets
+
+
+def _build_1a_to_xml_p_idx_mapping(
+    idx_texts: dict,
+    section_xml_paragraph_texts: list,
+) -> dict:
+    """13.7b: 1a paragraph idx → section_xml top-level p idx 매핑.
+
+    1a가 일부 paragraph를 누락한 경우 (paragraph_count_consistency.diff < 0),
+    1a idx와 section_xml top-level p idx 사이에 shift 발생. 이를 text 매칭으로
+    보정. 매칭 안 되면 1a idx 그대로 fallback (부정확).
+
+    Args:
+        idx_texts: section_results[N].idx_texts (1a paragraph idx → text)
+        section_xml_paragraph_texts: section_xml의 top-level p text 순서대로
+
+    Returns:
+        {1a_idx: xml_p_idx} dict
+    """
+    if not isinstance(idx_texts, dict) or not section_xml_paragraph_texts:
+        return {}
+
+    def _normalize(s: str) -> str:
+        return " ".join((s or "").split())
+
+    xml_norm = [_normalize(t) for t in section_xml_paragraph_texts]
+
+    sorted_ai_idx = sorted(
+        int(k) for k in idx_texts.keys() if str(k).isdigit()
+    )
+
+    mapping: dict = {}
+    xml_pos = 0
+    for ai_idx in sorted_ai_idx:
+        target = _normalize(idx_texts.get(str(ai_idx), ""))
+        if not target:
+            # 빈 1a paragraph는 mapping 생략 (matching 시 noise)
+            mapping[ai_idx] = ai_idx  # fallback
+            continue
+
+        # forward search from xml_pos
+        found_idx = -1
+        # exact match 우선
+        for j in range(xml_pos, len(xml_norm)):
+            if xml_norm[j] == target:
+                found_idx = j
+                break
+        # exact 안 되면 prefix/substring fallback (양식 marker 차이 흡수)
+        if found_idx < 0:
+            for j in range(xml_pos, len(xml_norm)):
+                if not xml_norm[j]:
+                    continue
+                if (
+                    xml_norm[j].startswith(target[:20])
+                    or target.startswith(xml_norm[j][:20])
+                ):
+                    found_idx = j
+                    break
+
+        if found_idx >= 0:
+            mapping[ai_idx] = found_idx
+            xml_pos = found_idx + 1
+        else:
+            # 매칭 실패 → 1a idx 그대로 (부정확). debug용 fallback.
+            mapping[ai_idx] = ai_idx
+
+    return mapping
+
+
+def extract_section_xml_paragraph_texts(hwpx_path: str, section_name: str) -> list:
+    """13.7b: section_xml의 top-level p element text 추출 (mapping 입력용).
+
+    section_xml top-level p 순서대로 text list.
+    """
+    import zipfile
+    import xml.etree.ElementTree as _ET
+
+    def _lt(el):
+        return el.tag.split("}")[-1] if "}" in el.tag else el.tag
+
+    def _get_text(elem):
+        parts = []
+        for t in elem.iter():
+            if _lt(t) == "t" and t.text:
+                parts.append(t.text)
+        return "".join(parts).strip()
+
+    try:
+        with zipfile.ZipFile(hwpx_path, "r") as zf:
+            raw = zf.read(section_name)
+    except Exception:
+        return []
+
+    try:
+        root = _ET.fromstring(raw)
+    except _ET.ParseError:
+        return []
+
+    top_p = [c for c in root if _lt(c) == "p"]
+    return [_get_text(p) for p in top_p]
 
 
 def extract_section_chapter_list(
     section_id: int,
     section_result: dict,
     section_offset: int,
+    ai_to_xml_idx_mapping: dict | None = None,
 ) -> dict:
     """13.7b section-local generation-lite: section-local chapter list 추출.
 
@@ -12989,10 +13101,15 @@ def extract_section_chapter_list(
     이 함수는 section ≠ 0 만 사용. section 0은 기존 13.4b
     extract_chapter_template_plan_seed 경로 유지 (regression 최소화).
 
+    13.7b fix: ai_to_xml_idx_mapping이 있으면 1a paragraph idx → section_xml
+    top-level p idx로 변환. 1a 누락 paragraph 영향 보정. 없으면 1a idx 그대로
+    (assembly anchor mapping 부정확 위험).
+
     Args:
         section_id: section 번호
         section_result: section_results[section_id]
         section_offset: document-global offset
+        ai_to_xml_idx_mapping: {1a_idx: xml_p_idx} (위 _build_1a_to_xml_p_idx_mapping 결과)
 
     Returns:
         {
@@ -13090,6 +13207,12 @@ def extract_section_chapter_list(
             "fallback_reason": "no_title_paragraphs_matched_in_section",
         }
 
+    # 13.7b: 1a paragraph idx → section_xml top-level p idx 매핑 적용
+    def _resolve_xml_idx(ai_idx: int) -> int:
+        if ai_to_xml_idx_mapping and ai_idx in ai_to_xml_idx_mapping:
+            return ai_to_xml_idx_mapping[ai_idx]
+        return ai_idx
+
     chapters: list[dict] = []
     for ci, tm in enumerate(title_meta):
         start_pos = tm["position"]
@@ -13101,8 +13224,12 @@ def extract_section_chapter_list(
         section_local_indices = [
             p.get("idx", -1) for p in chapter_paras if isinstance(p, dict)
         ]
+        # 13.7b: xml idx로 변환 (assembly _section_top_level_paragraphs idx 일치)
+        xml_section_local_indices = [
+            _resolve_xml_idx(idx) for idx in section_local_indices if idx >= 0
+        ]
         document_global_indices = [
-            section_offset + idx for idx in section_local_indices if idx >= 0
+            section_offset + xml_idx for xml_idx in xml_section_local_indices
         ]
 
         description_parts: list[str] = []
@@ -13133,15 +13260,18 @@ def extract_section_chapter_list(
             if type_scores[_max_type] > 0:
                 dominant_type = _max_type
 
+        # 13.7b: title의 xml idx
+        _title_xml_local_idx = _resolve_xml_idx(tm["section_local_idx"])
         chapters.append({
             "section_id": section_id,
             "chapter_idx": ci,
             "template_title": tm["text"],
             "marker": tm["marker"],
             "title_role": tm["role"],
-            "title_section_local_idx": tm["section_local_idx"],
-            "title_document_global_idx": section_offset + tm["section_local_idx"],
-            "section_local_paragraph_indices": section_local_indices,
+            "title_section_local_idx": _title_xml_local_idx,  # xml idx 기준
+            "title_section_local_1a_idx": tm["section_local_idx"],  # 1a idx (debug)
+            "title_document_global_idx": section_offset + _title_xml_local_idx,
+            "section_local_paragraph_indices": xml_section_local_indices,
             "document_global_paragraph_indices": document_global_indices,
             "paragraph_count": len(chapter_paras),
             "description": description,
