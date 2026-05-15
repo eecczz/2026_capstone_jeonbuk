@@ -2543,8 +2543,8 @@ def assemble_hwpx_hybrid(
                     )
 
             if not _placed_region_aware:
-                # 13.7b fallback append: chapter.section_id의 section element에만 허용
-                # cross-section bleed 차단 — section_id 모르면 fail
+                # 13.7b fallback append: chapter.section_id 의 section element에 허용
+                # shallow route는 chapter_objects 없음 → section_elem (max_remove) fallback (기존 동작 유지)
                 if (
                     _target_section_id_for_bi is not None
                     and 0 <= _target_section_id_for_bi < len(_all_sections)
@@ -2557,8 +2557,13 @@ def assemble_hwpx_hybrid(
                         f"[13.7b fallback append] ci={_ci} bi_idx={bi_idx} → "
                         f"section_id={_target_section_id_for_bi} end"
                     )
+                elif _chapter_objects is None or len(_chapter_objects) == 0:
+                    # shallow route — chapter_objects 없으니 기존 section_elem (max_remove) 사용
+                    section_elem.append(new_elem)
+                    _elem_to_section[new_elem] = section_elem
+                    success_count += 1
                 else:
-                    # chapter context 없음 (orphan body item) → hard fail, append X
+                    # chapter route인데 chapter context 없음 → hard fail (cross-section bleed 위험)
                     errors.append(
                         f"orphan body item (no chapter context) bi_idx={bi_idx}, "
                         f"role={role!r}, text={text[:50]!r}. cross-section bleed 차단 — body item skip."
