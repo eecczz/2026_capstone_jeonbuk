@@ -185,7 +185,6 @@
   @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   .msg.user { align-self: flex-end; justify-content: flex-end; }
   .msg.bot  { align-self: flex-start; }
-  .msg.debug { align-self: center; max-width: 96%; }
   .bubble {
     padding: 8px 12px;
     border-radius: 14px;
@@ -203,12 +202,6 @@
     background: var(--bot-bubble);
     color: var(--text);
     border-bottom-left-radius: 4px;
-  }
-  .msg.debug .bubble {
-    background: #fff7d6;
-    color: #6a4b00;
-    border: 1px dashed #e0b84a;
-    font-size: 12px;
   }
   .sources {
     margin-top: 4px;
@@ -336,7 +329,6 @@
     <img src="/static/jblogo.png" alt="전북도청" onerror="this.style.display='none'" />
     <div class="titles">
       <h1>전북도청 AI 안내원</h1>
-      <p id="headerHint">텍스트로 질문해 주세요</p>
     </div>
     <button class="mode-toggle" id="modeToggleBtn" title="음성/텍스트 모드 전환" type="button">🎤 음성</button>
     <button class="reset-btn" id="resetBtn" title="대화 기록 초기화">초기화</button>
@@ -381,7 +373,6 @@
   const resetBtn = document.getElementById("resetBtn");
   const emptyHint = document.getElementById("emptyHint");
   const modeToggleBtn = document.getElementById("modeToggleBtn");
-  const headerHintEl = document.getElementById("headerHint");
   const vcUserEl = document.getElementById("vcUser");
   const vcBotEl = document.getElementById("vcBot");
 
@@ -405,18 +396,6 @@
     vcBotEl.textContent = "";
     vcUserEl.classList.remove("visible");
     vcBotEl.classList.remove("visible");
-  }
-
-  // TEMP voice debug: 음성 WebSocket 이벤트를 일반 대화창에도 남긴다.
-  function appendVoiceConversation(role, content) {
-    if (!content || !String(content).trim()) return;
-    const normalizedRole = role === "assistant" ? "bot" : role;
-    appendBubble(normalizedRole, String(content));
-    history.push({ role, content: String(content) });
-    saveHistory();
-  }
-  function appendVoiceDebug(content) {
-    appendBubble("debug", `[voice-debug] ${content}`);
   }
 
   // ─────────── Pipecat WebSocket 음성 클라이언트 ───────────
@@ -458,17 +437,11 @@
     if (typeof uiMode !== "undefined" && uiMode !== "voice") return;
     if (!pcAcceptAudio) {
       pcDroppedAudioChunks += 1;
-      if (pcDroppedAudioChunks === 1 || pcDroppedAudioChunks % 10 === 0) {
-        appendVoiceDebug(`drop stale audio chunk count=${pcDroppedAudioChunks}`);
-      }
       return;
     }
     const i16 = new Int16Array(arrayBuf);
     if (!i16.length) return;
     pcReplyAudioChunks += 1;
-    if (pcReplyAudioChunks <= 3) {
-      appendVoiceDebug(`accept audio chunk #${pcReplyAudioChunks} bytes=${arrayBuf.byteLength}`);
-    }
     const f32 = new Float32Array(i16.length);
     for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
     const buf = pcAudioCtx.createBuffer(1, f32.length, PC_TTS_SAMPLE_RATE);
@@ -523,31 +496,17 @@
             pcAcceptAudio = false;
             pcDroppedAudioChunks = 0;
             setVoiceCaption(msg.text || "", null);
-            appendVoiceConversation("user", msg.text || "");
           }
           else if (msg && msg.type === "reply") {
             pcAcceptAudio = true;
             pcReplyAudioChunks = 0;
-            appendVoiceDebug(`reply control received after staleDrops=${pcDroppedAudioChunks}`);
             pcDroppedAudioChunks = 0;
             setVoiceCaption(null, msg.text || "");
-            appendVoiceConversation("assistant", msg.text || "");
           }
           else if (msg && msg.type === "clear") {
             pcAcceptAudio = false;
             _clearPipecatPlayback();
             setVoiceCaption(null, "");
-            // 새 턴이 들어와 backend 가 이전 응답을 폐기 — 화면/history 도 동기화.
-            // 마지막 assistant bubble 만 제거 (사용자 발화는 화면에 남겨 누적 표시).
-            try {
-              if (history.length && history[history.length - 1].role === "assistant") {
-                history.pop();
-                saveHistory();
-                const last = chatEl.querySelector(".msg.bot:last-of-type");
-                if (last && last.parentNode) last.parentNode.removeChild(last);
-              }
-            } catch (_) {}
-            appendVoiceDebug("clear received: stopped audio + dropped last assistant reply");
           }
         } catch (_) {}
       } else if (ev.data instanceof ArrayBuffer) {
@@ -611,14 +570,12 @@
     document.body.classList.toggle("mode-text", uiMode === "text");
     if (uiMode === "voice") {
       modeToggleBtn.textContent = "💬 텍스트";
-      headerHintEl.textContent = "Pipecat 음성 흐름이 활성화됐어요";
       clearVoiceCaption();
       // Pipecat WebSocket 모드 — 기존 HTTP POST /voice-chat 흐름 안 탐
       if (typeof stopMicLoop === "function") stopMicLoop();
       startVoicePipecat();
     } else {
       modeToggleBtn.textContent = "🎤 음성";
-      headerHintEl.textContent = "텍스트로 질문해 주세요";
       // 음성 모드 → 텍스트 모드 전환: 모든 음성 활동 완전 정지
       stopVoicePipecat();                                    // Pipecat WebSocket + mic stream
       if (typeof stopMicLoop === "function") stopMicLoop();  // VAD RAF tick 중단
