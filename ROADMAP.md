@@ -24,13 +24,16 @@
 | 10 | Source Allocation | done (10.0+10.1) | decision log, allocation summary |
 | 11 | Role & Style Observation | done (조건부) | 11.1 semantic_tag, 11.2 style profile, 11.3 findings |
 | **12** | **Generation Schema Redesign** | **done** | marker/content 분리, template observation, target unit planning |
-| 13 | Unit-Aware Generation | **in progress** | 13.0 done, 13.3b-1 done, 13.1 deferred |
-| **13.4b** | **Chapter Template Plan Seed** | **in progress** | template-driven chapter loop, broad source fallback, 2b template context |
+| 13 | Unit-Aware Generation | **done (deadline scope)** | 13.0 done, 13.3b-1 done, 13.1 deferred |
+| **13.4b** | **Chapter Template Plan Seed** | **done** | template-driven chapter loop, broad source fallback, 2b template context |
 | **13.5** | **Region Action Plan + Unanalyzed Section Preserve** | **done** | region action plan + unanalyzed section preserve safety |
 | **13.6** | **Per-Chapter Subtree + Multi-Section/Source Gate** | **done** | B: per-chapter local_pattern→prompt+validation 연결, A: multi-section diagnostic, C: source diagnostic |
-| **13.7a** | **Chapter-Grouped Assembly + Region-Aware Placement** | **done** | content["chapters"] 도입, chapter_trees 파라미터 제거, flat chapter split path 제거, build_chapter_trees dead code 삭제, empty chapter region preserve(안전장치), A0 measurement. 3개 양식 검증 통과 (민원인 tree_available=true, 조달청 3/3 ok, CC7 shallow 불변, invariant 0). |
-| **13.7c** | **Source-to-Template Adaptation Planning** | **done** | Template-first 흐름. source inventory + chapter mapping (AI 2회). action: generate / adapted_title_generate / preserve (+ preserve_reason 6개 + detail). evidence-driven (preserved/adapted_aspects, supporting/counter_evidence, ambiguity_flags). heuristic은 debug-only. 민원인 hallucinate→adapted_title 해소, 조달청 mismatch에서 안전 preserve. |
-| **13.7b** | **Multi-Section Analysis 확장** | not started | 1a 파이프라인 변경. 모든 section 분석 + document-level merge + chapter object의 (section, region, chapter) 단위 확장 |
+| **13.7a** | **Chapter-Grouped Assembly + Region-Aware Placement** | **done** | content["chapters"] 도입, chapter_trees 파라미터 제거, flat chapter split path 제거, build_chapter_trees dead code 삭제, empty chapter region preserve(안전장치), A0 measurement |
+| **13.7c** | **Source-to-Template Adaptation Planning** | **done** | Template-first 흐름. source inventory + chapter mapping (AI 2회). action: generate / adapted_title_generate / preserve. evidence-driven |
+| **13.7b** | **Multi-Section Analysis (deadline scope)** | **done (B3 deferred)** | B0a/B6/B1/B2.1/B2.2/B0b 완료. section-local generation-lite (chapter-local exemplars, 1a→xml mapping, anchor priority, multi-body fallback, invariant). 3개 양식 검증 통과 (조달청 17/0, 민원인 정상, CC7 shallow regression 0). **B3 document-level merge는 deferred** |
+| **13.7b-followup** | **남은 issue 정리** | **not started** | 아래 "13.7b 완료 후 남은 issue" 섹션 참조 |
+| **Phase E** | **AI Chapter Title Decision** (1d 대체) | **not started** | 1d AI가 chapter title role 부정확 — AI가 직접 chapter title 결정. ~400 lines + cache schema bump |
+| **template-first 강화** | **양식 우선, source는 도구** (전 stage 적용) | **not started** | 13.7c AI 보수성 fine-tune + shallow heading 보존 강화. 현재 AI가 source mismatch에 너무 보수적 preserve. 양식 흐름이 source 위에서 우선이어야 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
 | 15 | Source Evidence / Coverage | not started | source coverage validation — 13.7 이후 |
@@ -91,6 +94,109 @@
 - **13.7c 완료** (Template-first source-to-template adaptation planning. AI 2회 (source inventory + chapter mapping batch), evidence-driven, heuristic debug-only. 검증 결과는 아래 "13.7c 완료 근거" 참조)
 - **13.7b는 13.7c 이후** (analysis 확장: 모든 section 1a 분석 + document-level merge [CC11] + chapter object section_id에 실 값. source allocation redesign은 watch)
 - **13.7 진단 정정** (2026-05-13 rev): 이전 가설 "민원인 title=level=1 → level=0 paragraph scan 실패"는 코드와 불일치. 실제 원인은 `_chapter_title_roles`가 1d title_role(role_cluster_3, 부정확)에 의존. 13.7a-A1으로 의존 자체 제거. 1d 정확도는 A0 measurement 후 별도 stage 후보.
+
+---
+
+## 13.7b 완료 근거 (2026-05-15, deadline scope)
+
+**커밋 시퀀스**: B0a (0405ba4) → B6+B1 (528d413) → B2.1.1 (DB tool) → B2.1.2 (DB tool) → B2.2/B0b (8e0fa5f, 14c7210) → section-local generation (52c0376, eab88de, 27f68e1, e480bde, bc1c7a2, e658985, 3a6847b, 3ca7c4a, c8cbf8d, 9fc67f0, cd15ddf, 1802324) → 13단계 마무리
+
+**deadline scope 정의** (사용자 directive 2026-05-15):
+- B3 document-level merge는 보류
+- section-local generation으로 진행 (각 section을 자기 section_results 구조로 독립 처리)
+- 양식 3개 검증 통과 (조달청 single, 민원인 multi-section, CC7 shallow)
+
+### 검증 결과 (양식 3개)
+
+| 양식 | section | route | 결과 | invariant |
+|------|---------|-------|------|-----------|
+| 조달청 | 1 | chapter | 17/0 success, errors 0, ch=0 ok + ch=1,2 preserve (AI 보수성) | 0 |
+| 민원인 | 5 | chapter | section 4 chapter 정상 매핑, "- 제1장 -" 반복 0, 위조/변조 경고 0 | 0 |
+| CC7 | 1 | shallow | 9/0 success, 8 body items + header preserve, shallow regression 0 | 0 |
+
+### 핵심 fix들 (이 stage에서)
+
+- **1a→xml idx mapping 누적 shift 해소** (`_build_1a_to_xml_p_idx_mapping`): 1a paragraph 누락 시 빈 xml paragraph skip + substring 양방향 매칭 + last_valid_xml + 1 fallback (identity fallback 폐기)
+- **chapter-local exemplars** (`build_chapter_local_exemplars`): chapter 자기 영역 paragraph에서 role별 본보기 → assembly가 chapter-local 우선 사용 (§4 chapter-local pattern preservation 실현)
+- **anchor matching priority** (section_local_idx primary → signature → text fallback → hard fail)
+- **cross-section bleed invariant** (chapter_object.section_id == anchor owning section, 불일치 시 hard fail)
+- **multi-body section append** (max_remove single target 폐기, chapter.section_id 기반 per-section append)
+- **id 재할당** (deepcopy 후 paragraph/tbl 등 id unique sequential → HWPX 위조/변조 경고 해소)
+- **outer fallback table skip** (표 element 본보기 사용 시 wrong text 방지)
+- **shallow route fallback 보존** (chapter_objects 없으면 기존 section_elem 사용 — regression 차단)
+- **placement_failure / orphan body hard fail** (cross-section bleed 차단)
+
+---
+
+## 13.7b 완료 후 남은 issue (별 stage 후보)
+
+deadline scope에서 deferred되거나 minor wrong이라 별 stage로 정리.
+
+### [Phase E] 1d AI Chapter Title Decision (HIGH priority)
+
+**문제**: 1d AI가 양식의 chapter title role 부정확 결정. 민원인 section 0의 진짜 chapter (Ⅰ~Ⅷ, role_cluster_4)을 chapter title로 안 잡고 "차례" + "붙임"을 잡음. 13.4b가 section 0 본문 187 paragraph를 1 chapter ("- 제1장 -")로 묶음. assembly가 chapter body 영역을 remove → Ⅰ~Ⅷ 본문 사라짐.
+
+**해결 방향**: chapter title을 AI가 직접 결정. 1d code-based level/role logic 대체.
+- 새 AI sub-step (1c 다음)
+- input: paragraphs + 1a/1c 결과
+- output: chapter_title_indices + chapter_title_roles + evidence
+- code _build_chapter_types가 그 결과 사용 (자동 level 결정 폐기)
+
+**분량**: ~400 lines + AI 호출 추가 + CACHE_SCHEMA_VERSION bump
+
+### [template-first 강화] AI 보수성 fine-tune + heading 보존 (HIGH priority)
+
+**문제**: 13.7c AI가 source mismatch에서 너무 보수적 → preserve 자주. 조달청 ch=1,2 (Ⅱ. 2024년 업무추진 여건, Ⅲ. 2024년 핵심 추진과제)가 source_gap으로 강등됨. 양식 title이 "2024년" 시점 박혀있어서 source(다른 시점) mismatch로 보임.
+
+shallow route도 마찬가지: 양식의 □ heading 흐름 (□ 개요, □ 추진상황, □ 향후계획) → AI가 source에 맞춰 자유 adaptation → 양식 흐름 깨짐.
+
+**해결 방향**:
+- 13.7c prompt 강화: "adapted_title_generate가 default. preserve는 last resort. source의 어떤 측면이라도 chapter intent와 연결 가능하면 adapted_title."
+- 시점·연도·기관명 같은 표면적 표현 차이는 adaptation 허용. chapter intent (목적/배경/현황/추진/계획)만 보존.
+- shallow heading 보존 강화 (13.3b-1 prompt): 양식 heading text 보존 (구조 의도 + 양식 표현 모두). source가 안 맞으면 강제 adaptation 안 함.
+- **"소스 먼저가 아닌 양식 먼저"** — 양식 흐름이 source 위에서 우선이어야 함 (사용자 directive 2026-05-15)
+
+**분량**: ~100 lines (prompt 변경)
+
+### [13.7b minor wrong] visual bug (LOW priority)
+
+- **chapter title + placeholder 같은 paragraph로 합쳐짐**: 출력에 "Ⅳ. 반복민원 대응 절차※ [검토 필요]..." 식. paragraph 분리 logic 필요
+- **"상황훈련..." section 0 sample dialog가 section 4에 잔재**: 다른 wrong path. 진단 필요
+- **section 0 chapter 내부 sub-paragraph (Ⅰ~Ⅷ)도 chapter-local exemplars 미적용**: Phase E 의존 (section 0 chapter granularity 정확해야)
+
+### [13.7b deferred] B3 document-level merge
+
+- 사용자 directive 2026-05-15로 deferred
+- multi-section 양식의 section별 분석 결과를 document-level 구조로 통합
+- B3.1 chapter intent merge, B3.2 multi-section seed regenerate, B3.0 cross-section parent
+- 양식 evidence 추가 (현재 3개 → 5+) 후 진행 검토
+
+**B3 prerequisite**:
+- `root_paragraph_counts` measurement bug fix (B0b debug)
+- multi-section target_unit_planning (현재 section 0만)
+- 13.4b multi-section seed regenerate
+
+### [코드 정리] cleanup (마감 후)
+
+13.7b 진행하면서 누적된 spaghetti:
+- **framework 통일 안 됨**: section 0 path (extract_chapter_template_plan_seed) + section N path (extract_section_chapter_list) 분리. helper 함수 추출 가능
+- **dead code 후보**:
+  - `dominant_chapter_type` field (항상 None)
+  - `13_7c_re_run_feasibility.root_paragraph_counts` (모든 type count=0, buggy)
+  - `compute_section_offsets` analyzed fallback path (census 우선이라 거의 dead)
+  - 이전 fix들의 부분 잔재 (text_based primary anchor, unique_key path 일부)
+- **13.7d 라벨 commit 정리**: 정식 stage 아닌데 commit message에 라벨. ROADMAP 정의 X
+- **handoff 문서 작성**
+
+### [later/independent] Assembly polish (강조 표시 등)
+
+다른 단계와 의존 없음. 언제든 가능. CC6 (Cross-Cutting Concern):
+- inline emphasis (bold, color) 보존
+- indentation polish
+- line break / paragraph spacing
+- section-aware append 고도화
+
+12단계에서 `emphasis_spans` interface만 열어둠. 실제 구현은 later.
 
 ---
 
