@@ -12904,6 +12904,406 @@ def build_b0b_observation_artifact(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 13.7b Section-Local Generation-Lite (deadline path)
+#
+# B3 document-level merge 없이 각 section을 자기 section_results 구조로
+# 독립 generation. section 간 parent/role/chapter merge X.
+#
+# section 0: 기존 13.4b extract_chapter_template_plan_seed 경로 유지 (regression 최소화).
+# section N (N != 0): 아래 함수들로 section-local chapter list 추출 + 처리 결정.
+#
+# 원칙:
+# - section X 내용이 section Y region에 들어가지 않음 (assembly anchor section-aware)
+# - section-local idx를 document-global idx로 변환해서 assembly에 전달
+# - 의미 매핑 X — code는 evidence 기반 schema 결정만
+# - source allocation은 broad source (deadline 임시, 사용자 §5)
+# 참조: 사용자 directive 2026-05-15 section-local generation-lite
+# ──────────────────────────────────────────────────────────────────────
+
+
+def compute_section_offsets(section_results: dict) -> dict:
+    """13.7b section-local generation-lite: document-global offset per section.
+
+    section_results[N]의 paragraph 수를 누적해 offset 계산.
+    section_offset[N] = sum(section_results[k].paragraph_count for k < N).
+
+    light_xml의 _top_level_paragraphs ordering이 section_id 순서라는 가정
+    (B1 extract_all_sections_xml sorted name 결과).
+
+    Returns:
+        {section_id: document_global_offset} dict
+    """
+    offsets: dict = {}
+    cumulative = 0
+    for sid_key in sorted(
+        section_results.keys(),
+        key=lambda k: int(k) if str(k).isdigit() else 999
+    ):
+        try:
+            sid_int = int(sid_key)
+        except (TypeError, ValueError):
+            sid_int = sid_key
+        offsets[sid_int] = cumulative
+        sr = section_results.get(sid_key) or {}
+        struct = sr.get("structure", {}) if isinstance(sr, dict) else {}
+        paras = struct.get("paragraphs", []) if isinstance(struct, dict) else []
+        cumulative += len(paras) if isinstance(paras, list) else 0
+    return offsets
+
+
+def extract_section_chapter_list(
+    section_id: int,
+    section_result: dict,
+    section_offset: int,
+) -> dict:
+    """13.7b section-local generation-lite: section-local chapter list 추출.
+
+    section_results[N]의 structure를 받아 section-local title_roles 기반으로
+    chapter title paragraphs를 찾는다. document-global idx로 변환된
+    paragraph_indices를 함께 출력 (assembly anchor mapping용).
+
+    이 함수는 section ≠ 0 만 사용. section 0은 기존 13.4b
+    extract_chapter_template_plan_seed 경로 유지 (regression 최소화).
+
+    Args:
+        section_id: section 번호
+        section_result: section_results[section_id]
+        section_offset: document-global offset
+
+    Returns:
+        {
+          "section_id": int,
+          "section_offset": int,
+          "paragraph_count": int (section-local total),
+          "title_roles_used": [str],
+          "chapters": [
+            {
+              "section_id": int,
+              "chapter_idx": int,
+              "template_title": str,
+              "marker": str,
+              "title_role": str,
+              "title_section_local_idx": int,
+              "title_document_global_idx": int,
+              "section_local_paragraph_indices": [int, ...],
+              "document_global_paragraph_indices": [int, ...],
+              "paragraph_count": int,
+              "description": str,
+              "dominant_chapter_type": str | None,
+            }, ...
+          ],
+          "confidence": "high" | "medium" | "low",
+          "fallback_reason": str | None,
+        }
+    """
+    structure = section_result.get("structure", {}) if isinstance(section_result, dict) else {}
+    chapter_types = section_result.get("chapter_types", {}) if isinstance(section_result, dict) else {}
+    idx_texts = section_result.get("idx_texts", {}) if isinstance(section_result, dict) else {}
+    paragraphs = structure.get("paragraphs", []) if isinstance(structure, dict) else []
+
+    if not isinstance(paragraphs, list) or not paragraphs:
+        return {
+            "section_id": section_id,
+            "section_offset": section_offset,
+            "paragraph_count": 0,
+            "title_roles_used": [],
+            "chapters": [],
+            "confidence": "low",
+            "fallback_reason": "no_paragraphs",
+        }
+
+    title_roles: set = set()
+    for ct_val in (chapter_types.values() if isinstance(chapter_types, dict) else []):
+        if not isinstance(ct_val, dict):
+            continue
+        tr = ct_val.get("title_role")
+        if isinstance(tr, str) and tr:
+            title_roles.add(tr)
+        elif isinstance(tr, list):
+            for x in tr:
+                if isinstance(x, str) and x:
+                    title_roles.add(x)
+
+    if not title_roles:
+        return {
+            "section_id": section_id,
+            "section_offset": section_offset,
+            "paragraph_count": len(paragraphs),
+            "title_roles_used": [],
+            "chapters": [],
+            "confidence": "low",
+            "fallback_reason": "no_title_roles_in_chapter_types",
+        }
+
+    sorted_paragraphs = sorted(
+        (p for p in paragraphs if isinstance(p, dict)),
+        key=lambda p: p.get("idx", 0)
+    )
+
+    title_meta: list[dict] = []
+    for i, p in enumerate(sorted_paragraphs):
+        if p.get("role") in title_roles:
+            local_idx = p.get("idx", i)
+            title_meta.append({
+                "position": i,
+                "section_local_idx": local_idx,
+                "role": p.get("role"),
+                "marker": (p.get("marker") or "").strip(),
+                "text": (
+                    idx_texts.get(str(local_idx), "")
+                    if isinstance(idx_texts, dict) else ""
+                ),
+            })
+
+    if not title_meta:
+        return {
+            "section_id": section_id,
+            "section_offset": section_offset,
+            "paragraph_count": len(sorted_paragraphs),
+            "title_roles_used": sorted(title_roles),
+            "chapters": [],
+            "confidence": "low",
+            "fallback_reason": "no_title_paragraphs_matched_in_section",
+        }
+
+    chapters: list[dict] = []
+    for ci, tm in enumerate(title_meta):
+        start_pos = tm["position"]
+        end_pos = (
+            title_meta[ci + 1]["position"]
+            if ci + 1 < len(title_meta) else len(sorted_paragraphs)
+        )
+        chapter_paras = sorted_paragraphs[start_pos:end_pos]
+        section_local_indices = [
+            p.get("idx", -1) for p in chapter_paras if isinstance(p, dict)
+        ]
+        document_global_indices = [
+            section_offset + idx for idx in section_local_indices if idx >= 0
+        ]
+
+        description_parts: list[str] = []
+        for p in chapter_paras[1:4]:
+            if not isinstance(p, dict):
+                continue
+            t = (
+                idx_texts.get(str(p.get("idx", -1)), "")
+                if isinstance(idx_texts, dict) else ""
+            )
+            if t and t.strip():
+                description_parts.append(t.strip()[:80])
+        description = " | ".join(description_parts) if description_parts else ""
+
+        type_scores: dict = {}
+        for ct_key, ct_val in (chapter_types.items() if isinstance(chapter_types, dict) else []):
+            if not isinstance(ct_val, dict):
+                continue
+            ct_roots = set(ct_val.get("root_roles", []) or [])
+            score = sum(
+                1 for p in chapter_paras
+                if isinstance(p, dict) and p.get("role") in ct_roots
+            )
+            type_scores[ct_key] = score
+        dominant_type = None
+        if type_scores:
+            _max_type = max(type_scores, key=type_scores.get)
+            if type_scores[_max_type] > 0:
+                dominant_type = _max_type
+
+        chapters.append({
+            "section_id": section_id,
+            "chapter_idx": ci,
+            "template_title": tm["text"],
+            "marker": tm["marker"],
+            "title_role": tm["role"],
+            "title_section_local_idx": tm["section_local_idx"],
+            "title_document_global_idx": section_offset + tm["section_local_idx"],
+            "section_local_paragraph_indices": section_local_indices,
+            "document_global_paragraph_indices": document_global_indices,
+            "paragraph_count": len(chapter_paras),
+            "description": description,
+            "dominant_chapter_type": dominant_type,
+            "chapter_type_scores": type_scores,
+        })
+
+    if chapters and all(c["paragraph_count"] >= 2 for c in chapters):
+        confidence = "high"
+    elif chapters:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "section_id": section_id,
+        "section_offset": section_offset,
+        "paragraph_count": len(sorted_paragraphs),
+        "title_roles_used": sorted(title_roles),
+        "chapters": chapters,
+        "confidence": confidence,
+        "fallback_reason": None,
+    }
+
+
+def decide_section_processing(
+    section_id: int,
+    b22_proposal: dict | None,
+    section_chapter_list: dict | None,
+) -> dict:
+    """13.7b section-local generation-lite: section 처리 결정.
+
+    deadline 정책 (사용자 directive 2026-05-15):
+    - B2.2 proposal의 reference_label, confidence, ambiguity_flags 기반
+    - reference_label이 top_level/body/other 이면서 high/medium confidence + ambiguity 없음 + chapter title 존재
+    - → action="generate"
+    - 그 외 (attachment/empty/low confidence/ambiguous/no chapters) → action="preserve"
+
+    NOTE: code는 free-form structural_relationship/placement_recommendation 텍스트를
+    해석하지 않는다. reference_label은 양식 evidence statistical hint로 사용 — deadline
+    임시 정책 (사용자 명시). B0b 정식 정책 결정 후 합리화 예정.
+
+    "other" reference_label 포함: 조달청 single-section처럼 AI가 분류 카테고리에 강제
+    매핑 안 한 경우. 양식 evidence 부재가 아니므로 generate 후보.
+
+    Returns:
+        {
+          "action": "generate" | "preserve",
+          "reason": str,
+          "deadline_policy_relaxation": bool,
+          "details": [str] | None,
+        }
+    """
+    if not section_chapter_list or not isinstance(section_chapter_list, dict):
+        return {
+            "action": "preserve",
+            "reason": "no_section_chapter_list",
+            "deadline_policy_relaxation": False,
+            "details": None,
+        }
+
+    chapters = section_chapter_list.get("chapters") or []
+    if not chapters:
+        return {
+            "action": "preserve",
+            "reason": "empty_section_chapter_list",
+            "deadline_policy_relaxation": False,
+            "details": [section_chapter_list.get("fallback_reason") or "no_chapters"],
+        }
+
+    if not b22_proposal or not isinstance(b22_proposal, dict):
+        return {
+            "action": "preserve",
+            "reason": "no_b22_proposal",
+            "deadline_policy_relaxation": False,
+            "details": None,
+        }
+
+    conf = b22_proposal.get("confidence")
+    if conf == "low":
+        return {
+            "action": "preserve",
+            "reason": "ai_low_confidence",
+            "deadline_policy_relaxation": False,
+            "details": b22_proposal.get("ambiguity_flags") or [],
+        }
+
+    ambig = b22_proposal.get("ambiguity_flags") or []
+    if ambig:
+        return {
+            "action": "preserve",
+            "reason": "ai_ambiguity_flags_present",
+            "deadline_policy_relaxation": False,
+            "details": ambig,
+        }
+
+    ref_label = ""
+    _dbg = b22_proposal.get("_debug")
+    if isinstance(_dbg, dict):
+        ref_label = _dbg.get("reference_label", "") or ""
+
+    if ref_label in ("top_level", "body", "other"):
+        return {
+            "action": "generate",
+            "reason": "ai_reference_label_indicates_body",
+            "deadline_policy_relaxation": True,
+            "details": [
+                f"reference_label={ref_label}",
+                f"confidence={conf}",
+                f"chapter_count={len(chapters)}",
+            ],
+        }
+
+    return {
+        "action": "preserve",
+        "reason": f"ai_reference_label_not_body:{ref_label or 'unknown'}",
+        "deadline_policy_relaxation": True,
+        "details": [f"reference_label={ref_label}"],
+    }
+
+
+def summarize_section_local_decisions(
+    decisions: dict,
+    section_chapter_lists: dict,
+) -> dict:
+    """13.7b section-local generation-lite: _debug_payload summary.
+
+    Args:
+        decisions: {section_id: decide_section_processing result}
+        section_chapter_lists: {section_id: extract_section_chapter_list result}
+
+    Returns:
+        {
+          "section_count": int,
+          "generate_section_ids": [int, ...],
+          "preserve_section_ids": [int, ...],
+          "per_section": {section_id: {...}, ...},
+          "deadline_policy_note": str,
+        }
+    """
+    generate_sids: list = []
+    preserve_sids: list = []
+    per_section: dict = {}
+
+    for sid, dec in decisions.items():
+        if not isinstance(dec, dict):
+            continue
+        action = dec.get("action")
+        if action == "generate":
+            generate_sids.append(sid)
+        else:
+            preserve_sids.append(sid)
+        scl = section_chapter_lists.get(sid, {}) or {}
+        per_section[sid] = {
+            "action": action,
+            "reason": dec.get("reason"),
+            "deadline_policy_relaxation": dec.get("deadline_policy_relaxation"),
+            "details": dec.get("details"),
+            "section_chapter_count": len(scl.get("chapters") or []),
+            "section_paragraph_count": scl.get("paragraph_count"),
+            "section_offset": scl.get("section_offset"),
+            "title_roles_used": scl.get("title_roles_used"),
+            "section_chapter_list_confidence": scl.get("confidence"),
+            "section_chapter_list_fallback_reason": scl.get("fallback_reason"),
+        }
+
+    return {
+        "section_count": len(decisions),
+        "generate_section_ids": sorted(
+            generate_sids,
+            key=lambda x: int(x) if isinstance(x, (int, str)) and str(x).isdigit() else 999
+        ),
+        "preserve_section_ids": sorted(
+            preserve_sids,
+            key=lambda x: int(x) if isinstance(x, (int, str)) and str(x).isdigit() else 999
+        ),
+        "per_section": per_section,
+        "deadline_policy_note": (
+            "사용자 directive 2026-05-15: B3 document-level merge 없이 section-local "
+            "generation-lite. reference_label은 deadline 임시 policy hint (top_level/body/other). "
+            "B0b 정식 정책 결정 시 schema 합리화 예정."
+        ),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 13.3b-1: Shallow Section Plan Seed
 # ──────────────────────────────────────────────────────────────────────
 
