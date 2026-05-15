@@ -743,29 +743,45 @@ def assemble_hwpx(
 
 def _process_chapter_objects(
     chapter_objects: list[dict],
+    structure: dict | None = None,
+    idx_map: dict | None = None,
 ) -> dict:
     """
     13.7a-A1: chapter_objects를 평탄화하여 assemble path가 필요로 하는
     구조를 만든다.
 
-    - non-empty chapter (status="ok"): title + body를 body_items로 평탄화,
-      node_lookup/chapter_idx_lookup/chapter_node_maps에 등록.
-    - empty chapter (status="empty"): body_items 평탄화에서 제외 + paragraph_indices를
-      empty_preserve_indices에 적재(region 전체 preserve).
-    - status="fail": 평탄화 skip, fail 카운트만.
+    13.7d (region-aware placement + title-only with placeholder):
+    - chapter title item을 body_items 평탄화에서 제외 (chapter_anchor_items에 별도 저장).
+      assembly가 양식 chapter title element를 anchor로 사용 + body items만 anchor 다음에 insert.
+      양식 chapter title 중복 방지 + adapted_title text 교체는 별도 stage (marker/run 보존 위해 보류).
+    - status="empty" (또는 생성 생략) 처리 (최종 자동작성 출력 정책):
+        * empty_preserve_indices에 paragraph_indices[0]만 (chapter title preserve, body는 remove 대상)
+        * placeholder body item 1개 추가 (검토 필요 문구)
+          placeholder role: paragraph_indices[1]의 양식 role (structure에서 lookup, idx_map 변환)
+          fallback: title_item.role + log.warning
+        * 특정 양식/section 번호/제목 문자열 기준 X — action/status 기반
+    - status="ok": chapter body items만 평탄화. chapter title item은 chapter_anchor_items[ci]에만.
+    - status="fail": skip.
 
     chapter_objects가 들어오면 _chapter_title_roles는 1d structure가 아니라
     chapter object의 title_item.role union으로 구성한다 (1d 의존 제거).
 
+    Args:
+        chapter_objects: chapter object list (build_chapter_object 결과)
+        structure: 양식 1a 분석 structure (placeholder role lookup용)
+        idx_map: AI idx → real idx (양식 truncate된 경우 변환)
+
     Returns:
         {
-          "body_items": list[dict],            # 평탄화된 (role, text)
-          "node_lookup": dict[int, dict],      # bi → node
+          "body_items": list[dict],            # chapter body items만 평탄화 (title 제외)
+          "node_lookup": dict[int, dict],
           "chapter_idx_lookup": dict[int, int],
           "chapter_title_roles": set[str],
           "chapter_node_maps": list[dict[int, dict]],
           "empty_preserve_indices": set[int],
-          "rewrite_alignment": {...},          # 새 schema
+          "chapter_anchor_items": dict[int, dict],   # 13.7d: ci → title_item (anchor element용)
+          "adapted_title_deferred": list[dict],      # 13.7d: adapted_title 미적용 log
+          "rewrite_alignment": {...},
           "tree_available": bool,
           "invariant_violations": list[dict],
         }
@@ -782,6 +798,16 @@ def _process_chapter_objects(
     empty_preserve_indices: set[int] = set()
     invariant_violations: list[dict] = []
     per_chapter: list[dict] = []
+    chapter_anchor_items: dict[int, dict] = {}  # 13.7d
+    adapted_title_deferred: list[dict] = []      # 13.7d
+
+    # 13.7d: paragraph idx → role lookup (placeholder role 결정용)
+    _idx_to_role: dict = {}
+    if structure:
+        for _p in structure.get("paragraphs", []):
+            _pidx = _p.get("idx")
+            if _pidx is not None:
+                _idx_to_role[_pidx] = _p.get("role", "")
 
     fail_count = 0
     ok_count = 0
@@ -804,8 +830,54 @@ def _process_chapter_objects(
 
         if status == "empty":
             empty_count += 1
-            # region 전체 preserve — paragraph_indices 합산
-            empty_preserve_indices.update(p for p in paragraph_indices)
+            # 13.7d: chapter title paragraph만 preserve + body 제거 + placeholder 1문단 삽입
+            title_item_empty = chapter_obj.get("title_item") or {}
+            if title_item_empty:
+                chapter_anchor_items[ci] = title_item_empty
+                if title_item_empty.get("role"):
+                    chapter_title_roles.add(title_item_empty["role"])
+
+            # body 제거 — empty_preserve_indices에 chapter title (paragraph_indices[0])만
+            if paragraph_indices:
+                empty_preserve_indices.add(paragraph_indices[0])
+            _removed_body_count = max(0, len(paragraph_indices) - 1)
+
+            # placeholder role: paragraph_indices[1] (chapter body 첫 paragraph)의 양식 role
+            placeholder_role = None
+            placeholder_role_source = "none"
+            if len(paragraph_indices) > 1:
+                _second_ai_idx = paragraph_indices[1]
+                _second_real_idx = idx_map.get(_second_ai_idx, _second_ai_idx) if idx_map else _second_ai_idx
+                placeholder_role = (
+                    _idx_to_role.get(_second_real_idx)
+                    or _idx_to_role.get(_second_ai_idx)
+                )
+                if placeholder_role:
+                    placeholder_role_source = "body_role"
+            if not placeholder_role:
+                # fallback: title role + warning
+                placeholder_role = title_item_empty.get("role", "")
+                placeholder_role_source = "title_role_fallback"
+                log.warning(
+                    f"_process_chapter_objects: placeholder role fallback to title role "
+                    f"for chapter ci={ci} (no body role available, paragraph_indices_len="
+                    f"{len(paragraph_indices)})"
+                )
+
+            _placeholder_text = (
+                "※ [검토 필요] 입력 자료에서 충분한 근거를 찾지 못해 "
+                "본문 생성을 생략했습니다."
+            )
+            bi = len(body_items)
+            body_items.append({
+                "role": placeholder_role,
+                "text": _placeholder_text,
+            })
+            chapter_idx_lookup[bi] = ci
+
+            # 13.7d debug: preserve_reason, placeholder_inserted, removed_body_count
+            _ch_debug = chapter_obj.get("_debug") or {}
+            _ad = _ch_debug.get("adaptation_decision") or {}
             per_chapter.append({
                 "chapter_idx": ci,
                 "source_chapter_idx": chapter_obj.get("source_chapter_idx"),
@@ -815,9 +887,15 @@ def _process_chapter_objects(
                 "status": "empty",
                 "title_aligned": None,
                 "body_aligned": None,
-                "body_items_count": 0,
+                "body_items_count": 1,
                 "body_nodes_count": 0,
                 "invariant_violations": violations,
+                "placeholder_inserted": True,
+                "placeholder_role": placeholder_role,
+                "placeholder_role_source": placeholder_role_source,
+                "removed_body_count": _removed_body_count,
+                "preserve_reason": _ad.get("preserve_reason") or _ad.get("action"),
+                "preserve_reason_detail": _ad.get("preserve_reason_detail"),
             })
             continue
 
@@ -862,6 +940,12 @@ def _process_chapter_objects(
         if title_item.get("role"):
             chapter_title_roles.add(title_item["role"])
 
+        # 13.7d: chapter title item을 chapter_anchor_items에 별도 저장
+        # body_items 평탄화에서 제외 — assembly가 양식 chapter title element를 anchor로 보존
+        # adapted_title text 교체는 별도 stage (marker/run 보존 위해 보류)
+        if title_item:
+            chapter_anchor_items[ci] = title_item
+
         # node_id → node dict (chapter 단위)
         node_map: dict[int, dict] = {}
         if title_node:
@@ -874,18 +958,8 @@ def _process_chapter_objects(
                 node_map[nid] = nd
         chapter_node_maps.append(node_map)
 
-        # 평탄화: title + body 순으로 body_items에 append
-        # title부터 추가하여 marker rewrite에서 chapter title boundary로 인식
-        if title_item:
-            bi = len(body_items)
-            body_items.append({
-                "role": title_item.get("role", ""),
-                "text": title_item.get("text", ""),
-            })
-            if title_node:
-                node_lookup[bi] = title_node
-            chapter_idx_lookup[bi] = ci
-
+        # 13.7d: chapter title item 평탄화 제외. chapter body items만 평탄화.
+        # marker_rewrite는 chapter_title_roles set + chapter_idx_lookup으로 boundary 인식 (set 그대로 union).
         for k, (it, nd) in enumerate(zip(body_items_ch, body_nodes_ch)):
             bi = len(body_items)
             body_items.append({
@@ -894,6 +968,22 @@ def _process_chapter_objects(
             })
             node_lookup[bi] = nd
             chapter_idx_lookup[bi] = ci
+
+        # 13.7d: adapted_title detection — title_item.text vs 양식 chapter title text
+        # 현재는 양식 chapter title element를 그대로 사용 (text 교체 보류).
+        # adapted_title이 양식과 다르면 _debug.adapted_title_deferred에 기록.
+        _adapted_text = title_item.get("text", "") if title_item else ""
+        if _adapted_text:
+            adapted_title_deferred.append({
+                "chapter_idx": ci,
+                "source_chapter_idx": chapter_obj.get("source_chapter_idx"),
+                "adapted_title": _adapted_text,
+                "note": (
+                    "title text replacement deferred (marker/run 보존 위해 별도 stage). "
+                    "양식 chapter title element 그대로 보존됨. "
+                    "13.7c adaptation_decision.action == 'adapted_title_generate' 시 의미 손실."
+                ),
+            })
 
         per_chapter.append({
             "chapter_idx": ci,
@@ -940,6 +1030,8 @@ def _process_chapter_objects(
         "chapter_title_roles": chapter_title_roles,
         "chapter_node_maps": chapter_node_maps,
         "empty_preserve_indices": empty_preserve_indices,
+        "chapter_anchor_items": chapter_anchor_items,        # 13.7d
+        "adapted_title_deferred": adapted_title_deferred,    # 13.7d
         "rewrite_alignment": rewrite_alignment,
         "tree_available": tree_available,
         "invariant_violations": invariant_violations,
@@ -1013,11 +1105,14 @@ def assemble_hwpx_hybrid(
                 "Using 'chapters' (chapter-grouped path). 'body' ignored. "
                 "원칙: chapter/shallow route 둘 다 채우는 호출은 금지."
             )
-        _chapter_proc = _process_chapter_objects(_chapter_objects)
+        # 13.7d: structure + idx_map 전달 (placeholder role lookup용)
+        _chapter_proc = _process_chapter_objects(_chapter_objects, structure, idx_map)
         log.info(
             f"assemble: chapter-grouped path. chapters={len(_chapter_objects)}, "
             f"body_items_flat={len(_chapter_proc['body_items'])}, "
             f"empty_preserve={len(_chapter_proc['empty_preserve_indices'])}, "
+            f"anchors={len(_chapter_proc.get('chapter_anchor_items', {}))}, "
+            f"adapted_title_deferred={len(_chapter_proc.get('adapted_title_deferred', []))}, "
             f"tree_available={_chapter_proc['tree_available']}, "
             f"invariant_violations={_chapter_proc['rewrite_alignment']['invariant_violations_count']}"
         )
@@ -1255,7 +1350,7 @@ def assemble_hwpx_hybrid(
         if _added:
             log.info(f"assemble: preserve_indices added {_added} paragraphs to header set")
 
-    # 13.7a-A1: empty chapter region 전체 preserve (안전장치, 13.7a 한정)
+    # 13.7a-A1 / 13.7d: empty chapter title preserve (chapter title paragraph만, body는 remove 대상)
     _empty_chapter_preserve_debug = {}
     if _chapter_proc and _chapter_proc["empty_preserve_indices"]:
         _eci = _chapter_proc["empty_preserve_indices"]
@@ -1271,6 +1366,45 @@ def assemble_hwpx_hybrid(
                 f"assemble: empty chapter preserve added {_added_e} paragraphs "
                 f"({len(_eci)} indices from empty chapters)"
             )
+
+    # 13.7d: chapter_anchors 추적 (chapter route region-aware placement)
+    # chapter title element를 anchor로 보존 (status="ok"+"empty" 둘 다).
+    # status="ok"는 chapter title preserve로 header_indices에 추가 필요 (status="empty"는 위에서 추가됨).
+    # body items insert 시 chapter_anchors[ci] 다음 위치에 (section-aware).
+    chapter_anchors: dict = {}  # ci → anchor element
+    _chapter_anchor_debug = []
+    if _chapter_proc and _chapter_objects:
+        for ci, ch_obj in enumerate(_chapter_objects):
+            _pi = ch_obj.get("paragraph_indices") or []
+            if not _pi:
+                continue
+            _ai_idx = _pi[0]
+            _real_idx = idx_map.get(_ai_idx, _ai_idx) if idx_map else _ai_idx
+            if 0 <= _real_idx < len(doc.paragraphs):
+                chapter_anchors[ci] = doc.paragraphs[_real_idx].element
+                # status="ok"인 chapter도 chapter title element preserve (remove 방지)
+                if _real_idx not in header_indices:
+                    header_indices.add(_real_idx)
+                _chapter_anchor_debug.append({
+                    "chapter_idx": ci,
+                    "anchor_real_idx": _real_idx,
+                    "anchor_ai_idx": _ai_idx,
+                    "status": ch_obj.get("status"),
+                })
+            else:
+                _chapter_anchor_debug.append({
+                    "chapter_idx": ci,
+                    "anchor_real_idx": _real_idx,
+                    "anchor_ai_idx": _ai_idx,
+                    "status": ch_obj.get("status"),
+                    "error": f"real_idx out of range (len={len(doc.paragraphs)})",
+                })
+                log.warning(
+                    f"chapter {ci} anchor real_idx {_real_idx} out of range "
+                    f"(doc.paragraphs len={len(doc.paragraphs)}, ai_idx={_ai_idx})"
+                )
+    if chapter_anchors:
+        log.info(f"assemble: chapter_anchors set for {len(chapter_anchors)} chapters")
 
     # 13.5 unanalyzed section preserve safety
     _unanalyzed_section_debug = {}
@@ -1962,8 +2096,40 @@ def assemble_hwpx_hybrid(
                             first_run.insert(t_index, tab_elem)
                             t_index += 1
 
-            section_elem.append(new_elem)
-            success_count += 1
+            # 13.7d: region-aware placement (chapter_anchors 기반)
+            # body item이 어느 chapter에 속하는지 chapter_idx_lookup으로 확인
+            # 그 chapter의 anchor element (양식 chapter title) 다음에 insert
+            # section-aware: anchor.getparent() == owning section element 확인
+            # cursor pattern: 같은 chapter body items 순서 유지 (anchor → new_elem update)
+            _ci = _chapter_idx_lookup.get(bi_idx, -1) if _chapter_idx_lookup else -1
+            _placed_region_aware = False
+            if _ci is not None and _ci >= 0 and _ci in chapter_anchors:
+                _anchor = chapter_anchors[_ci]
+                _anchor_parent = _anchor.getparent()
+                _owning_sec = _elem_to_section.get(_anchor)
+                if _anchor_parent is not None and _anchor_parent is _owning_sec:
+                    try:
+                        _idx_in_parent = list(_anchor_parent).index(_anchor)
+                        _anchor_parent.insert(_idx_in_parent + 1, new_elem)
+                        chapter_anchors[_ci] = new_elem  # cursor update (다음 item은 이 new_elem 다음)
+                        success_count += 1
+                        _placed_region_aware = True
+                    except (ValueError, AttributeError) as _ria_e:
+                        log.warning(
+                            f"region-aware insert fail (chapter {_ci}, bi_idx {bi_idx}): {_ria_e}. "
+                            f"fallback section_elem.append"
+                        )
+                else:
+                    log.warning(
+                        f"chapter {_ci} anchor parent is not section element "
+                        f"(parent tag={_anchor_parent.tag if _anchor_parent is not None else None}). "
+                        f"fallback section_elem.append (bi_idx={bi_idx})"
+                    )
+
+            if not _placed_region_aware:
+                # fallback: 기존 동작 (양식 끝 append) — chapter route 진입 안 했거나 anchor fail 시
+                section_elem.append(new_elem)
+                success_count += 1
         except Exception as e:
             errors.append(f"assemble({role}): {e}")
 
