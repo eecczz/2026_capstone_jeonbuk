@@ -1406,7 +1406,15 @@ def assemble_hwpx_hybrid(
             if not _pi:
                 continue
             _ai_idx = _pi[0]
-            _real_idx = idx_map.get(_ai_idx, _ai_idx) if idx_map else _ai_idx
+            # 13.7b section-local generation-lite: section_id != 0이면
+            # paragraph_indices가 이미 document_global light_xml _idx
+            # (_top_level_paragraphs 직접 인덱스). idx_map 변환 건너뜀.
+            # section 0 (기본값 0)은 기존 13.4b path로 ai_idx → idx_map → light_xml _idx 변환.
+            _sec_id_of_ch = ch_obj.get("section_id", 0)
+            if _sec_id_of_ch != 0:
+                _real_idx = _ai_idx
+            else:
+                _real_idx = idx_map.get(_ai_idx, _ai_idx) if idx_map else _ai_idx
             if 0 <= _real_idx < len(_top_level_paragraphs):
                 _anchor_el = _top_level_paragraphs[_real_idx]
                 chapter_anchors[ci] = _anchor_el

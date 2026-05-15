@@ -9130,6 +9130,21 @@ def write_stage_debug_files(
         _skip("13_7b_b0b_observation.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 19. Section-local decisions (13.7b section-local generation-lite, debug-only)
+    # ═══════════════════════════════════════════════════════════════
+    _sld = debug_payload.get("section_local_decisions")
+    if _sld:
+        _write("19_section_local_decisions.json", _sld)
+    else:
+        _skip("19_section_local_decisions.json")
+
+    _scl_dbg = debug_payload.get("section_local_chapter_lists")
+    if _scl_dbg:
+        _write("20_section_local_chapter_lists.json", _scl_dbg)
+    else:
+        _skip("20_section_local_chapter_lists.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
@@ -11117,8 +11132,9 @@ def build_chapter_object(
     region_id = region.get("region_id")
     paragraph_indices = list(region.get("paragraph_indices") or [])
     first_paragraph_idx = paragraph_indices[0] if paragraph_indices else None
-    # 13.7a: section_id 기본값 0. 13.7b에서 region.section_span 기반으로 매핑.
-    section_id = 0
+    # 13.7a: section_id 기본값 0. 13.7b section-local generation-lite에서
+    # synthetic region (section N != 0) 호출 시 region.section_id 실 값.
+    section_id = region.get("section_id", 0)
 
     body_items_full = (section_fill_result or {}).get("body_items") or []
     chapter_tree_nodes = (section_fill_result or {}).get("chapter_tree_nodes") or []
