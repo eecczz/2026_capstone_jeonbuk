@@ -1369,8 +1369,30 @@ def assemble_hwpx_hybrid(
 
     # 13.7d: chapter_anchors 추적 (chapter route region-aware placement)
     # chapter title element를 anchor로 보존 (status="ok"+"empty" 둘 다).
-    # status="ok"는 chapter title preserve로 header_indices에 추가 필요 (status="empty"는 위에서 추가됨).
     # body items insert 시 chapter_anchors[ci] 다음 위치에 (section-aware).
+    #
+    # 13.7d fix: light_xml _idx → top-level paragraph element 매핑 (table cell paragraph 제외).
+    # doc.paragraphs는 lib이 어떤 paragraph iter하는지 보장 X (table cell 등 포함 가능).
+    # 양식 section의 direct children paragraph만 모아서 light_xml _idx와 정확 매핑.
+    # header_indices는 doc.paragraphs index 기준이므로 anchor element의 doc.paragraphs idx도 찾기.
+    _top_level_paragraphs: list = []
+    for _sec_obj in _all_sections:
+        _sec_el = _sec_obj.element
+        for _child in list(_sec_el):
+            if _child.tag.endswith("}p"):
+                _top_level_paragraphs.append(_child)
+
+    # doc.paragraphs element id → doc.paragraphs index 매핑 (header_indices 추가용)
+    _doc_para_to_idx: dict = {}
+    for _di, _dp in enumerate(doc.paragraphs):
+        _doc_para_to_idx[id(_dp.element)] = _di
+
+    log.info(
+        f"[13.7d] top_level_paragraphs count: {len(_top_level_paragraphs)}, "
+        f"doc.paragraphs count: {len(doc.paragraphs)}, "
+        f"light_xml structure paragraphs count: {len(paragraphs_info)}"
+    )
+
     chapter_anchors: dict = {}  # ci → anchor element
     _chapter_anchor_debug = []
     if _chapter_proc and _chapter_objects:
@@ -1380,28 +1402,43 @@ def assemble_hwpx_hybrid(
                 continue
             _ai_idx = _pi[0]
             _real_idx = idx_map.get(_ai_idx, _ai_idx) if idx_map else _ai_idx
-            if 0 <= _real_idx < len(doc.paragraphs):
-                chapter_anchors[ci] = doc.paragraphs[_real_idx].element
-                # status="ok"인 chapter도 chapter title element preserve (remove 방지)
-                if _real_idx not in header_indices:
-                    header_indices.add(_real_idx)
+            if 0 <= _real_idx < len(_top_level_paragraphs):
+                _anchor_el = _top_level_paragraphs[_real_idx]
+                chapter_anchors[ci] = _anchor_el
+                # anchor element의 doc.paragraphs index 찾아 header_indices에 추가
+                _anchor_doc_idx = _doc_para_to_idx.get(id(_anchor_el), -1)
+                if _anchor_doc_idx >= 0 and _anchor_doc_idx not in header_indices:
+                    header_indices.add(_anchor_doc_idx)
+                # anchor text preview for debug verification (매핑 정확성 확인용)
+                _anchor_text = ""
+                for _t in _anchor_el.iter():
+                    if _t.tag.endswith("}t") and _t.text:
+                        _anchor_text += _t.text
+                        if len(_anchor_text) > 50:
+                            break
+                log.info(
+                    f"[13.7d] chapter_anchors[{ci}] light_xml_idx={_real_idx}, "
+                    f"doc_idx={_anchor_doc_idx}, text_preview='{_anchor_text[:50]}'"
+                )
                 _chapter_anchor_debug.append({
                     "chapter_idx": ci,
-                    "anchor_real_idx": _real_idx,
-                    "anchor_ai_idx": _ai_idx,
+                    "light_xml_idx": _real_idx,
+                    "ai_idx": _ai_idx,
+                    "doc_idx": _anchor_doc_idx,
+                    "anchor_text_preview": _anchor_text[:50],
                     "status": ch_obj.get("status"),
                 })
             else:
                 _chapter_anchor_debug.append({
                     "chapter_idx": ci,
-                    "anchor_real_idx": _real_idx,
-                    "anchor_ai_idx": _ai_idx,
+                    "light_xml_idx": _real_idx,
+                    "ai_idx": _ai_idx,
                     "status": ch_obj.get("status"),
-                    "error": f"real_idx out of range (len={len(doc.paragraphs)})",
+                    "error": f"real_idx out of range (top_level_paragraphs len={len(_top_level_paragraphs)})",
                 })
                 log.warning(
                     f"chapter {ci} anchor real_idx {_real_idx} out of range "
-                    f"(doc.paragraphs len={len(doc.paragraphs)}, ai_idx={_ai_idx})"
+                    f"(top_level_paragraphs len={len(_top_level_paragraphs)}, ai_idx={_ai_idx})"
                 )
     if chapter_anchors:
         log.info(f"assemble: chapter_anchors set for {len(chapter_anchors)} chapters")
