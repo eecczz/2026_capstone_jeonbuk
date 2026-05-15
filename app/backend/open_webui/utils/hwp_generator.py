@@ -1043,6 +1043,21 @@ def _process_chapter_objects(
     }
 
 
+def _reassign_unique_ids(elem, counter):
+    """13.7b deepcopy 후 element 안 paragraph/tbl id를 unique sequential로 재할당.
+
+    HWPX 양식 원본의 paragraph id가 동일값 (예: 2147483648 default)이라
+    단순 deepcopy 시 같은 id가 100+회 반복 → 한컴 위조/변조 경고.
+
+    paragraph(p), table(tbl), 기타 id attribute 가진 element 모두 처리.
+    counter는 [int] mutable list로 외부에서 전달 (call 간 누적).
+    """
+    for e in elem.iter():
+        if e.get("id") is not None:
+            counter[0] += 1
+            e.set("id", str(counter[0]))
+
+
 def assemble_hwpx_hybrid(
     template_source,
     structure: dict,
@@ -2218,6 +2233,11 @@ def assemble_hwpx_hybrid(
     _phase2_rewrite_conflicts = []
     _phase2_ai_marker_residuals = 0
 
+    # 13.7b: deepcopy element의 unique id 재할당 counter
+    # 양식 원본 paragraph id가 동일값 default이면 deepcopy 시 중복 → HWPX 위조/변조 경고.
+    # 큰 값에서 시작 (양식 원본 id와 충돌 회피).
+    _assembly_id_counter = [3_000_000_000]
+
     for bi_idx, item in enumerate(body_items):
         role = item.get("role", "")
         text = item.get("text", "")
@@ -2430,6 +2450,9 @@ def assemble_hwpx_hybrid(
 
         # exemplar 복제
         new_elem = deepcopy(exemplars[role])
+        # 13.7b: deepcopy element의 paragraph/tbl 등 id 재할당 (unique 보장)
+        # 양식 원본 id 그대로 두면 중복 → HWPX 위조/변조 경고
+        _reassign_unique_ids(new_elem, _assembly_id_counter)
 
         # 텍스트 교체 (공백 prefix 포함)
         try:
