@@ -2,6 +2,31 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🚨 최우선 원칙 — 근본적 해결 (이거 안 지키면 시간 더 듭니다)
+
+**매 작업(plan/fix/구현) 시작 전 반드시 다음을 수행한다.**
+
+1. **memory의 `project_principles.md` 읽기 (27항 전체)**.
+2. **이번 작업이 어떤 원칙과 관련 있는지 명시한다.**
+3. **surface fix가 아니라 root cause를 찾는다.**
+   - "이거만 고치면 될 것 같은데" — 위험 신호. root cause 찾기 전까지 fix 시작 X.
+   - 증상 (wrong output) → 직접적 path (어떤 코드가 wrong element 출력?) → 그 path가 의존하는 logic (어떤 본보기 사용?) → 그 logic의 가정 (가정이 양식 evidence와 맞는가?). **여기까지 들어가야 root cause**.
+   - 근본 해결 안 하고 surface fix → 추후 같은 문제 재발하면서 시간 누적 (실제 사례: 2026-05-15 3시간 wrong output 반복 fix).
+
+4. **schema/idx 레벨 진단으로 멈추지 말 것**.
+   - assembly success_count = 27/0이라도 출력 wrong일 수 있음.
+   - 항상 **element-level (실제 XML output)** 직접 검증. 양식 파일을 zipfile로 열어 section.xml paragraph text 직접 추출.
+   - 사용자가 wrong output 보여줄 때까지 기다리지 말 것.
+
+5. **변경 시 다른 코드 path의 가정과 충돌하는지 확인**.
+   - Phase A 후 Phase B-1이 Phase A 가정 어기는 case 발생 (이번 세션). 매 변경 시 영향 범위 검토.
+
+6. **시간이 없어 보일수록 근본 해결이 우선**.
+   - "deadline이라 빠르게" → surface fix → 사용자가 wrong output 발견 → 다음 fix → 또 wrong → 시간 누적.
+   - 30분 추가 들여 근본 해결하면 3시간 절약.
+
+원칙 위반 사례 기록은 project_principles.md 끝의 "위반 사례" 섹션에 누적.
+
 ## Project Overview
 
 Open WebUI instance customized for 전북특별자치도 (Jeonbuk province). Full-stack AI chat platform with multi-provider LLM support (OpenAI, Ollama, Anthropic, Google GenAI), RAG/retrieval, image generation, audio, collaborative editing, and Korean document format (HWP/HWPX) support.
