@@ -2301,6 +2301,26 @@ def assemble_hwpx_hybrid(
                 errors.append(f"unknown role '{role}', skipping: {text[:50]}")
                 continue
 
+        # 13.7b §4 outer fallback safety: 만약 사용할 exemplar가 표(tbl) 포함 element이고
+        # chapter_local이 아닌 outer exemplar라면 → skip (양식 chapter title 표가 body로
+        # 떨어지는 wrong 방지). chapter-local exemplars의 표는 chapter 영역 내 의도된 표.
+        _final_exemplar = exemplars.get(role)
+        if _final_exemplar is not None and "__ci" not in role:
+            # outer exemplar (chapter-local 아님). 표 포함 여부 확인
+            _has_tbl_in_exemplar = False
+            for _c in _final_exemplar.iter():
+                _ctag = _c.tag.split("}")[-1] if "}" in _c.tag else _c.tag
+                if _ctag == "tbl":
+                    _has_tbl_in_exemplar = True
+                    break
+            if _has_tbl_in_exemplar and _ci_for_role is not None and _ci_for_role >= 0:
+                # chapter 안에서 호출된 outer-fallback이고 그 exemplar가 표 — skip
+                log.warning(
+                    f"[13.7b §4] outer fallback exemplar는 표 포함 — skip. "
+                    f"role={item.get('role')!r} ci={_ci_for_role}. wrong text 방지."
+                )
+                continue
+
         if content_only_mode:
             # Phase 2: sibling_index 계산 → reattach → rewrite safety net
             from open_webui.utils.marker_separator import (
