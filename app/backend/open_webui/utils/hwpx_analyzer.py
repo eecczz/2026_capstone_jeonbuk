@@ -9103,6 +9103,15 @@ def write_stage_debug_files(
         _skip("16_source_blocks.json")
 
     # ═══════════════════════════════════════════════════════════════
+    # 17. Section role proposals (13.7b B2.2, AI sub-step, debug-only)
+    # ═══════════════════════════════════════════════════════════════
+    _srp_dbg = debug_payload.get("section_role_proposals")
+    if _srp_dbg:
+        _write("17_section_role_proposals.json", _srp_dbg)
+    else:
+        _skip("17_section_role_proposals.json")
+
+    # ═══════════════════════════════════════════════════════════════
     # 99. Debug summary
     # ═══════════════════════════════════════════════════════════════
     sf_pass = sum(
@@ -11925,6 +11934,484 @@ def summarize_adaptation_plan(
         "ai_calls": ai_call_info or {},
         "batch_strategy": batch_strategy,
         "batch_split_reason": batch_split_reason,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 13.7b B2.2: Section Role Proposal AI sub-step
+#
+# section의 다른 section과의 구조 관계 + 처리 추천을 AI로 받는다.
+# - structural_relationship / placement_recommendation: free-form (enum 폐기)
+# - supporting/counter_evidence / ambiguity_flags / confidence 강제
+# - code는 schema 위반만 본다 (의미 해석 X)
+# - AI 호출/parse 실패 또는 schema 위반은 보수적 fallback proposal
+# 참조: docs/13_7b_plan.md §4.5 / §9
+# ──────────────────────────────────────────────────────────────────────
+
+
+def summarize_section_for_proposal(
+    section_id: int,
+    section_result: dict,
+    census_entry: dict,
+    max_text_preview: int = 80,
+    max_heading_samples: int = 6,
+    max_paragraph_samples: int = 5,
+) -> dict:
+    """13.7b B2.2: section_role_proposal AI input 압축.
+
+    section_result(B2.1.2 산출물) + census_entry(B0a 산출물)에서
+    AI가 structural_relationship/placement_recommendation 판단에 필요한
+    raw evidence만 모은다. paragraph 전체는 input에 X (token 폭증 방지).
+
+    schema는 정책 분기 anchor가 아니라 AI 판단용 raw evidence만 담는다.
+    숫자 metric은 reference로만 (§2.8) — hard rule 안 됨.
+    """
+    structure = section_result.get("structure", {}) or {}
+    chapter_types = section_result.get("chapter_types", {}) or {}
+    marker_policy = section_result.get("marker_policy_1f", {}) or {}
+    idx_texts = section_result.get("idx_texts", {}) or {}
+    paragraphs = structure.get("paragraphs", []) or []
+
+    # chapter_types compact summary (key + title_role)
+    chapter_types_summary: list[dict] = []
+    for ct_key, ct_val in chapter_types.items():
+        if not isinstance(ct_val, dict):
+            continue
+        chapter_types_summary.append({
+            "type": ct_key,
+            "title_role": ct_val.get("title_role"),
+            "root_roles": ct_val.get("root_roles", []),
+        })
+
+    # role cluster fingerprint
+    role_counter: dict[str, int] = {}
+    level_counter: dict[int, int] = {}
+    has_parent_count = 0
+    for p in paragraphs:
+        if not isinstance(p, dict):
+            continue
+        r = p.get("role")
+        if r:
+            role_counter[r] = role_counter.get(r, 0) + 1
+        lvl = p.get("level")
+        if isinstance(lvl, int):
+            level_counter[lvl] = level_counter.get(lvl, 0) + 1
+        if p.get("parent_idx") is not None:
+            has_parent_count += 1
+
+    top_roles = sorted(role_counter.items(), key=lambda kv: kv[1], reverse=True)
+    role_cluster_summary = {
+        "distinct_count": len(role_counter),
+        "top_roles": [
+            {"role": r, "count": c} for r, c in top_roles[:8]
+        ],
+        "level_distribution": {str(k): v for k, v in sorted(level_counter.items())},
+        "paragraphs_with_parent": has_parent_count,
+    }
+
+    # marker_policy compact summary
+    marker_policy_summary: dict = {}
+    if isinstance(marker_policy, dict):
+        types_present = sorted({
+            (v.get("type") if isinstance(v, dict) else None)
+            for v in marker_policy.values()
+            if isinstance(v, dict)
+        } - {None})
+        marker_policy_summary = {
+            "role_count": len(marker_policy),
+            "types_present": list(types_present),
+        }
+
+    # heading-like sample (marker 있는 low-level paragraph 위주)
+    # heuristic: level 0~2 with non-empty marker OR explicit title_role
+    title_roles: set[str] = set()
+    for ct_val in chapter_types.values():
+        if not isinstance(ct_val, dict):
+            continue
+        tr = ct_val.get("title_role")
+        if isinstance(tr, str):
+            title_roles.add(tr)
+        elif isinstance(tr, list):
+            for x in tr:
+                if isinstance(x, str):
+                    title_roles.add(x)
+
+    heading_samples: list[dict] = []
+    for p in paragraphs:
+        if len(heading_samples) >= max_heading_samples:
+            break
+        if not isinstance(p, dict):
+            continue
+        lvl = p.get("level")
+        marker = (p.get("marker") or "").strip()
+        role = p.get("role")
+        is_title_role = role in title_roles if role else False
+        if (isinstance(lvl, int) and lvl <= 2 and marker) or is_title_role:
+            idx_key = str(p.get("idx"))
+            txt = idx_texts.get(idx_key, "") if isinstance(idx_texts, dict) else ""
+            heading_samples.append({
+                "idx": p.get("idx"),
+                "role": role,
+                "level": lvl,
+                "marker": marker,
+                "is_title_role_for_some_chapter_type": is_title_role,
+                "text": (txt or "")[:max_text_preview],
+            })
+
+    # paragraph sample (first N text-non-empty)
+    paragraph_samples: list[dict] = []
+    if isinstance(idx_texts, dict):
+        sorted_idx_keys = sorted(idx_texts.keys(), key=lambda k: int(k) if str(k).isdigit() else 0)
+        for k in sorted_idx_keys:
+            if len(paragraph_samples) >= max_paragraph_samples:
+                break
+            txt = idx_texts.get(k, "")
+            if not txt or not txt.strip():
+                continue
+            paragraph_samples.append({
+                "idx": int(k) if str(k).isdigit() else k,
+                "text": txt[:max_text_preview],
+            })
+
+    layout = census_entry.get("layout", {}) if isinstance(census_entry, dict) else {}
+
+    return {
+        "section_id": section_id,
+        "name": census_entry.get("name") if isinstance(census_entry, dict) else None,
+        "paragraph_count": census_entry.get("paragraph_count", len(paragraphs)) if isinstance(census_entry, dict) else len(paragraphs),
+        "table_count": census_entry.get("table_count", 0) if isinstance(census_entry, dict) else 0,
+        "section_xml_size": census_entry.get("section_xml_size") if isinstance(census_entry, dict) else None,
+        "secpr_present": census_entry.get("secpr_present") if isinstance(census_entry, dict) else None,
+        "idx_range": census_entry.get("idx_range") if isinstance(census_entry, dict) else None,
+        "layout_brief": {
+            "orientation": layout.get("orientation"),
+            "page_width": layout.get("page_width"),
+            "page_height": layout.get("page_height"),
+            "margin_left": layout.get("margin_left"),
+            "margin_right": layout.get("margin_right"),
+            "margin_top": layout.get("margin_top"),
+            "margin_bottom": layout.get("margin_bottom"),
+            "inherited": layout.get("inherited"),
+        },
+        "first_paragraph_preview": (census_entry.get("first_paragraph_preview") or "")[:max_text_preview * 2] if isinstance(census_entry, dict) else "",
+        "last_paragraph_preview": (census_entry.get("last_paragraph_preview") or "")[:max_text_preview * 2] if isinstance(census_entry, dict) else "",
+        "chapter_types_summary": chapter_types_summary,
+        "role_cluster_summary": role_cluster_summary,
+        "marker_policy_summary": marker_policy_summary,
+        "heading_samples": heading_samples,
+        "paragraph_samples": paragraph_samples,
+    }
+
+
+def build_section_role_proposal_prompt(
+    sections_summary: list[dict],
+    document_context: dict | None = None,
+) -> list[dict]:
+    """13.7b B2.2: section_role_proposal batch prompt.
+
+    docs/13_7b_plan.md §9.3 system 메시지 + §4.5 output schema.
+
+    원칙:
+    - 각 section의 structural_relationship + placement_recommendation을 free-form 텍스트로
+    - 양식 layout 사실을 자유 텍스트로 기술 (enum 카테고리에 끼워 맞추기 X)
+    - 숫자 기준이나 자동 분류로 판단 X (양식 content/structure evidence 기반)
+    - supporting/counter_evidence / ambiguity_flags / confidence 필수
+    """
+    import json as _json
+
+    _doc_ctx = document_context or {}
+    _doc_brief = {
+        "template_title": _doc_ctx.get("template_title", ""),
+        "section_count": _doc_ctx.get("section_count", len(sections_summary)),
+        "route": _doc_ctx.get("route", "chapter"),
+    }
+
+    _sections_brief = []
+    for s in sections_summary:
+        _sections_brief.append({
+            "section_id": s.get("section_id"),
+            "name": s.get("name"),
+            "paragraph_count": s.get("paragraph_count"),
+            "table_count": s.get("table_count"),
+            "secpr_present": s.get("secpr_present"),
+            "idx_range": s.get("idx_range"),
+            "layout_brief": s.get("layout_brief", {}),
+            "first_paragraph_preview": s.get("first_paragraph_preview", ""),
+            "last_paragraph_preview": s.get("last_paragraph_preview", ""),
+            "chapter_types_summary": s.get("chapter_types_summary", []),
+            "role_cluster_summary": s.get("role_cluster_summary", {}),
+            "marker_policy_summary": s.get("marker_policy_summary", {}),
+            "heading_samples": s.get("heading_samples", []),
+            "paragraph_samples": s.get("paragraph_samples", []),
+        })
+
+    system_msg = (
+        "당신은 양식 문서의 section 구조 관계와 처리 추천을 제안하는 도구입니다. "
+        "숫자 기준이나 자동 분류로 판단하지 마시고, section의 content/structure evidence를 보고 판단하세요. "
+        "양식에 고정된 카테고리(top_level/nested/attachment 등)에 억지로 끼워 맞추지 마시고, "
+        "양식 layout 사실과 처리 추천을 자유 텍스트로 기술하세요. "
+        "JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
+    )
+
+    user_msg = (
+        "[document_context]\n"
+        f"{_json.dumps(_doc_brief, ensure_ascii=False, indent=2)}\n\n"
+        "[sections]\n"
+        f"{_json.dumps(_sections_brief, ensure_ascii=False, indent=2)}\n\n"
+        "각 section에 대해 다음 JSON schema로 응답하세요:\n"
+        "{\n"
+        '  "section_role_proposals": [\n'
+        "    {\n"
+        '      "section_id": int,\n'
+        '      "structural_relationship": "section의 다른 section과의 구조 관계를 자유 텍스트로 기술 (예: \\"section0 본문 chapter 다음에 오는 독립 chapter group처럼 보임\\", \\"section0 ChX의 nested/continuation 후보\\", \\"별첨/부록 형태\\")",\n'
+        '      "placement_recommendation": "처리 추천을 자유 텍스트로 기술 (예: \\"독립 chapter list 항목으로 추가\\", \\"section0 ChX 하위 nested 배치\\", \\"preserve only\\")",\n'
+        '      "supporting_evidence": ["section content/structure에서 인용한 근거"],\n'
+        '      "counter_evidence": ["분류 위험 신호 / 다른 해석 가능성"],\n'
+        '      "ambiguity_flags": ["unable_to_classify | evidence_too_sparse | layout_only | ..."],\n'
+        '      "confidence": "high|medium|low",\n'
+        '      "_debug": {"reference_label": "top_level | nested | attachment | empty | unknown | other (자유 hint, 통계용)"}\n'
+        "    }, ...\n"
+        "  ]\n"
+        "}\n\n"
+        "원칙:\n"
+        "- structural_relationship/placement_recommendation은 free-form. 고정 enum에 매핑하지 말 것.\n"
+        "- supporting_evidence는 section content/structure 인용 (특정 paragraph text, marker pattern, layout fact 등).\n"
+        '- counter_evidence는 분류 위험 신호 (예: \\"별첨처럼 보이지만 본문 일부 가능성\\").\n'
+        "- ambiguity_flags는 자유 텍스트 list. 명백히 모호하면 채움. 명확하면 비움.\n"
+        "- confidence high를 주려면 supporting_evidence 명시 + counter_evidence 검토 필수.\n"
+        "- 양식에 fixed/repeatable/hybrid 같은 분류를 임의로 부여하지 말 것. 양식 evidence가 가리키는 사실만 기술.\n"
+        '- paragraph_count/table_count 같은 숫자는 reference metric. 그 자체로 \\"본문\\" 또는 \\"attachment\\"라고 결정 X.\n'
+        "- 모든 section에 대해 proposal 생성. 누락 X.\n"
+    )
+
+    return [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_section_role_proposal_from_llm(
+    llm_raw_response: str,
+    expected_section_ids: list[int],
+) -> dict:
+    """13.7b B2.2: section_role_proposal LLM 응답 parse.
+
+    Returns:
+        {
+          "section_role_proposals": [proposal, ...],
+          "_validation": {
+            "ok": bool,
+            "errors": [str, ...],
+            "missing_section_ids": [int, ...],
+            "raw_response_len": int,
+          }
+        }
+    """
+    import json as _json
+    import re as _re
+
+    _raw = (llm_raw_response or "").strip()
+    _result = {
+        "section_role_proposals": [],
+        "_validation": {
+            "ok": False,
+            "errors": [],
+            "missing_section_ids": list(expected_section_ids),
+            "raw_response_len": len(_raw),
+        },
+    }
+
+    if not _raw:
+        _result["_validation"]["errors"].append("empty_response")
+        return _result
+
+    _stripped = _raw
+    _m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", _raw, _re.DOTALL)
+    if _m:
+        _stripped = _m.group(1)
+    else:
+        _m2 = _re.search(r"(\{.*\})", _raw, _re.DOTALL)
+        if _m2:
+            _stripped = _m2.group(1)
+
+    try:
+        _parsed = _json.loads(_stripped)
+    except Exception as e:
+        _result["_validation"]["errors"].append(f"json_parse_failed: {e}")
+        return _result
+
+    if not isinstance(_parsed, dict):
+        _result["_validation"]["errors"].append("response_not_object")
+        return _result
+
+    _proposals = _parsed.get("section_role_proposals")
+    if not isinstance(_proposals, list):
+        _result["_validation"]["errors"].append("section_role_proposals_not_list")
+        return _result
+
+    _seen_ids = set()
+    _valid_proposals = []
+    for i, p in enumerate(_proposals):
+        if not isinstance(p, dict):
+            _result["_validation"]["errors"].append(f"proposal[{i}]_not_object")
+            continue
+        sid = p.get("section_id")
+        if not isinstance(sid, int):
+            _result["_validation"]["errors"].append(f"proposal[{i}]_section_id_not_int")
+            continue
+        _seen_ids.add(sid)
+        _valid_proposals.append(p)
+
+    _result["section_role_proposals"] = _valid_proposals
+    _result["_validation"]["missing_section_ids"] = [
+        i for i in expected_section_ids if i not in _seen_ids
+    ]
+    _result["_validation"]["ok"] = (
+        not _result["_validation"]["errors"]
+        and not _result["_validation"]["missing_section_ids"]
+    )
+    return _result
+
+
+def validate_section_role_proposal(proposal: dict) -> dict:
+    """13.7b B2.2: 단일 section_role_proposal schema validation.
+
+    docs/13_7b_plan.md §9.4 — 다음 경우 validation_failed:
+    - structural_relationship 빈 string 또는 누락
+    - placement_recommendation 빈 string 또는 누락
+    - supporting_evidence 키 누락
+    - counter_evidence 키 누락
+    - ambiguity_flags 키 누락
+    - confidence enum 외
+
+    code는 의미 해석 X. 명백한 schema 위반만 본다.
+    placement_recommendation 텍스트의 의미 매핑은 B0b review에서 사용자+claude 합의 (§9.5).
+
+    Returns:
+        {"ok": bool, "errors": [str, ...]}
+    """
+    errors: list[str] = []
+
+    if not isinstance(proposal, dict):
+        return {"ok": False, "errors": ["not_object"]}
+
+    sr = proposal.get("structural_relationship")
+    if not isinstance(sr, str) or not sr.strip():
+        errors.append("structural_relationship_missing_or_empty")
+
+    pr = proposal.get("placement_recommendation")
+    if not isinstance(pr, str) or not pr.strip():
+        errors.append("placement_recommendation_missing_or_empty")
+
+    if "supporting_evidence" not in proposal:
+        errors.append("supporting_evidence_key_missing")
+    elif not isinstance(proposal["supporting_evidence"], list):
+        errors.append("supporting_evidence_not_list")
+
+    if "counter_evidence" not in proposal:
+        errors.append("counter_evidence_key_missing")
+    elif not isinstance(proposal["counter_evidence"], list):
+        errors.append("counter_evidence_not_list")
+
+    if "ambiguity_flags" not in proposal:
+        errors.append("ambiguity_flags_key_missing")
+    elif not isinstance(proposal["ambiguity_flags"], list):
+        errors.append("ambiguity_flags_not_list")
+
+    conf = proposal.get("confidence")
+    if conf not in CONFIDENCE_LEVELS:
+        errors.append(f"confidence_not_in_enum:{conf!r}")
+
+    return {"ok": not errors, "errors": errors}
+
+
+def make_fallback_section_role_proposal(
+    section_id: int,
+    reason: str,
+    detail: str = "",
+) -> dict:
+    """13.7b B2.2: AI 호출/parse/validation 실패 시 보수적 fallback proposal.
+
+    docs/13_7b_plan.md §9.4 — AI 호출 fail은
+    ambiguity_flags=[reason], confidence="low", placement_recommendation="preserve only".
+
+    fallback은 section을 preserve 처리하게 하는 보수적 추천. code 의미 결정 아님.
+    실제 preserve 적용 여부는 B0b review/B3에서 정책으로 결정 (§9.5).
+    """
+    return {
+        "section_id": section_id,
+        "structural_relationship": (
+            "AI proposal 미확보 — 양식 evidence 기반 자유 텍스트 분석 부재"
+        ),
+        "placement_recommendation": "preserve only",
+        "supporting_evidence": [],
+        "counter_evidence": [],
+        "ambiguity_flags": [reason] + ([detail] if detail else []),
+        "confidence": "low",
+        "_debug": {
+            "reference_label": "unknown",
+            "fallback_reason": reason,
+            "fallback_detail": detail,
+        },
+    }
+
+
+def summarize_section_role_proposals(
+    proposals: list[dict],
+    validation_results: list[dict] | None = None,
+    ai_call_info: dict | None = None,
+    fallback_count: int = 0,
+) -> dict:
+    """13.7b B2.2: _debug_payload["section_role_proposals"] summary.
+
+    의미 분포는 free-form이라 카운트 불가. 대신 confidence 분포, ambiguity 비율,
+    validation 통과 비율 등 reference metric만 기록 (§2.8).
+    """
+    confidence_counts = {c: 0 for c in CONFIDENCE_LEVELS}
+    sections_with_ambiguity = 0
+    sections_with_counter_evidence = 0
+    sections_with_supporting_evidence = 0
+    reference_label_counts: dict[str, int] = {}
+
+    for p in proposals:
+        if not isinstance(p, dict):
+            continue
+        c = p.get("confidence")
+        if c in confidence_counts:
+            confidence_counts[c] += 1
+        if p.get("ambiguity_flags"):
+            sections_with_ambiguity += 1
+        if p.get("counter_evidence"):
+            sections_with_counter_evidence += 1
+        if p.get("supporting_evidence"):
+            sections_with_supporting_evidence += 1
+        _dbg = p.get("_debug", {}) or {}
+        _rl = _dbg.get("reference_label") if isinstance(_dbg, dict) else None
+        if isinstance(_rl, str):
+            reference_label_counts[_rl] = reference_label_counts.get(_rl, 0) + 1
+
+    validation_pass_count = 0
+    validation_fail_count = 0
+    if validation_results:
+        for v in validation_results:
+            if isinstance(v, dict) and v.get("ok"):
+                validation_pass_count += 1
+            else:
+                validation_fail_count += 1
+
+    return {
+        "proposal_count": len(proposals),
+        "fallback_count": fallback_count,
+        "confidence_distribution": confidence_counts,
+        "sections_with_ambiguity_flags": sections_with_ambiguity,
+        "sections_with_counter_evidence": sections_with_counter_evidence,
+        "sections_with_supporting_evidence": sections_with_supporting_evidence,
+        "reference_label_distribution": reference_label_counts,
+        "validation_pass_count": validation_pass_count,
+        "validation_fail_count": validation_fail_count,
+        "ai_calls": ai_call_info or {},
+        "proposals": proposals,
+        "validation_results": validation_results or [],
     }
 
 
