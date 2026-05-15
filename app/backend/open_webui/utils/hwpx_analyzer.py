@@ -13167,10 +13167,17 @@ def decide_section_processing(
     """13.7b section-local generation-lite: section 처리 결정.
 
     deadline 정책 (사용자 directive 2026-05-15):
-    - B2.2 proposal의 reference_label, confidence, ambiguity_flags 기반
-    - reference_label이 top_level/body/other 이면서 high/medium confidence + ambiguity 없음 + chapter title 존재
-    - → action="generate"
-    - 그 외 (attachment/empty/low confidence/ambiguous/no chapters) → action="preserve"
+    - B2.2 proposal의 reference_label + confidence 우선
+    - reference_label이 top_level/body/other 이면서 confidence != "low" → generate
+    - 그 외 (attachment/empty/nested/low confidence) → preserve
+
+    ambiguity_flags는 generate 진행 시 debug에 기록만 (hard preserve gate X).
+    이유: ambiguity_flags가 "분류 불확실"이 아니라 "부수적 위험 신호"인 경우
+    많음 (예: "본문이지만 attachment 사이에 끼어있다"는 layout 정보).
+    분류 자체는 high confidence이면 confident. 13.7c가 chapter 단위로
+    generate/preserve를 다시 판단함.
+
+    "분류 불확실"은 confidence="low"로 표시. low confidence면 preserve.
 
     NOTE: code는 free-form structural_relationship/placement_recommendation 텍스트를
     해석하지 않는다. reference_label은 양식 evidence statistical hint로 사용 — deadline
@@ -13185,6 +13192,7 @@ def decide_section_processing(
           "reason": str,
           "deadline_policy_relaxation": bool,
           "details": [str] | None,
+          "ambiguity_acknowledged": bool,  # generate인데 ambig flag 있었으면 True
         }
     """
     if not section_chapter_list or not isinstance(section_chapter_list, dict):
@@ -13193,6 +13201,7 @@ def decide_section_processing(
             "reason": "no_section_chapter_list",
             "deadline_policy_relaxation": False,
             "details": None,
+            "ambiguity_acknowledged": False,
         }
 
     chapters = section_chapter_list.get("chapters") or []
@@ -13202,6 +13211,7 @@ def decide_section_processing(
             "reason": "empty_section_chapter_list",
             "deadline_policy_relaxation": False,
             "details": [section_chapter_list.get("fallback_reason") or "no_chapters"],
+            "ambiguity_acknowledged": False,
         }
 
     if not b22_proposal or not isinstance(b22_proposal, dict):
@@ -13210,30 +13220,24 @@ def decide_section_processing(
             "reason": "no_b22_proposal",
             "deadline_policy_relaxation": False,
             "details": None,
+            "ambiguity_acknowledged": False,
         }
 
     conf = b22_proposal.get("confidence")
+    ambig = b22_proposal.get("ambiguity_flags") or []
+    ref_label = ""
+    _dbg = b22_proposal.get("_debug")
+    if isinstance(_dbg, dict):
+        ref_label = _dbg.get("reference_label", "") or ""
+
     if conf == "low":
         return {
             "action": "preserve",
             "reason": "ai_low_confidence",
             "deadline_policy_relaxation": False,
-            "details": b22_proposal.get("ambiguity_flags") or [],
+            "details": list(ambig) + [f"reference_label={ref_label}"],
+            "ambiguity_acknowledged": bool(ambig),
         }
-
-    ambig = b22_proposal.get("ambiguity_flags") or []
-    if ambig:
-        return {
-            "action": "preserve",
-            "reason": "ai_ambiguity_flags_present",
-            "deadline_policy_relaxation": False,
-            "details": ambig,
-        }
-
-    ref_label = ""
-    _dbg = b22_proposal.get("_debug")
-    if isinstance(_dbg, dict):
-        ref_label = _dbg.get("reference_label", "") or ""
 
     if ref_label in ("top_level", "body", "other"):
         return {
@@ -13244,14 +13248,16 @@ def decide_section_processing(
                 f"reference_label={ref_label}",
                 f"confidence={conf}",
                 f"chapter_count={len(chapters)}",
-            ],
+            ] + ([f"ambiguity_flags={ambig}"] if ambig else []),
+            "ambiguity_acknowledged": bool(ambig),
         }
 
     return {
         "action": "preserve",
         "reason": f"ai_reference_label_not_body:{ref_label or 'unknown'}",
         "deadline_policy_relaxation": True,
-        "details": [f"reference_label={ref_label}"],
+        "details": [f"reference_label={ref_label}"] + ([f"ambiguity_flags={ambig}"] if ambig else []),
+        "ambiguity_acknowledged": bool(ambig),
     }
 
 
