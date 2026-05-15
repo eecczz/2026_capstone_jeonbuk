@@ -13053,6 +13053,113 @@ def _build_1a_to_xml_p_idx_mapping(
     return mapping
 
 
+def build_chapter_local_exemplars(
+    chapter_list_per_section: dict,
+    section_results: dict,
+    ai_to_xml_mappings: dict,
+) -> dict:
+    """13.7b §4 chapter-local pattern preservation: chapter별 role 본보기 매핑.
+
+    각 chapter의 자기 영역(section의 chapter range) paragraph에서 role별 첫 등장
+    paragraph를 본보기로 추출. assembly가 body item insert 시 chapter-local
+    exemplar 우선 사용. local에 없는 role만 outer (section 0) fallback.
+
+    §4 원칙 실현: Ⅰ장 body는 Ⅰ장 트리 안 paragraph 본보기로 생성. multi-section
+    양식에서는 section 4 chapter body는 section 4 paragraph 본보기로 생성
+    (section 0 element 안 가져다 씀).
+
+    Args:
+        chapter_list_per_section: {section_id: extract_section_chapter_list result}
+        section_results: section_results[N]
+        ai_to_xml_mappings: {section_id: {1a_idx: xml_idx}}
+
+    Returns:
+        {chapter_obj_idx: {"section_id": int, "role_to_xml_idx": {role: xml_idx}}}
+        chapter_obj_idx는 assembly의 _chapter_objects list index 기준 (0-based 누적)
+    """
+    result: dict = {}
+    chapter_obj_idx = 0
+
+    # 13.4b path (section 0 기존 path) chapter는 별도 처리 — 여기서는 section_local
+    # chapter list만 처리. section 0 13.4b chapter는 DB tool에서 별도 매핑 추가.
+
+    for sid_int in sorted(
+        chapter_list_per_section.keys(),
+        key=lambda k: int(k) if isinstance(k, (int, str)) and str(k).isdigit() else 999
+    ):
+        scl = chapter_list_per_section.get(sid_int) or {}
+        chapters = scl.get("chapters") or []
+        sr = section_results.get(sid_int) or section_results.get(str(sid_int)) or {}
+        struct = sr.get("structure", {}) if isinstance(sr, dict) else {}
+        paragraphs = struct.get("paragraphs", []) if isinstance(struct, dict) else []
+        ai_to_xml = ai_to_xml_mappings.get(sid_int, {})
+
+        # paragraph_idx → role 매핑
+        para_role_map: dict = {}
+        for p in paragraphs:
+            if isinstance(p, dict):
+                idx = p.get("idx")
+                role = p.get("role")
+                if idx is not None and role:
+                    para_role_map[idx] = role
+
+        # 각 chapter의 role 본보기 추출 (chapter 범위 안 paragraph)
+        for ch in chapters:
+            ch_section_local_indices_1a = ch.get("section_local_paragraph_1a_indices")
+            # NOTE: extract_section_chapter_list 결과의 section_local_paragraph_indices는
+            # xml mapping 후 idx. 1a idx 따로 보관 필요. 일단 1a paragraphs.idx 기준 매칭.
+            # ch.section_local_paragraph_indices가 xml idx로 변환됐으면,
+            # 1a paragraphs idx와 매칭 필요 — para_role_map의 1a idx 기준.
+            # 단순화: 1a paragraphs 순서 = sorted_paragraphs. chapter range start_pos~end_pos.
+            # 그 1a paragraphs의 role을 모음 + 각 role의 첫 1a idx → xml idx.
+
+            role_to_xml_idx: dict = {}
+            # chapter range는 section_local_paragraph_indices (xml idx)
+            # 다시 1a idx로 역매핑 어려움. 대신 1a paragraphs에서 chapter title role을
+            # 찾고 그 후로 다음 chapter title 전까지 paragraph 모음.
+            title_role = ch.get("title_role")
+            title_1a_idx = ch.get("title_section_local_1a_idx")  # 1a idx 보관됨
+            if title_1a_idx is None:
+                continue
+
+            # 다음 chapter title 1a idx (chapter range end)
+            next_idx = None
+            ch_idx_in_list = ch.get("chapter_idx")
+            if isinstance(ch_idx_in_list, int) and ch_idx_in_list + 1 < len(chapters):
+                next_ch = chapters[ch_idx_in_list + 1]
+                next_idx = next_ch.get("title_section_local_1a_idx")
+
+            # 1a paragraphs 중 chapter range (title_1a_idx ~ next_idx - 1)
+            for p in paragraphs:
+                if not isinstance(p, dict):
+                    continue
+                p_idx = p.get("idx")
+                if p_idx is None:
+                    continue
+                if p_idx < title_1a_idx:
+                    continue
+                if next_idx is not None and p_idx >= next_idx:
+                    break
+                role = p.get("role")
+                if not role:
+                    continue
+                if role in role_to_xml_idx:
+                    continue
+                # 1a idx → xml idx 변환
+                xml_idx = ai_to_xml.get(p_idx, p_idx)
+                role_to_xml_idx[role] = xml_idx
+
+            if role_to_xml_idx:
+                result[chapter_obj_idx] = {
+                    "section_id": sid_int,
+                    "role_to_xml_idx": role_to_xml_idx,
+                    "chapter_local_idx": ch_idx_in_list,
+                }
+            chapter_obj_idx += 1
+
+    return result
+
+
 def extract_section_xml_paragraph_texts(hwpx_path: str, section_name: str) -> list:
     """13.7b: section_xml의 top-level p element text 추출 (mapping 입력용).
 

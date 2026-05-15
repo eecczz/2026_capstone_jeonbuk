@@ -1053,6 +1053,7 @@ def assemble_hwpx_hybrid(
     content_only_mode: bool = False,
     preserve_indices: set[int] | None = None,
     analyzed_sections: set[int] | None = None,
+    chapter_local_exemplars: dict | None = None,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -2221,18 +2222,51 @@ def assemble_hwpx_hybrid(
         role = item.get("role", "")
         text = item.get("text", "")
 
-        # 13.7b: section N chapter의 placeholder는 항상 chapter_anchor 사용
-        # (outer exemplars에 같은 role이 있어도 그건 section 0 paragraph라 wrong text).
-        # 같은 role의 chapter들이 같은 element 사용 안 하도록 chapter별 unique key.
-        # ok chapter body items은 outer exemplars 그대로 (양식 paragraph style 빌림).
+        # 13.7b §4: chapter-local exemplar 우선 (chapter 자기 영역 paragraph 본보기)
+        # outer exemplars (양식 전체 일반화)는 fallback. §4 chapter-local pattern preservation
+        # 진짜 실현 — Ⅰ장 body는 Ⅰ장 트리 안 paragraph 본보기로, section 4 chapter는
+        # section 4 paragraph 본보기로.
         _ci_for_role = _chapter_idx_lookup.get(bi_idx, -1) if _chapter_idx_lookup else -1
         _ch_obj_for_role = (
             _chapter_objects[_ci_for_role]
             if (_chapter_objects and _ci_for_role is not None and 0 <= _ci_for_role < len(_chapter_objects))
             else None
         )
+
+        # chapter-local exemplar 검색 (chapter_local_exemplars param)
+        _local_exemplar_el = None
+        if (
+            chapter_local_exemplars
+            and _ci_for_role is not None
+            and _ci_for_role in chapter_local_exemplars
+        ):
+            _local_info = chapter_local_exemplars[_ci_for_role]
+            _local_sec_id = _local_info.get("section_id", 0)
+            _role_to_xml = _local_info.get("role_to_xml_idx", {}) or {}
+            if role in _role_to_xml:
+                _xml_idx = _role_to_xml[role]
+                if (
+                    _local_sec_id in _section_top_level_paragraphs
+                    and 0 <= _xml_idx < len(_section_top_level_paragraphs[_local_sec_id])
+                ):
+                    _local_exemplar_el = _section_top_level_paragraphs[_local_sec_id][_xml_idx]
+
+        if _local_exemplar_el is not None:
+            # chapter-local exemplar 사용 → chapter별 unique key로 등록
+            _per_chapter_role_key = f"{role}__ci{_ci_for_role}__local"
+            if _per_chapter_role_key not in exemplars:
+                exemplars[_per_chapter_role_key] = _local_exemplar_el
+                role_is_table_box[_per_chapter_role_key] = False  # local exemplar는 일반 paragraph 가정
+            role = _per_chapter_role_key
+            log.info(
+                f"[13.7b §4 chapter-local exemplar] ci={_ci_for_role} role={item.get('role')} "
+                f"sec={_local_sec_id} xml_idx={_xml_idx}"
+            )
+
+        # section N placeholder fallback (chapter-local exemplar 없을 때 chapter title anchor 사용)
         _is_section_n_placeholder = (
-            _ch_obj_for_role is not None
+            _local_exemplar_el is None  # local exemplar 못 찾았을 때만
+            and _ch_obj_for_role is not None
             and isinstance(_ch_obj_for_role, dict)
             and _ch_obj_for_role.get("section_id", 0) != 0
             and _ch_obj_for_role.get("status") == "empty"
