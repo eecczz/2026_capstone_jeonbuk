@@ -25,7 +25,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - "deadline이라 빠르게" → surface fix → 사용자가 wrong output 발견 → 다음 fix → 또 wrong → 시간 누적.
    - 30분 추가 들여 근본 해결하면 3시간 절약.
 
-원칙 위반 사례 기록은 project_principles.md 끝의 "위반 사례" 섹션에 누적.
+## 🚨 진단 원칙 — 추측 X, 모든 코드 직접 확인
+
+문제 진단 시 **반드시 다음을 수행한다.**
+
+1. **추측 금지** — "아마 이거 때문일 것 같은데" 같은 말이 나오면 즉시 멈추고 코드 확인.
+
+2. **관련 코드 전부 직접 읽기**:
+   - prompt build 함수 (어떤 정보가 AI에 전달되는가)
+   - data 구성 함수 (구조가 어떻게 만들어지는가)
+   - assembly path (어떤 path로 element가 선택되는가)
+   - mapping helpers (idx 변환이 어떻게 일어나는가)
+   - cache schema (저장되는 data가 무엇인가)
+
+3. **각 단계마다 실제 값 dump**:
+   - cache file 직접 열어서 section_results 검증
+   - 양식 file (HWPX zipfile) 직접 열어서 section.xml paragraph text 추출
+   - mapping 결과 (1a idx → xml idx 등) 출력해서 검증
+   - chapter_object, exemplars dict 등 실제 element pointer/idx 확인
+
+4. **가정 명시 후 검증**:
+   - "section 0과 section 4의 role이 겹치면 어떻게?"
+   - "1a paragraph 누락 시 idx mapping은?"
+   - "exemplars dict가 어디서 구성되고 어디서 사용?"
+   - 가정마다 코드 path 추적 → 검증.
+
+5. **사용자가 한 질문이 root cause 힌트**:
+   - "왜 section 0 표를 가져다 쓰는거임?" → exemplars 구성 위치 확인.
+   - "트리 무시하고 왜 표 갖다 씀?" → §4 chapter-local pattern 위반 path 추적.
+   - 사용자 질문을 진단의 시작점으로 사용.
+
+6. **단편적 fix 6번 반복 = 더 깊은 가정 흔들리고 있다는 신호**:
+   - 같은 증상에 다른 surface fix 적용 후 또 wrong → 멈추고 logic 전체 재검토.
+   - 이번 세션 실제 사례: placeholder cache → unique_key → idx mapping → empty_preserve → ambiguity 완화 → table skip — 모두 surface. 진짜 root는 1a→xml mapping 누적 shift였음.
+
+이 원칙 위반 시 시간 누적은 사용자 책임 X. claude 책임.
 
 ## Project Overview
 
