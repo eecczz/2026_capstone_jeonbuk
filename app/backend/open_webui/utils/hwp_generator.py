@@ -1616,6 +1616,31 @@ def assemble_hwpx_hybrid(
             f"title='{_f.get('title_text_preview', '')[:50]}'"
         )
 
+    # 13.7b: empty_preserve_indices 재계산 (chapter_anchors element 기반)
+    # _process_chapter_objects가 paragraph_indices[0]을 doc.paragraphs idx로 잘못
+    # 매핑한 경우 (section_offset 계산 부정확) 잘못된 paragraph가 preserve됨.
+    # chapter_anchors는 Priority 1 (section_local_first_idx) 기반으로 정확하므로
+    # 그 element의 doc.paragraphs idx를 직접 사용.
+    if _chapter_proc and _chapter_objects:
+        _chapter_proc_empty_preserve = _chapter_proc.get("empty_preserve_indices")
+        if _chapter_proc_empty_preserve is not None and isinstance(_chapter_proc_empty_preserve, set):
+            _chapter_proc_empty_preserve.clear()
+            for ci, ch_obj in enumerate(_chapter_objects):
+                if ch_obj.get("status") != "empty":
+                    continue
+                if ci not in chapter_anchors:
+                    continue
+                _anchor_el_ep = chapter_anchors[ci]
+                _anchor_doc_idx_ep = _doc_para_to_idx.get(id(_anchor_el_ep), -1)
+                if _anchor_doc_idx_ep >= 0:
+                    _chapter_proc_empty_preserve.add(_anchor_doc_idx_ep)
+                    if _anchor_doc_idx_ep not in header_indices:
+                        header_indices.add(_anchor_doc_idx_ep)
+            log.info(
+                f"[13.7b] empty_preserve_indices recomputed from chapter_anchors: "
+                f"{sorted(_chapter_proc_empty_preserve)}"
+            )
+
     # 13.7d debug: assembly anchor 매핑 정확성 진단을 위해 file dump
     # 사용자 환경에서 worker log 직접 확인 불가 → file로 진단 정보 저장
     try:
