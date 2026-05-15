@@ -838,8 +838,13 @@ def _process_chapter_objects(
                     chapter_title_roles.add(title_item_empty["role"])
 
             # body 제거 — empty_preserve_indices에 chapter title (paragraph_indices[0])만
+            # 13.7d fix: paragraph_indices는 ai_idx (cache idx). assembly header_indices는
+            # doc.paragraphs index 기준이라 idx_map으로 light_xml _idx 변환 필요.
+            # 변환 누락 시 양식의 잘못된 paragraph (다른 cache idx의 paragraph)가 preserve됨.
             if paragraph_indices:
-                empty_preserve_indices.add(paragraph_indices[0])
+                _empty_ai_idx = paragraph_indices[0]
+                _empty_real_idx = idx_map.get(_empty_ai_idx, _empty_ai_idx) if idx_map else _empty_ai_idx
+                empty_preserve_indices.add(_empty_real_idx)
             _removed_body_count = max(0, len(paragraph_indices) - 1)
 
             # placeholder role: paragraph_indices[1] (chapter body 첫 paragraph)의 양식 role
