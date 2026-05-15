@@ -2099,19 +2099,25 @@ def assemble_hwpx_hybrid(
             # 13.7d: region-aware placement (chapter_anchors 기반)
             # body item이 어느 chapter에 속하는지 chapter_idx_lookup으로 확인
             # 그 chapter의 anchor element (양식 chapter title) 다음에 insert
-            # section-aware: anchor.getparent() == owning section element 확인
+            # section-aware: _elem_to_section map으로 owning section 결정 (stdlib ElementTree 호환)
             # cursor pattern: 같은 chapter body items 순서 유지 (anchor → new_elem update)
+            #
+            # NOTE: python-hwpxlib는 stdlib ElementTree 사용 → getparent() 호출 X.
+            # _elem_to_section[anchor]가 anchor의 owning section 직접 매핑 (line 1177~1181).
+            # anchor가 section 직접 자식이 아니면 (table cell 등) _elem_to_section에 매핑 없음 → fallback.
             _ci = _chapter_idx_lookup.get(bi_idx, -1) if _chapter_idx_lookup else -1
             _placed_region_aware = False
             if _ci is not None and _ci >= 0 and _ci in chapter_anchors:
                 _anchor = chapter_anchors[_ci]
-                _anchor_parent = _anchor.getparent()
                 _owning_sec = _elem_to_section.get(_anchor)
-                if _anchor_parent is not None and _anchor_parent is _owning_sec:
+                if _owning_sec is not None:
                     try:
-                        _idx_in_parent = list(_anchor_parent).index(_anchor)
-                        _anchor_parent.insert(_idx_in_parent + 1, new_elem)
-                        chapter_anchors[_ci] = new_elem  # cursor update (다음 item은 이 new_elem 다음)
+                        _children = list(_owning_sec)
+                        _idx_in_parent = _children.index(_anchor)
+                        _owning_sec.insert(_idx_in_parent + 1, new_elem)
+                        chapter_anchors[_ci] = new_elem  # cursor update
+                        # _elem_to_section 매핑도 update (new_elem이 다음 iteration anchor가 됨)
+                        _elem_to_section[new_elem] = _owning_sec
                         success_count += 1
                         _placed_region_aware = True
                     except (ValueError, AttributeError) as _ria_e:
@@ -2121,8 +2127,7 @@ def assemble_hwpx_hybrid(
                         )
                 else:
                     log.warning(
-                        f"chapter {_ci} anchor parent is not section element "
-                        f"(parent tag={_anchor_parent.tag if _anchor_parent is not None else None}). "
+                        f"chapter {_ci} anchor not in any section (table cell 등). "
                         f"fallback section_elem.append (bi_idx={bi_idx})"
                     )
 
