@@ -185,6 +185,7 @@
   @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   .msg.user { align-self: flex-end; justify-content: flex-end; }
   .msg.bot  { align-self: flex-start; }
+  .msg.debug { align-self: center; max-width: 96%; }
   .bubble {
     padding: 8px 12px;
     border-radius: 14px;
@@ -202,6 +203,12 @@
     background: var(--bot-bubble);
     color: var(--text);
     border-bottom-left-radius: 4px;
+  }
+  .msg.debug .bubble {
+    background: #fff7d6;
+    color: #6a4b00;
+    border: 1px dashed #e0b84a;
+    font-size: 12px;
   }
   .sources {
     margin-top: 4px;
@@ -282,10 +289,10 @@
   body.mode-text .voice-stage { display: none; }
   body.mode-text .voice-caption { display: none; }
 
-  /* 음성 모드: orb 보이고 chat/input 숨김, 자막 1세트만 표시 */
-  body.mode-voice .chat { display: none; }
+  /* TEMP voice debug: 음성 모드에서도 chat을 열어 STT/reply/audio 이벤트를 확인한다. */
+  body.mode-voice .chat { display: flex; max-height: 42vh; }
   body.mode-voice .input-bar { display: none; }
-  body.mode-voice .voice-stage { flex: 1; justify-content: center; }
+  body.mode-voice .voice-stage { flex: 0 0 auto; justify-content: center; padding-bottom: 10px; }
 
   /* 음성 모드 자막 (사용자 발화 + 봇 응답 1세트) */
   .voice-caption {
@@ -400,6 +407,18 @@
     vcBotEl.classList.remove("visible");
   }
 
+  // TEMP voice debug: 음성 WebSocket 이벤트를 일반 대화창에도 남긴다.
+  function appendVoiceConversation(role, content) {
+    if (!content || !String(content).trim()) return;
+    const normalizedRole = role === "assistant" ? "bot" : role;
+    appendBubble(normalizedRole, String(content));
+    history.push({ role, content: String(content) });
+    saveHistory();
+  }
+  function appendVoiceDebug(content) {
+    appendBubble("debug", `[voice-debug] ${content}`);
+  }
+
   // ─────────── Pipecat WebSocket 음성 클라이언트 ───────────
   // 음성 모드 진입 시: WS 연결 → 마이크 PCM 16kHz 16-bit LE mono 양방향 스트리밍.
   // 백엔드 Pipecat 파이프라인이 VAD/turn-taking/STT/RAG/TTS 를 처리하고 음성을
@@ -413,6 +432,8 @@
   let pcPlaybackTime = 0;
   let pcPlaybackSources = [];
   let pcAcceptAudio = false;
+  let pcReplyAudioChunks = 0;
+  let pcDroppedAudioChunks = 0;
   let pcPausedByUser = false;
   // 입력: 마이크 16kHz (Cohere STT 호환). 출력: TTS endpoint 응답 24kHz (Qwen3-TTS).
   const PC_SAMPLE_RATE = 16000;
@@ -435,9 +456,19 @@
     // 텍스트 모드면 backend 가 보낸 audio frame 무시 (voice → text 토글 후 잔여
     // frame 들이 들어와 재생되는 케이스 차단).
     if (typeof uiMode !== "undefined" && uiMode !== "voice") return;
-    if (!pcAcceptAudio) return;
+    if (!pcAcceptAudio) {
+      pcDroppedAudioChunks += 1;
+      if (pcDroppedAudioChunks === 1 || pcDroppedAudioChunks % 10 === 0) {
+        appendVoiceDebug(`drop stale audio chunk count=${pcDroppedAudioChunks}`);
+      }
+      return;
+    }
     const i16 = new Int16Array(arrayBuf);
     if (!i16.length) return;
+    pcReplyAudioChunks += 1;
+    if (pcReplyAudioChunks <= 3) {
+      appendVoiceDebug(`accept audio chunk #${pcReplyAudioChunks} bytes=${arrayBuf.byteLength}`);
+    }
     const f32 = new Float32Array(i16.length);
     for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
     const buf = pcAudioCtx.createBuffer(1, f32.length, PC_TTS_SAMPLE_RATE);
@@ -461,6 +492,7 @@
       try { src.disconnect(); } catch (_) {}
     }
     pcPlaybackSources = [];
+    pcReplyAudioChunks = 0;
     if (pcAudioCtx) pcPlaybackTime = pcAudioCtx.currentTime + 0.05;
     else pcPlaybackTime = 0;
   }
@@ -489,16 +521,23 @@
           const msg = JSON.parse(ev.data);
           if (msg && msg.type === "transcription") {
             pcAcceptAudio = false;
+            pcDroppedAudioChunks = 0;
             setVoiceCaption(msg.text || "", null);
+            appendVoiceConversation("user", msg.text || "");
           }
           else if (msg && msg.type === "reply") {
             pcAcceptAudio = true;
+            pcReplyAudioChunks = 0;
+            appendVoiceDebug(`reply control received after staleDrops=${pcDroppedAudioChunks}`);
+            pcDroppedAudioChunks = 0;
             setVoiceCaption(null, msg.text || "");
+            appendVoiceConversation("assistant", msg.text || "");
           }
           else if (msg && msg.type === "clear") {
             pcAcceptAudio = false;
             _clearPipecatPlayback();
             setVoiceCaption(null, "");
+            appendVoiceDebug("clear received: stopped scheduled browser audio");
           }
         } catch (_) {}
       } else if (ev.data instanceof ArrayBuffer) {
