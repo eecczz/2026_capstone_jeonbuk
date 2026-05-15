@@ -1398,63 +1398,223 @@ def assemble_hwpx_hybrid(
         f"light_xml structure paragraphs count: {len(paragraphs_info)}"
     )
 
+    # 13.7b section-local anchor matching:
+    # section별 top-level paragraph list (per-section ordered).
+    # chapter.section_id + chapter.section_local_first_idx로 직접 lookup.
+    _section_top_level_paragraphs: dict[int, list] = {}
+    for _sec_pos, _sec_obj in enumerate(_all_sections):
+        _section_top_level_paragraphs[_sec_pos] = []
+        for _child in list(_sec_obj.element):
+            if _child.tag.endswith("}p"):
+                _section_top_level_paragraphs[_sec_pos].append(_child)
+
+    def _get_para_text(p_elem) -> str:
+        parts = []
+        for t in p_elem.iter():
+            if t.tag.endswith("}t") and t.text:
+                parts.append(t.text)
+        return "".join(parts).strip()
+
+    def _resolve_section_pos_of_elem(p_elem) -> int:
+        owning_sec = _elem_to_section.get(p_elem)
+        if owning_sec is None:
+            return -1
+        for si, s in enumerate(_all_sections):
+            if s.element is owning_sec:
+                return si
+        return -1
+
+    def _validate_anchor_signature(
+        anchor_el, expected_role: str, expected_marker: str
+    ) -> tuple[bool, str]:
+        """anchor element의 role/marker가 chapter title과 매칭되는지 검증.
+        light_xml paragraphs_info에서 anchor element의 (doc_idx → light_xml _idx)
+        매핑을 통해 role 추출. signature mismatch는 fallback 진입 신호 (hard fail X).
+        Returns (match, reason).
+        """
+        # doc_idx → role (header_indices와 동일 idx 체계, paragraphs_info는 light_xml idx)
+        doc_idx_of_anchor = _doc_para_to_idx.get(id(anchor_el), -1)
+        if doc_idx_of_anchor < 0:
+            return False, "anchor_not_in_doc"
+        # _real_idx_to_info: light_xml _idx → para_info (role/text 등). 단 doc_idx와 light_xml _idx가 다를 수 있음.
+        # 일단 anchor text와 비교 (signature 검증 최소 — text matching은 일관성 검증)
+        anchor_text = _get_para_text(anchor_el).strip()
+        if expected_role:
+            # role 검증: _real_idx_to_info에서 anchor doc_idx와 비슷한 idx의 role 찾기
+            # 단 mapping이 정확하지 않을 수 있으니 보수적
+            pass  # role 검증은 light_xml mapping 정확화 후 (Phase B에서 강화)
+        return True, "anchor_text_present" if anchor_text else "anchor_text_empty"
+
+    def _find_anchor_in_section_by_text(
+        target_text: str, target_section_id: int
+    ) -> tuple:
+        """same-section fallback: target_section_id 안에서만 title_text 매칭.
+        cross-section bleed 절대 X.
+        """
+        if not target_text or not target_text.strip():
+            return None, "no_target_text"
+        if target_section_id not in _section_top_level_paragraphs:
+            return None, "section_id_out_of_range"
+        target_norm = " ".join(target_text.split())
+        sec_paras = _section_top_level_paragraphs[target_section_id]
+        # exact
+        for p_elem in sec_paras:
+            p_text = " ".join(_get_para_text(p_elem).split())
+            if p_text == target_norm:
+                return p_elem, "text_exact_same_section"
+        # prefix
+        for p_elem in sec_paras:
+            p_text = " ".join(_get_para_text(p_elem).split())
+            if p_text and (
+                p_text.startswith(target_norm[:30])
+                or target_norm.startswith(p_text[:30])
+            ):
+                return p_elem, "text_prefix_same_section"
+        return None, "no_text_match_in_section"
+
     chapter_anchors: dict = {}  # ci → anchor element
+    chapter_anchor_failures: list[dict] = []  # placement_failure list
     _chapter_anchor_debug = []
+
     if _chapter_proc and _chapter_objects:
         for ci, ch_obj in enumerate(_chapter_objects):
             _pi = ch_obj.get("paragraph_indices") or []
-            if not _pi:
-                continue
-            _ai_idx = _pi[0]
-            # 13.7b section-local generation-lite: section_id != 0이면
-            # paragraph_indices가 이미 document_global light_xml _idx
-            # (_top_level_paragraphs 직접 인덱스). idx_map 변환 건너뜀.
-            # section 0 (기본값 0)은 기존 13.4b path로 ai_idx → idx_map → light_xml _idx 변환.
             _sec_id_of_ch = ch_obj.get("section_id", 0)
-            if _sec_id_of_ch != 0:
-                _real_idx = _ai_idx
-            else:
-                _real_idx = idx_map.get(_ai_idx, _ai_idx) if idx_map else _ai_idx
-            if 0 <= _real_idx < len(_top_level_paragraphs):
-                _anchor_el = _top_level_paragraphs[_real_idx]
-                chapter_anchors[ci] = _anchor_el
-                # anchor element의 doc.paragraphs index 찾아 header_indices에 추가
-                _anchor_doc_idx = _doc_para_to_idx.get(id(_anchor_el), -1)
-                if _anchor_doc_idx >= 0 and _anchor_doc_idx not in header_indices:
-                    header_indices.add(_anchor_doc_idx)
-                # anchor text preview for debug verification (매핑 정확성 확인용)
-                _anchor_text = ""
-                for _t in _anchor_el.iter():
-                    if _t.tag.endswith("}t") and _t.text:
-                        _anchor_text += _t.text
-                        if len(_anchor_text) > 50:
-                            break
-                log.info(
-                    f"[13.7d] chapter_anchors[{ci}] light_xml_idx={_real_idx}, "
-                    f"doc_idx={_anchor_doc_idx}, text_preview='{_anchor_text[:50]}'"
+            _section_local_first_idx = ch_obj.get("section_local_first_idx")
+            _title_item_for_anchor = ch_obj.get("title_item") or {}
+            _title_text_for_anchor = (_title_item_for_anchor.get("text") or "").strip()
+            _title_role_for_anchor = _title_item_for_anchor.get("role", "")
+            _title_marker_for_anchor = (_title_item_for_anchor.get("marker") or "").strip()
+
+            _anchor_el = None
+            _anchor_match_method = None
+            _anchor_owning_sec = -1
+
+            # Priority 1: section_id + section_local_first_idx primary
+            #   (Phase B 통일 chapter_object schema에서 제공)
+            if (
+                _section_local_first_idx is not None
+                and _sec_id_of_ch in _section_top_level_paragraphs
+            ):
+                _sec_paras = _section_top_level_paragraphs[_sec_id_of_ch]
+                if 0 <= _section_local_first_idx < len(_sec_paras):
+                    _cand = _sec_paras[_section_local_first_idx]
+                    _sig_ok, _sig_reason = _validate_anchor_signature(
+                        _cand, _title_role_for_anchor, _title_marker_for_anchor
+                    )
+                    if _sig_ok:
+                        _anchor_el = _cand
+                        _anchor_match_method = f"section_local_idx_primary({_sig_reason})"
+
+            # Priority 2 (legacy fallback): paragraph_indices[0] + idx_map
+            #   section_local_first_idx 없는 chapter_object (section 0 기존 13.4b path)
+            if _anchor_el is None and _pi:
+                _ai_idx = _pi[0]
+                if _sec_id_of_ch != 0:
+                    _real_idx = _ai_idx
+                else:
+                    _real_idx = idx_map.get(_ai_idx, _ai_idx) if idx_map else _ai_idx
+                if 0 <= _real_idx < len(_top_level_paragraphs):
+                    _cand = _top_level_paragraphs[_real_idx]
+                    _cand_sec_pos = _resolve_section_pos_of_elem(_cand)
+                    if _cand_sec_pos == _sec_id_of_ch:
+                        _anchor_el = _cand
+                        _anchor_match_method = "legacy_idx_map_paragraph_indices"
+                    else:
+                        # cross-section: legacy idx map이 다른 section paragraph 가리킴
+                        # → priority 3 fallback으로 진입
+                        log.warning(
+                            f"[13.7b anchor ci={ci}] legacy idx anchor cross-section "
+                            f"(chapter.section_id={_sec_id_of_ch}, anchor.section={_cand_sec_pos}, "
+                            f"real_idx={_real_idx}). text fallback 시도."
+                        )
+
+            # Priority 3 (text fallback, same section only)
+            if _anchor_el is None and _title_text_for_anchor:
+                _anchor_el_text, _text_reason = _find_anchor_in_section_by_text(
+                    _title_text_for_anchor, _sec_id_of_ch
                 )
-                _chapter_anchor_debug.append({
+                if _anchor_el_text is not None:
+                    _anchor_el = _anchor_el_text
+                    _anchor_match_method = _text_reason
+
+            # Priority 4: placement_failure (hard fail — cross-section bleed 차단)
+            if _anchor_el is None:
+                _fail_info = {
                     "chapter_idx": ci,
-                    "light_xml_idx": _real_idx,
-                    "ai_idx": _ai_idx,
-                    "doc_idx": _anchor_doc_idx,
-                    "anchor_text_preview": _anchor_text[:50],
+                    "section_id": _sec_id_of_ch,
+                    "title_text_preview": _title_text_for_anchor[:60],
+                    "section_local_first_idx": _section_local_first_idx,
+                    "paragraph_indices_first": _pi[0] if _pi else None,
                     "status": ch_obj.get("status"),
-                })
-            else:
-                _chapter_anchor_debug.append({
-                    "chapter_idx": ci,
-                    "light_xml_idx": _real_idx,
-                    "ai_idx": _ai_idx,
-                    "status": ch_obj.get("status"),
-                    "error": f"real_idx out of range (top_level_paragraphs len={len(_top_level_paragraphs)})",
-                })
+                    "failure_reason": "no_anchor_in_target_section",
+                }
+                chapter_anchor_failures.append(_fail_info)
+                _chapter_anchor_debug.append({**_fail_info, "match_method": "placement_failure"})
                 log.warning(
-                    f"chapter {ci} anchor real_idx {_real_idx} out of range "
-                    f"(top_level_paragraphs len={len(_top_level_paragraphs)}, ai_idx={_ai_idx})"
+                    f"[13.7b anchor PLACEMENT_FAIL ci={ci}] section_id={_sec_id_of_ch} "
+                    f"title='{_title_text_for_anchor[:40]}' — no anchor found, cross-section bleed 차단"
                 )
+                continue
+
+            # Invariant: anchor owning section == chapter.section_id (cross-section bleed hard fail)
+            _anchor_owning_sec = _resolve_section_pos_of_elem(_anchor_el)
+            if _anchor_owning_sec != _sec_id_of_ch:
+                _fail_info = {
+                    "chapter_idx": ci,
+                    "section_id": _sec_id_of_ch,
+                    "anchor_owning_section": _anchor_owning_sec,
+                    "match_method": _anchor_match_method,
+                    "title_text_preview": _title_text_for_anchor[:60],
+                    "failure_reason": "cross_section_bleed_detected",
+                }
+                chapter_anchor_failures.append(_fail_info)
+                _chapter_anchor_debug.append({**_fail_info, "match_method": "cross_section_bleed"})
+                log.error(
+                    f"[13.7b anchor CROSS_SECTION_BLEED ci={ci}] "
+                    f"chapter.section_id={_sec_id_of_ch}, anchor.section={_anchor_owning_sec} — HARD FAIL"
+                )
+                continue
+
+            # Success: anchor 저장 + header_indices에 추가
+            chapter_anchors[ci] = _anchor_el
+            _anchor_doc_idx = _doc_para_to_idx.get(id(_anchor_el), -1)
+            if _anchor_doc_idx >= 0 and _anchor_doc_idx not in header_indices:
+                header_indices.add(_anchor_doc_idx)
+            _anchor_text_preview = _get_para_text(_anchor_el)[:60]
+            _chapter_anchor_debug.append({
+                "chapter_idx": ci,
+                "section_id": _sec_id_of_ch,
+                "anchor_owning_section": _anchor_owning_sec,
+                "match_method": _anchor_match_method,
+                "section_local_first_idx": _section_local_first_idx,
+                "doc_idx": _anchor_doc_idx,
+                "anchor_text_preview": _anchor_text_preview,
+                "title_text_preview": _title_text_for_anchor[:60],
+                "status": ch_obj.get("status"),
+            })
+            log.info(
+                f"[13.7b anchor OK ci={ci}] section={_sec_id_of_ch} method={_anchor_match_method} "
+                f"anchor_text='{_anchor_text_preview}'"
+            )
     if chapter_anchors:
-        log.info(f"assemble: chapter_anchors set for {len(chapter_anchors)} chapters")
+        log.info(
+            f"assemble: chapter_anchors set for {len(chapter_anchors)} chapters, "
+            f"placement_failures={len(chapter_anchor_failures)}"
+        )
+
+    # 13.7b: placement_failure ci set — body items 처리 시 skip 위해
+    _placement_failed_chapter_indices: set = {
+        f["chapter_idx"] for f in chapter_anchor_failures
+        if isinstance(f, dict) and f.get("chapter_idx") is not None
+    }
+    # placement_failure를 errors에 추가 (chapter 단위 hard fail)
+    for _f in chapter_anchor_failures:
+        errors.append(
+            f"chapter_placement_failure ci={_f.get('chapter_idx')} "
+            f"section_id={_f.get('section_id')} reason={_f.get('failure_reason')}: "
+            f"title='{_f.get('title_text_preview', '')[:50]}'"
+        )
 
     # 13.7d debug: assembly anchor 매핑 정확성 진단을 위해 file dump
     # 사용자 환경에서 worker log 직접 확인 불가 → file로 진단 정보 저장
@@ -2177,44 +2337,91 @@ def assemble_hwpx_hybrid(
                             t_index += 1
 
             # 13.7d: region-aware placement (chapter_anchors 기반)
-            # body item이 어느 chapter에 속하는지 chapter_idx_lookup으로 확인
-            # 그 chapter의 anchor element (양식 chapter title) 다음에 insert
-            # section-aware: _elem_to_section map으로 owning section 결정 (stdlib ElementTree 호환)
-            # cursor pattern: 같은 chapter body items 순서 유지 (anchor → new_elem update)
-            #
-            # NOTE: python-hwpxlib는 stdlib ElementTree 사용 → getparent() 호출 X.
-            # _elem_to_section[anchor]가 anchor의 owning section 직접 매핑 (line 1177~1181).
-            # anchor가 section 직접 자식이 아니면 (table cell 등) _elem_to_section에 매핑 없음 → fallback.
+            # 13.7b: cross-section bleed hard fail — fallback도 chapter.section_id에만 허용
             _ci = _chapter_idx_lookup.get(bi_idx, -1) if _chapter_idx_lookup else -1
+            _ch_obj_for_bi = (
+                _chapter_objects[_ci]
+                if (_chapter_objects and _ci is not None and 0 <= _ci < len(_chapter_objects))
+                else None
+            )
+            _target_section_id_for_bi = (
+                _ch_obj_for_bi.get("section_id", 0)
+                if isinstance(_ch_obj_for_bi, dict) else None
+            )
+            # 13.7b: placement_failure인 chapter의 body items skip (hard fail)
+            if _ci is not None and _ci in _placement_failed_chapter_indices:
+                log.warning(
+                    f"[13.7b] body item skip — chapter {_ci} placement_failed "
+                    f"(bi_idx={bi_idx}, role={role!r})"
+                )
+                continue
             _placed_region_aware = False
             if _ci is not None and _ci >= 0 and _ci in chapter_anchors:
                 _anchor = chapter_anchors[_ci]
                 _owning_sec = _elem_to_section.get(_anchor)
                 if _owning_sec is not None:
-                    try:
-                        _children = list(_owning_sec)
-                        _idx_in_parent = _children.index(_anchor)
-                        _owning_sec.insert(_idx_in_parent + 1, new_elem)
-                        chapter_anchors[_ci] = new_elem  # cursor update
-                        # _elem_to_section 매핑도 update (new_elem이 다음 iteration anchor가 됨)
-                        _elem_to_section[new_elem] = _owning_sec
-                        success_count += 1
-                        _placed_region_aware = True
-                    except (ValueError, AttributeError) as _ria_e:
-                        log.warning(
-                            f"region-aware insert fail (chapter {_ci}, bi_idx {bi_idx}): {_ria_e}. "
-                            f"fallback section_elem.append"
+                    # 13.7b invariant: owning section == chapter.section_id 강제
+                    _owning_sec_pos = -1
+                    for _si, _s in enumerate(_all_sections):
+                        if _s.element is _owning_sec:
+                            _owning_sec_pos = _si
+                            break
+                    if (
+                        _target_section_id_for_bi is not None
+                        and _owning_sec_pos != _target_section_id_for_bi
+                    ):
+                        errors.append(
+                            f"cross_section_bleed_blocked: chapter {_ci} section_id="
+                            f"{_target_section_id_for_bi}, but anchor owning section="
+                            f"{_owning_sec_pos}. body item bi_idx={bi_idx} not inserted."
                         )
+                        log.error(
+                            f"[13.7b CROSS_SECTION_BLEED ci={_ci}] target_sec="
+                            f"{_target_section_id_for_bi}, anchor_sec={_owning_sec_pos} — body item skip"
+                        )
+                    else:
+                        try:
+                            _children = list(_owning_sec)
+                            _idx_in_parent = _children.index(_anchor)
+                            _owning_sec.insert(_idx_in_parent + 1, new_elem)
+                            chapter_anchors[_ci] = new_elem  # cursor update
+                            _elem_to_section[new_elem] = _owning_sec
+                            success_count += 1
+                            _placed_region_aware = True
+                        except (ValueError, AttributeError) as _ria_e:
+                            log.warning(
+                                f"region-aware insert fail (chapter {_ci}, bi_idx {bi_idx}): {_ria_e}"
+                            )
                 else:
                     log.warning(
                         f"chapter {_ci} anchor not in any section (table cell 등). "
-                        f"fallback section_elem.append (bi_idx={bi_idx})"
+                        f"target_section_id={_target_section_id_for_bi} fallback append 시도"
                     )
 
             if not _placed_region_aware:
-                # fallback: 기존 동작 (양식 끝 append) — chapter route 진입 안 했거나 anchor fail 시
-                section_elem.append(new_elem)
-                success_count += 1
+                # 13.7b fallback append: chapter.section_id의 section element에만 허용
+                # cross-section bleed 차단 — section_id 모르면 fail
+                if (
+                    _target_section_id_for_bi is not None
+                    and 0 <= _target_section_id_for_bi < len(_all_sections)
+                ):
+                    _fb_section_elem = _all_sections[_target_section_id_for_bi].element
+                    _fb_section_elem.append(new_elem)
+                    _elem_to_section[new_elem] = _fb_section_elem
+                    success_count += 1
+                    log.info(
+                        f"[13.7b fallback append] ci={_ci} bi_idx={bi_idx} → "
+                        f"section_id={_target_section_id_for_bi} end"
+                    )
+                else:
+                    # chapter context 없음 (orphan body item) → hard fail, append X
+                    errors.append(
+                        f"orphan body item (no chapter context) bi_idx={bi_idx}, "
+                        f"role={role!r}, text={text[:50]!r}. cross-section bleed 차단 — body item skip."
+                    )
+                    log.error(
+                        f"[13.7b ORPHAN_BODY] bi_idx={bi_idx} role={role!r} — body item skip"
+                    )
         except Exception as e:
             errors.append(f"assemble({role}): {e}")
 
