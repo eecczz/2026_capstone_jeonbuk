@@ -1443,6 +1443,36 @@ def assemble_hwpx_hybrid(
     if chapter_anchors:
         log.info(f"assemble: chapter_anchors set for {len(chapter_anchors)} chapters")
 
+    # 13.7d debug: assembly anchor 매핑 정확성 진단을 위해 file dump
+    # 사용자 환경에서 worker log 직접 확인 불가 → file로 진단 정보 저장
+    try:
+        import os as _os_dbg
+        import json as _json_dbg
+        _dbg_dir = "/tmp/hwpx_debug"
+        _os_dbg.makedirs(_dbg_dir, exist_ok=True)
+        # doc.paragraphs와 _top_level_paragraphs 매칭 (id 기반)
+        _top_set = {id(p) for p in _top_level_paragraphs}
+        _doc_in_top = sum(1 for dp in doc.paragraphs if id(dp.element) in _top_set)
+        # idx_map 첫 25 entries (mapping 정확성)
+        _idx_map_sample = {}
+        if idx_map:
+            for _k in sorted(idx_map.keys())[:25] if isinstance(idx_map, dict) else []:
+                _idx_map_sample[_k] = idx_map[_k]
+        with open(_os_dbg.path.join(_dbg_dir, "17_assembly_anchor_debug.json"), "w", encoding="utf-8") as _f:
+            _json_dbg.dump({
+                "top_level_paragraphs_count": len(_top_level_paragraphs),
+                "doc_paragraphs_count": len(doc.paragraphs),
+                "doc_in_top_match_count": _doc_in_top,
+                "doc_not_in_top_count": len(doc.paragraphs) - _doc_in_top,
+                "light_xml_paragraphs_count": len(paragraphs_info),
+                "header_indices_count": len(header_indices),
+                "header_indices_sorted": sorted(header_indices)[:50],
+                "idx_map_first_25": _idx_map_sample,
+                "chapter_anchor_debug": _chapter_anchor_debug,
+            }, _f, ensure_ascii=False, indent=2, default=str)
+    except Exception as _dbg_e:
+        log.warning(f"[13.7d] anchor debug dump 실패: {_dbg_e}")
+
     # 13.5 unanalyzed section preserve safety
     _unanalyzed_section_debug = {}
     if analyzed_sections is not None:
