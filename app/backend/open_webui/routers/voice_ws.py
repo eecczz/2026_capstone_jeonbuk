@@ -371,8 +371,26 @@ def _build_rag_processor(request: Request, websocket=None):
                     await task
 
         async def _restart_generation(self, user_text: str):
+            # 직전 턴이 이미 done 까지 가서 history 에 박혀 있으면, 그 응답을 무효화하고
+            # 사용자 발화는 회수해 이번 합친 응답에 포함시킨다 (사용자 요구: 새 턴이 오면
+            # 직전 응답 삭제, 두 발화 모두 합쳐 한 응답으로).
+            prev_user_for_merge: list[str] = []
+            if not self._active_user_segments and self._history:
+                if self._history and self._history[-1].get("role") == "assistant":
+                    dropped = self._history.pop()
+                    log.info(
+                        "[voice_ws] dropping completed assistant reply len=%s due to new turn",
+                        len(dropped.get("content") or ""),
+                    )
+                if self._history and self._history[-1].get("role") == "user":
+                    prev = self._history.pop()
+                    text = (prev.get("content") or "").strip()
+                    if text:
+                        prev_user_for_merge.append(text)
+
             self._pending_user_segments = self._merge_turn_segments(
                 [
+                    *prev_user_for_merge,
                     *self._active_user_segments,
                     *self._pending_user_segments,
                     user_text,
@@ -423,7 +441,7 @@ def _build_rag_processor(request: Request, websocket=None):
             import uuid as _uuid
 
             _sentence_pat = _re.compile(
-                r"(?<!\d)\.\s|(?<!\d)\.$|[!??귘?|??s|??s|?덈떎\s|?먯슂\s|?댁뿉??s|?덉슂\s"
+                r"(?<!\d)\.\s|(?<!\d)\.$|[!?]\s|[!?]$|다\s|요\s|니다\s|에요\s|어요\s"
             )
             sentence_buffer = ""
             full_reply = ""
@@ -535,7 +553,7 @@ def _build_rag_processor(request: Request, websocket=None):
                 self._history.append({"role": "assistant", "content": reply_text})
                 self._caption_observer.queue_reply(reply_text)
                 parts = _re.split(
-                    r"(?<=[.!??귘?)\s+|(?<=??\s+|(?<=??\s+", reply_text
+                    r"(?<=[.!?])\s+|(?<=다)\s+|(?<=요)\s+", reply_text
                 )
                 parts = [p.strip() for p in parts if p.strip()] or [reply_text]
                 for s in parts:
@@ -552,6 +570,16 @@ def _build_rag_processor(request: Request, websocket=None):
             # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
             if isinstance(frame, VADUserStartedSpeakingFrame):
                 log.info("[voice_ws] VAD: user started speaking")
+                # 사용자가 끼어들면 STT 결과 도착 전에 진행 중 generation 을 먼저 멈춘다.
+                # 짧은 발화 (LLM stream 이 1.5s 내 done) 케이스에서 cancel 못 잡는 문제 보강.
+                # 단 history pop 은 _restart_generation 에서 — 여기선 in-flight 만 정리.
+                if self._generation_task and not self._generation_task.done():
+                    self._generation_id += 1  # in-flight stream 의 stale 체크가 즉시 False
+                    log.info(
+                        "[voice_ws] barge-in detected, bumping generation_id=%s and stopping",
+                        self._generation_id,
+                    )
+                    await self._stop_current_generation()
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 log.info("[voice_ws] VAD: user stopped speaking")
 
@@ -933,6 +961,193 @@ async def voice_ws(websocket: WebSocket):
     except Exception as e:
         log.exception(f"voice_ws pipeline error: {e}")
     finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ────────────────────────────────────────────────────────────────────────
+# 음성 시뮬레이터 endpoint — STT/VAD frame 을 텍스트로 흉내내 turn-merge
+# 로직을 brower 에서 테스트. PipeCat 의존 없이 _stream_public_llm_reply 만
+# 사용해 진짜 RAG/LLM 응답까지 검증. 음성 마이크 없이도 turn 합치기, barge-in,
+# history pop 동작을 눈으로 확인하기 위한 도구.
+# ────────────────────────────────────────────────────────────────────────
+
+
+@router.websocket("/voice-sim-ws")
+async def voice_sim_ws(websocket: WebSocket):
+    """텍스트로 STT/VAD 흉내내 turn merge 로직 테스트.
+
+    Client → server (text JSON):
+        {"type":"stt","text":"발화 텍스트"}    — TranscriptionFrame 등가
+        {"type":"vad_start"}                  — VADUserStartedSpeakingFrame 등가
+
+    Server → client (text JSON):
+        {"type":"debug","text":"..."}          — restart/barge-in/cancel 진단
+        {"type":"transcription","text":"..."}  — 사용자 발화 echo
+        {"type":"reply","text":"..."}          — LLM 최종 응답
+        {"type":"clear"}                       — 진행 중 응답 무효화 알림
+    """
+    import json as _json
+    import uuid as _uuid
+
+    await websocket.accept()
+    log.info("[voice_sim] connected")
+
+    app = websocket.app
+    from types import SimpleNamespace as _NS
+
+    owi_request_proxy: Any = type(
+        "_OwiRequestProxy",
+        (),
+        {"app": app, "state": _NS(), "headers": {}, "cookies": {}},
+    )()
+
+    state = {
+        "history": [],
+        "generation_id": 0,
+        "task": None,
+        "pending": [],
+        "active": [],
+        "debounce": 0.85,
+    }
+
+    async def send(kind: str, text: str = ""):
+        try:
+            await websocket.send_text(_json.dumps({"type": kind, "text": text}))
+        except Exception:
+            pass
+
+    async def debug(msg: str):
+        log.info(f"[voice_sim] {msg}")
+        await send("debug", msg)
+
+    def is_current(gid: int) -> bool:
+        return gid == state["generation_id"]
+
+    def merge_segments(segs: list[str]) -> list[str]:
+        out: list[str] = []
+        for s in segs:
+            s = (s or "").strip()
+            if s and (not out or out[-1] != s):
+                out.append(s)
+        return out
+
+    async def stop_current():
+        await send("clear", "")
+        t = state["task"]
+        if t and not t.done() and t is not asyncio.current_task():
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+
+    async def generate_reply(gid: int, user_text: str):
+        try:
+            from open_webui.routers.public_chatbot import (
+                _stream_public_llm_reply,
+                _get_public_user,
+                _humanize_reply as _hum,
+            )
+
+            user_obj = _get_public_user(owi_request_proxy)
+            session_id = str(_uuid.uuid4())
+
+            full_reply = ""
+            stream_failed = False
+            async for kind, payload in _stream_public_llm_reply(
+                owi_request_proxy, user_obj, user_text, state["history"],
+                session_id, voice_mode=False,
+            ):
+                if not is_current(gid):
+                    await debug(f"stale stream ignored id={gid}")
+                    return
+                if kind == "delta":
+                    full_reply += payload
+                elif kind == "done":
+                    final_text = payload or _hum(full_reply)
+                    if not is_current(gid):
+                        return
+                    state["history"].append({"role": "user", "content": user_text})
+                    state["history"].append({"role": "assistant", "content": final_text})
+                    await send("reply", final_text)
+                    await debug(f"reply id={gid} len={len(final_text)}")
+                elif kind == "error":
+                    stream_failed = True
+                    await debug(f"stream error: {payload}")
+            if stream_failed and not full_reply:
+                await send("reply", "죄송해요. 답변 준비 중에 문제가 생겼어요.")
+        except asyncio.CancelledError:
+            raise
+
+    async def generate_after_debounce(gid: int):
+        try:
+            await asyncio.sleep(state["debounce"])
+            if not is_current(gid):
+                return
+            segs = [s for s in state["pending"] if s.strip()]
+            state["pending"] = []
+            state["active"] = segs
+            user_text = " ".join(segs).strip()
+            if not user_text:
+                state["active"] = []
+                return
+            await debug(f"debounce passed, calling LLM id={gid} text={user_text[:60]!r}")
+            await generate_reply(gid, user_text)
+        except asyncio.CancelledError:
+            await debug(f"generation cancelled id={gid}")
+            raise
+        finally:
+            if is_current(gid):
+                state["active"] = []
+
+    async def restart_generation(user_text: str):
+        prev_user = []
+        if not state["active"] and state["history"]:
+            if state["history"][-1].get("role") == "assistant":
+                dropped = state["history"].pop()
+                await debug(f"dropping completed assistant reply len={len(dropped.get('content') or '')}")
+            if state["history"] and state["history"][-1].get("role") == "user":
+                t = (state["history"].pop().get("content") or "").strip()
+                if t:
+                    prev_user.append(t)
+        state["pending"] = merge_segments(
+            [*prev_user, *state["active"], *state["pending"], user_text]
+        )
+        state["generation_id"] += 1
+        gid = state["generation_id"]
+        await debug(f"restart id={gid} pending={state['pending']}")
+        await stop_current()
+        state["task"] = asyncio.create_task(generate_after_debounce(gid))
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = _json.loads(raw)
+            except Exception:
+                continue
+            t = msg.get("type")
+            if t == "stt":
+                text = (msg.get("text") or "").strip()
+                if not text:
+                    continue
+                await send("transcription", text)
+                await restart_generation(text)
+            elif t == "vad_start":
+                if state["task"] and not state["task"].done():
+                    state["generation_id"] += 1
+                    await debug(f"barge-in bumping id={state['generation_id']}")
+                    await stop_current()
+                else:
+                    await debug("vad_start — no active task, skip")
+    except WebSocketDisconnect:
+        log.info("[voice_sim] disconnected")
+    except Exception as e:
+        log.exception(f"[voice_sim] error: {e}")
+    finally:
+        if state["task"] and not state["task"].done():
+            state["task"].cancel()
         try:
             await websocket.close()
         except Exception:
