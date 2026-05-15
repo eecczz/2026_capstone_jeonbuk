@@ -2197,8 +2197,30 @@ def assemble_hwpx_hybrid(
         text = item.get("text", "")
 
         if role not in exemplars:
-            errors.append(f"unknown role '{role}', skipping: {text[:50]}")
-            continue
+            # 13.7b: chapter title placeholder fallback —
+            # chapter title role이 outer exemplars에 없으면 (section N 전용 role)
+            # chapter_anchor element 자체를 exemplar로 deepcopy 시도.
+            # placeholder는 chapter title 다음 첫 body item (single paragraph)이므로
+            # title role의 paragraph style을 빌려 쓰는 게 의미적으로 가까움.
+            _ci_for_role = _chapter_idx_lookup.get(bi_idx, -1) if _chapter_idx_lookup else -1
+            _section_n_fallback = False
+            if (
+                _ci_for_role is not None
+                and _ci_for_role >= 0
+                and _ci_for_role in chapter_anchors
+            ):
+                _anchor_for_role = chapter_anchors[_ci_for_role]
+                if _anchor_for_role is not None:
+                    exemplars[role] = _anchor_for_role  # title element를 placeholder exemplar로
+                    role_is_table_box[role] = False  # title은 table box X
+                    _section_n_fallback = True
+                    log.info(
+                        f"[13.7b] role '{role}' not in outer exemplars — chapter_anchor "
+                        f"fallback (ci={_ci_for_role}). text='{text[:40]}'"
+                    )
+            if not _section_n_fallback:
+                errors.append(f"unknown role '{role}', skipping: {text[:50]}")
+                continue
 
         if content_only_mode:
             # Phase 2: sibling_index 계산 → reattach → rewrite safety net

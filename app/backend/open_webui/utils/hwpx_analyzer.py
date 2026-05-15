@@ -11135,6 +11135,11 @@ def build_chapter_object(
     # 13.7a: section_id 기본값 0. 13.7b section-local generation-lite에서
     # synthetic region (section N != 0) 호출 시 region.section_id 실 값.
     section_id = region.get("section_id", 0)
+    # 13.7b section-local anchor: section-local idx primary (assembly Priority 1)
+    section_local_first_idx = region.get("section_local_first_idx")
+    section_local_paragraph_indices = list(
+        region.get("section_local_paragraph_indices") or []
+    )
 
     body_items_full = (section_fill_result or {}).get("body_items") or []
     chapter_tree_nodes = (section_fill_result or {}).get("chapter_tree_nodes") or []
@@ -11185,6 +11190,9 @@ def build_chapter_object(
         "section_id": section_id,
         "first_paragraph_idx": first_paragraph_idx,
         "paragraph_indices": paragraph_indices,
+        # 13.7b section-local anchor primary: section_local idx (assembly Priority 1)
+        "section_local_first_idx": section_local_first_idx,
+        "section_local_paragraph_indices": section_local_paragraph_indices,
         "title_item": title_item,
         "title_node": title_node,
         "body_items": body_items,
