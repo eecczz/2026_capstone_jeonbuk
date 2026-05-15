@@ -12993,8 +12993,11 @@ def _build_1a_to_xml_p_idx_mapping(
     """13.7b: 1a paragraph idx → section_xml top-level p idx 매핑.
 
     1a가 일부 paragraph를 누락한 경우 (paragraph_count_consistency.diff < 0),
-    1a idx와 section_xml top-level p idx 사이에 shift 발생. 이를 text 매칭으로
-    보정. 매칭 안 되면 1a idx 그대로 fallback (부정확).
+    1a idx와 section_xml top-level p idx 사이에 shift 발생. text 정규화 +
+    substring 매칭으로 보정.
+
+    매칭 실패 시 마지막 valid xml_pos 다음 idx 추정 (identity fallback은
+    누적 shift 일으킴).
 
     Args:
         idx_texts: section_results[N].idx_texts (1a paragraph idx → text)
@@ -13007,7 +13010,10 @@ def _build_1a_to_xml_p_idx_mapping(
         return {}
 
     def _normalize(s: str) -> str:
-        return " ".join((s or "").split())
+        """공백, 탭, 줄바꿈, 특수 whitespace 모두 제거 (강력한 정규화)."""
+        if not s:
+            return ""
+        return "".join(s.split())
 
     xml_norm = [_normalize(t) for t in section_xml_paragraph_texts]
 
@@ -13017,38 +13023,52 @@ def _build_1a_to_xml_p_idx_mapping(
 
     mapping: dict = {}
     xml_pos = 0
+    last_valid_xml = -1
+
     for ai_idx in sorted_ai_idx:
         target = _normalize(idx_texts.get(str(ai_idx), ""))
         if not target:
-            # 빈 1a paragraph는 mapping 생략 (matching 시 noise)
-            mapping[ai_idx] = ai_idx  # fallback
+            # 빈 1a paragraph — 다음 valid mapping 사용 후 보정
+            mapping[ai_idx] = max(last_valid_xml + 1, xml_pos)
             continue
 
-        # forward search from xml_pos
+        # forward search from xml_pos, 빈 paragraph skip
         found_idx = -1
-        # exact match 우선
+
+        # 1순위: exact match (정규화 후)
         for j in range(xml_pos, len(xml_norm)):
+            if not xml_norm[j]:
+                continue  # 빈 xml paragraph skip
             if xml_norm[j] == target:
                 found_idx = j
                 break
-        # exact 안 되면 prefix/substring fallback (양식 marker 차이 흡수)
+
+        # 2순위: substring 양방향 (양식 marker/spacing 차이 흡수)
         if found_idx < 0:
+            target_short = target[:40] if len(target) >= 40 else target
             for j in range(xml_pos, len(xml_norm)):
-                if not xml_norm[j]:
+                xn = xml_norm[j]
+                if not xn:
                     continue
-                if (
-                    xml_norm[j].startswith(target[:20])
-                    or target.startswith(xml_norm[j][:20])
-                ):
+                # 짧은 쪽 30+ chars 기준 substring 매칭
+                xn_short = xn[:40] if len(xn) >= 40 else xn
+                min_len = min(len(target_short), len(xn_short))
+                if min_len < 8:
+                    # 너무 짧으면 exact만 (이미 위에서 시도)
+                    continue
+                # 양방향 substring
+                if (target_short in xn) or (xn_short in target):
                     found_idx = j
                     break
 
         if found_idx >= 0:
             mapping[ai_idx] = found_idx
             xml_pos = found_idx + 1
+            last_valid_xml = found_idx
         else:
-            # 매칭 실패 → 1a idx 그대로 (부정확). debug용 fallback.
-            mapping[ai_idx] = ai_idx
+            # 매칭 실패 → 마지막 valid 다음 (누적 shift 최소화)
+            mapping[ai_idx] = max(last_valid_xml + 1, xml_pos)
+            # xml_pos 그대로 (다음 ai_idx가 같은 위치에서 search)
 
     return mapping
 
