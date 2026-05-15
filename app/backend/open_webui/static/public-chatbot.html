@@ -411,6 +411,8 @@
   let pcMicSource = null;
   let pcProcessor = null;
   let pcPlaybackTime = 0;
+  let pcPlaybackSources = [];
+  let pcAcceptAudio = false;
   let pcPausedByUser = false;
   // 입력: 마이크 16kHz (Cohere STT 호환). 출력: TTS endpoint 응답 24kHz (Qwen3-TTS).
   const PC_SAMPLE_RATE = 16000;
@@ -433,6 +435,7 @@
     // 텍스트 모드면 backend 가 보낸 audio frame 무시 (voice → text 토글 후 잔여
     // frame 들이 들어와 재생되는 케이스 차단).
     if (typeof uiMode !== "undefined" && uiMode !== "voice") return;
+    if (!pcAcceptAudio) return;
     const i16 = new Int16Array(arrayBuf);
     if (!i16.length) return;
     const f32 = new Float32Array(i16.length);
@@ -446,10 +449,26 @@
     if (pcPlaybackTime < now + 0.05) pcPlaybackTime = now + 0.05;
     src.start(pcPlaybackTime);
     pcPlaybackTime += buf.duration;
+    pcPlaybackSources.push(src);
+    src.onended = () => {
+      pcPlaybackSources = pcPlaybackSources.filter(s => s !== src);
+    };
+  }
+
+  function _clearPipecatPlayback() {
+    for (const src of pcPlaybackSources) {
+      try { src.stop(); } catch (_) {}
+      try { src.disconnect(); } catch (_) {}
+    }
+    pcPlaybackSources = [];
+    if (pcAudioCtx) pcPlaybackTime = pcAudioCtx.currentTime + 0.05;
+    else pcPlaybackTime = 0;
   }
 
   async function startVoicePipecat() {
     if (pcWs) return; // 이미 진행 중
+    pcAcceptAudio = false;
+    _clearPipecatPlayback();
     if (typeof setMode === "function") setMode("listening", "듣고 있어요", "마이크 권한을 허용해 주세요");
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -468,8 +487,19 @@
         // 자막용 텍스트 메시지 (백엔드가 push 하기 시작하면 채움)
         try {
           const msg = JSON.parse(ev.data);
-          if (msg && msg.type === "transcription") setVoiceCaption(msg.text || "", null);
-          else if (msg && msg.type === "reply") setVoiceCaption(null, msg.text || "");
+          if (msg && msg.type === "transcription") {
+            pcAcceptAudio = false;
+            setVoiceCaption(msg.text || "", null);
+          }
+          else if (msg && msg.type === "reply") {
+            pcAcceptAudio = true;
+            setVoiceCaption(null, msg.text || "");
+          }
+          else if (msg && msg.type === "clear") {
+            pcAcceptAudio = false;
+            _clearPipecatPlayback();
+            setVoiceCaption(null, "");
+          }
         } catch (_) {}
       } else if (ev.data instanceof ArrayBuffer) {
         _enqueuePlayback(ev.data);
@@ -516,6 +546,8 @@
       pcMicStream = null;
     }
     if (pcAudioCtx) { try { pcAudioCtx.close(); } catch (_) {} pcAudioCtx = null; }
+    _clearPipecatPlayback();
+    pcAcceptAudio = false;
     if (pcWs) {
       try { pcWs.close(); } catch (_) {}
       pcWs = null;

@@ -28,6 +28,8 @@ WebSocket protocol:
 - protobuf 등 별도 serializer 안 씀 (raw bytes 가장 단순)
 """
 
+import asyncio
+import contextlib
 import logging
 import sys
 from typing import Any
@@ -298,6 +300,10 @@ def _build_rag_processor(request: Request, websocket=None):
             self._pending_reply = text
             self._sent_for_current = False
 
+        def clear(self):
+            self._pending_reply = None
+            self._sent_for_current = False
+
         async def process_frame(self, frame, direction):  # type: ignore[override]
             from pipecat.frames.frames import TTSAudioRawFrame as _TTSAudioRawFrame
 
@@ -333,6 +339,212 @@ def _build_rag_processor(request: Request, websocket=None):
             self._owi_request = owi_request
             self._caption_observer = caption_observer
             self._history: list[dict] = []
+            self._generation_id: int = 0
+            self._generation_task: asyncio.Task | None = None
+            self._pending_user_segments: list[str] = []
+            self._active_user_segments: list[str] = []
+            self._turn_debounce_secs: float = 0.85
+
+        def _is_current_generation(self, generation_id: int) -> bool:
+            return generation_id == self._generation_id
+
+        def _merge_turn_segments(self, segments: list[str]) -> list[str]:
+            merged: list[str] = []
+            for segment in segments:
+                segment = (segment or "").strip()
+                if segment and (not merged or merged[-1] != segment):
+                    merged.append(segment)
+            return merged
+
+        async def _stop_current_generation(self):
+            self._caption_observer.clear()
+            await _send_caption("clear", "")
+            try:
+                await self.broadcast_interruption()
+            except Exception as e:
+                log.debug(f"[voice_ws] generation interruption broadcast failed: {e}")
+
+            task = self._generation_task
+            if task and not task.done() and task is not asyncio.current_task():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        async def _restart_generation(self, user_text: str):
+            self._pending_user_segments = self._merge_turn_segments(
+                [
+                    *self._active_user_segments,
+                    *self._pending_user_segments,
+                    user_text,
+                ]
+            )
+            self._generation_id += 1
+            generation_id = self._generation_id
+            log.info(
+                "[voice_ws] restart generation id=%s pending=%s",
+                generation_id,
+                self._pending_user_segments,
+            )
+
+            await self._stop_current_generation()
+            self._generation_task = asyncio.create_task(
+                self._generate_after_debounce(generation_id)
+            )
+
+        async def _generate_after_debounce(self, generation_id: int):
+            try:
+                await asyncio.sleep(self._turn_debounce_secs)
+                if not self._is_current_generation(generation_id):
+                    return
+
+                user_segments = [s for s in self._pending_user_segments if s.strip()]
+                self._pending_user_segments = []
+                self._active_user_segments = user_segments
+                user_text = " ".join(user_segments).strip()
+                if not user_text:
+                    self._active_user_segments = []
+                    return
+
+                await self._generate_reply(generation_id, user_text)
+            except asyncio.CancelledError:
+                log.info("[voice_ws] generation task cancelled id=%s", generation_id)
+                raise
+            finally:
+                if self._is_current_generation(generation_id):
+                    self._active_user_segments = []
+
+        async def _push_tts_if_current(self, generation_id: int, text: str):
+            if not self._is_current_generation(generation_id):
+                return
+            await self.push_frame(TTSSpeakFrame(text=text))
+
+        async def _generate_reply(self, generation_id: int, user_text: str):
+            import re as _re
+            import uuid as _uuid
+
+            _sentence_pat = _re.compile(
+                r"(?<!\d)\.\s|(?<!\d)\.$|[!??귘?|??s|??s|?덈떎\s|?먯슂\s|?댁뿉??s|?덉슂\s"
+            )
+            sentence_buffer = ""
+            full_reply = ""
+            sentence_count = 0
+            _stream_t0 = None
+            MIN_SENT_LEN = 20
+
+            try:
+                from open_webui.routers.public_chatbot import (
+                    _stream_public_llm_reply,
+                    _get_public_user,
+                    _humanize_reply as _hum,
+                )
+
+                user_obj = _get_public_user(self._owi_request)
+                session_id = str(_uuid.uuid4())
+
+                import time as _time
+
+                stream_failed = False
+                delta_count = 0
+                async for kind, payload in _stream_public_llm_reply(
+                    self._owi_request,
+                    user_obj,
+                    user_text,
+                    self._history,
+                    session_id,
+                    voice_mode=True,
+                ):
+                    if not self._is_current_generation(generation_id):
+                        log.info("[voice_ws] stale stream ignored id=%s", generation_id)
+                        return
+
+                    if kind == "delta":
+                        now = _time.time()
+                        if _stream_t0 is None:
+                            _stream_t0 = now
+                            log.info("[voice_ws] FIRST delta arrived id=%s", generation_id)
+                        delta_count += 1
+                        if delta_count <= 5 or delta_count % 20 == 0:
+                            log.info(
+                                f"[voice_ws] delta #{delta_count} +{(now - _stream_t0)*1000:.0f}ms len={len(payload)} id={generation_id}"
+                            )
+                        sentence_buffer += payload
+                        full_reply += payload
+                        while True:
+                            m = _sentence_pat.search(sentence_buffer)
+                            if not m:
+                                break
+                            end = m.end()
+                            sentence = sentence_buffer[:end].strip()
+                            if len(sentence) < MIN_SENT_LEN:
+                                break
+                            sentence_buffer = sentence_buffer[end:]
+                            sentence_clean = _hum(sentence)
+                            if sentence_clean.strip():
+                                sentence_count += 1
+                                tts_sentence = _tts_text_postprocess(sentence_clean)
+                                log.info(
+                                    f"[voice_ws] stream sentence #{sentence_count}: {tts_sentence[:50]!r} id={generation_id}"
+                                )
+                                await self._push_tts_if_current(generation_id, tts_sentence)
+                    elif kind == "done":
+                        final_text = payload or _hum(full_reply)
+                        if sentence_buffer.strip():
+                            tail = _hum(sentence_buffer.strip())
+                            if tail and len(tail) >= 5:
+                                log.info(
+                                    f"[voice_ws] stream tail: {tail[:40]!r} id={generation_id}"
+                                )
+                                await self._push_tts_if_current(
+                                    generation_id, _tts_text_postprocess(tail)
+                                )
+                        if not self._is_current_generation(generation_id):
+                            return
+                        self._caption_observer.queue_reply(final_text)
+                        self._history.append({"role": "user", "content": user_text})
+                        self._history.append({"role": "assistant", "content": final_text})
+                        log.info(
+                            f"[voice_ws] stream done deltas={delta_count} len={len(final_text)} id={generation_id}"
+                        )
+                    elif kind == "error":
+                        log.warning(f"[voice_ws] stream error: {payload}")
+                        stream_failed = True
+
+                if stream_failed and not full_reply:
+                    raise RuntimeError("LLM stream produced no output")
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if not self._is_current_generation(generation_id):
+                    return
+                log.exception(f"voice_ws streaming failed, falling back to non-stream: {e}")
+                try:
+                    from open_webui.routers.public_chatbot import _run_chat_internal
+
+                    reply_text, _sid, _src = await _run_chat_internal(
+                        self._owi_request, user_text, self._history
+                    )
+                except Exception as e2:
+                    log.exception(f"voice_ws fallback also failed: {e2}")
+                    reply_text = "죄송해요. 답변 준비 중에 문제가 생겼어요."
+
+                if not self._is_current_generation(generation_id):
+                    return
+
+                self._history.append({"role": "user", "content": user_text})
+                self._history.append({"role": "assistant", "content": reply_text})
+                self._caption_observer.queue_reply(reply_text)
+                parts = _re.split(
+                    r"(?<=[.!??귘?)\s+|(?<=??\s+|(?<=??\s+", reply_text
+                )
+                parts = [p.strip() for p in parts if p.strip()] or [reply_text]
+                for s in parts:
+                    if not self._is_current_generation(generation_id):
+                        return
+                    if s.strip():
+                        await self._push_tts_if_current(
+                            generation_id, _tts_text_postprocess(s)
+                        )
 
         async def process_frame(self, frame, direction):  # type: ignore[override]
             await super().process_frame(frame, direction)
@@ -351,6 +563,8 @@ def _build_rag_processor(request: Request, websocket=None):
 
                 # 사용자 발화 자막 즉시 push
                 await _send_caption("transcription", user_text)
+                await self._restart_generation(user_text)
+                return
 
                 # ── 진짜 LLM streaming + sentence-by-sentence TTS ──
                 # _stream_public_llm_reply 가 SSE delta 별로 yield. LLM 첫 토큰이
