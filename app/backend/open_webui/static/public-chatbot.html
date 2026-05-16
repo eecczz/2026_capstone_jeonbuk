@@ -21,6 +21,42 @@
     --orb-c3: #1f6fff;
     --orb-c4: #084aa7;
   }
+  /* SvelteKit 메인 페이지 dark theme 과 통일 (--color-gray-900/-50 등 매핑) */
+  html.dark, body.theme-dark {
+    --primary: #3b82f6;
+    --primary-dark: #1e40af;
+    --bg: #1a1a1a;
+    --surface: #2a2a2a;
+    --text: #f0f0f0;
+    --muted: #a0a0a0;
+    --border: #4d4d4d;
+    --user-bubble: #3b82f6;
+    --bot-bubble: #2a2a2a;
+    --source-bg: #2a2a2a;
+    --orb-c1: #1e293b;
+    --orb-c2: #3b82f6;
+    --orb-c3: #60a5fa;
+    --orb-c4: #1e40af;
+  }
+  /* OS 다크 모드 자동 적용 (SvelteKit 의 명시 toggle 없을 때) */
+  @media (prefers-color-scheme: dark) {
+    html:not(.light) {
+      --primary: #3b82f6;
+      --primary-dark: #1e40af;
+      --bg: #1a1a1a;
+      --surface: #2a2a2a;
+      --text: #f0f0f0;
+      --muted: #a0a0a0;
+      --border: #4d4d4d;
+      --user-bubble: #3b82f6;
+      --bot-bubble: #2a2a2a;
+      --source-bg: #2a2a2a;
+      --orb-c1: #1e293b;
+      --orb-c2: #3b82f6;
+      --orb-c3: #60a5fa;
+      --orb-c4: #1e40af;
+    }
+  }
   * { box-sizing: border-box; }
   html, body {
     margin: 0;
@@ -321,6 +357,43 @@
     align-self: flex-start;
     border-bottom-left-radius: 4px;
   }
+  /* 슬롯 chip — 사용자 발화에서 추출된 핵심 단어들 */
+  .voice-chips {
+    align-self: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: 92%;
+    margin: -4px 0 2px;
+  }
+  .voice-chip {
+    background: rgba(11, 94, 215, 0.10);
+    color: var(--primary);
+    border: 1px solid rgba(11, 94, 215, 0.25);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    animation: chipIn 0.25s ease-out;
+  }
+  @keyframes chipIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+  /* 이전 sentence — 작고 흐림. 자막 rotate 효과. */
+  .vc-bot-prev {
+    align-self: flex-start;
+    max-width: 92%;
+    padding: 4px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--muted);
+    opacity: 0;
+    transform: translateY(2px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+  }
+  .vc-bot-prev.visible { opacity: 0.55; transform: none; }
 </style>
 </head>
 <body class="mode-text">
@@ -343,6 +416,8 @@
     <div class="voice-hint" id="voiceHint">한국어로 자연스럽게 질문해 주세요</div>
     <div class="voice-caption" id="voiceCaption">
       <div class="vc-bubble vc-user" id="vcUser"></div>
+      <div class="voice-chips" id="voiceChips"></div>
+      <div class="vc-bot-prev" id="vcBotPrev"></div>
       <div class="vc-bubble vc-bot" id="vcBot"></div>
     </div>
   </div>
@@ -375,6 +450,8 @@
   const modeToggleBtn = document.getElementById("modeToggleBtn");
   const vcUserEl = document.getElementById("vcUser");
   const vcBotEl = document.getElementById("vcBot");
+  const vcBotPrevEl = document.getElementById("vcBotPrev");
+  const voiceChipsEl = document.getElementById("voiceChips");
 
   // ─────────── UI 모드 (text / voice) ───────────
   // 첫 진입은 텍스트 모드. 헤더 토글 버튼으로 음성 모드 진입.
@@ -391,11 +468,44 @@
       vcBotEl.classList.toggle("visible", !!botText.trim());
     }
   }
+  // 슬롯 chip 렌더 — backend 가 push 한 누적 슬롯 리스트
+  function renderVoiceChips(values) {
+    if (!Array.isArray(values) || !values.length) {
+      voiceChipsEl.innerHTML = "";
+      return;
+    }
+    // 기존 chip 텍스트와 비교해 변경 시만 다시 그림
+    const existing = Array.from(voiceChipsEl.querySelectorAll(".voice-chip")).map(el => el.textContent);
+    if (existing.join("|") === values.join("|")) return;
+    voiceChipsEl.innerHTML = "";
+    for (const v of values) {
+      const c = document.createElement("span");
+      c.className = "voice-chip";
+      c.textContent = v;
+      voiceChipsEl.appendChild(c);
+    }
+  }
+
+  // 자막 sentence rotate — 새 sentence 가 current, 이전 current → prev (작고 흐림)
+  function rotateCaptionSentence(sentence) {
+    const text = (sentence || "").trim();
+    if (!text) return;
+    const prevText = vcBotEl.textContent || "";
+    if (prevText.trim()) {
+      vcBotPrevEl.textContent = prevText;
+      vcBotPrevEl.classList.add("visible");
+    }
+    vcBotEl.textContent = text;
+    vcBotEl.classList.add("visible");
+  }
   function clearVoiceCaption() {
     vcUserEl.textContent = "";
     vcBotEl.textContent = "";
+    vcBotPrevEl.textContent = "";
     vcUserEl.classList.remove("visible");
     vcBotEl.classList.remove("visible");
+    vcBotPrevEl.classList.remove("visible");
+    voiceChipsEl.innerHTML = "";
   }
 
   // ─────────── Pipecat WebSocket 음성 클라이언트 ───────────
@@ -496,17 +606,44 @@
             pcAcceptAudio = false;
             pcDroppedAudioChunks = 0;
             setVoiceCaption(msg.text || "", null);
+            // 새 발화 시작 시 이전 자막 초기화 — 사용자 발화는 유지
+            vcBotEl.textContent = "";
+            vcBotPrevEl.textContent = "";
+            vcBotEl.classList.remove("visible");
+            vcBotPrevEl.classList.remove("visible");
           }
           else if (msg && msg.type === "reply") {
+            // backward compat — 자막 통째 표시 안 함 (caption_segment 가 rotate 처리)
             pcAcceptAudio = true;
             pcReplyAudioChunks = 0;
             pcDroppedAudioChunks = 0;
-            setVoiceCaption(null, msg.text || "");
+          }
+          else if (msg && msg.type === "caption_segment") {
+            // sentence 단위 자막 rotate
+            rotateCaptionSentence(msg.text || "");
+          }
+          else if (msg && msg.type === "slots") {
+            // 슬롯 chip 갱신 — backend 가 JSON string 으로 누적 슬롯 array push
+            try { renderVoiceChips(JSON.parse(msg.text || "[]")); }
+            catch (_) {}
+          }
+          else if (msg && msg.type === "phase") {
+            // 4단계 상태 라벨 — listening / understanding / searching / speaking
+            const phaseMap = {
+              listening: ["listening", "듣고 있어요", ""],
+              understanding: ["thinking", "정리하고 있어요", ""],
+              searching: ["thinking", "관련 내용 찾는 중", ""],
+              speaking: ["speaking", "답변 중", ""],
+            };
+            const args = phaseMap[msg.text || ""] || null;
+            if (args && typeof setMode === "function") setMode(...args);
           }
           else if (msg && msg.type === "clear") {
             pcAcceptAudio = false;
             _clearPipecatPlayback();
             setVoiceCaption(null, "");
+            vcBotPrevEl.textContent = "";
+            vcBotPrevEl.classList.remove("visible");
           }
         } catch (_) {}
       } else if (ev.data instanceof ArrayBuffer) {

@@ -203,10 +203,95 @@ async def scenario3_mid_stream_cancel():
     print("✅ PASS — mid-stream cancel 후 두 발화 합쳐 1 응답")
 
 
+def test_slot_extraction_and_filler_trigger():
+    """Phase A 검증 — 슬롯 추출 + 추임새 판정 + filler trigger 조건.
+
+    PipeCat 의존 없이 voice_slot_tracker 모듈만 단위 테스트.
+    실제 voice_ws.py 의 _should_emit_summary_filler 와 동일한 조건식을 재현해
+    슬롯 delta / 누적 turn / 쿨다운 룰 동작 확인.
+    """
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "backend"))
+    from open_webui.utils.voice_slot_tracker import (
+        extract_slots, is_filler_only, compute_delta, merge_slots, flatten_slots_for_display,
+    )
+    import time as _time
+
+    print("\n========== Scenario 4: 슬롯 delta + filler 트리거 룰 ==========")
+    # 시나리오: 5턴 누적 → 매 턴 슬롯 추가 → 마지막 턴에서 filler 발동 가능 여부 검증
+    state = {"slots": {}, "active": [], "last_filler_ts": 0.0}
+    COOLDOWN = 15.0
+    MIN_CHARS = 25
+    MIN_TURNS = 2
+
+    def should_emit(merged_text, delta, active_count):
+        if delta.get("new_slot_count", 0) < 1: return False
+        if len(merged_text) < MIN_CHARS: return False
+        if active_count < MIN_TURNS: return False
+        if _time.time() - state["last_filler_ts"] < COOLDOWN: return False
+        return True
+
+    turns = [
+        ("전북도청", True),                     # 1턴: 슬롯 1, 누적 4자 — MIN_CHARS 미달
+        ("제가 만 25세고 미혼인데", True),     # 2턴: 슬롯 추가, 누적 ~18자 — MIN_CHARS 미달
+        ("신청 가능한 게 뭐 있어요", True),    # 3턴: 슬롯 추가, 누적 30자+ → 발동
+        ("어 음", False),                       # 4턴: filler-only — slot skip
+        ("미혼이고 무주택입니다", True),       # 5턴: 슬롯 추가 — 그러나 쿨다운 안 끝남 → 미발동
+    ]
+    active: list[str] = []
+    emitted_turns: list[int] = []
+    for i, (text, _expect_slot_or_filler) in enumerate(turns, 1):
+        active.append(text)
+        merged = " ".join(active)
+        if is_filler_only(text):
+            print(f"  turn {i} filler-only — skip slot accumulate. text={text!r}")
+            continue
+        new_slots = extract_slots(text)
+        delta = compute_delta(state["slots"], new_slots)
+        state["slots"] = merge_slots(state["slots"], new_slots)
+        emit = should_emit(merged, delta, len(active))
+        if emit:
+            emitted_turns.append(i)
+            state["last_filler_ts"] = _time.time()
+        print(f"  turn {i} delta={delta['new_slot_count']} merged_len={len(merged)} active={len(active)} emit={emit}")
+
+    print(f"[RESULT] emitted_turns={emitted_turns} slots={flatten_slots_for_display(state['slots'])}")
+    assert emitted_turns == [3], f"3번째 turn 에서만 filler 발동 기대, 실제={emitted_turns}"
+    print("✅ PASS — filler 트리거 룰 정확 (3번째 turn 만)")
+
+
+def test_filler_only_detection():
+    """Phase A 추임새 케이스 — '어'/'음'/'잠깐만' 등 단순 추임새 모두 filler-only."""
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app", "backend"))
+    from open_webui.utils.voice_slot_tracker import is_filler_only, extract_slots
+
+    print("\n========== Scenario 5: 추임새 필터링 ==========")
+    fillers = ["어", "음", "그게", "잠깐만요", "어 음 그게", "네", "맞아요"]
+    real = ["전북도청 청년지원사업이요", "제가 만 25세고 미혼인데요"]
+
+    for t in fillers:
+        f = is_filler_only(t)
+        assert f, f"추임새 {t!r} 가 filler-only 판정되어야: 결과 {f}"
+        print(f"  ✓ filler-only: {t!r}")
+
+    for t in real:
+        f = is_filler_only(t)
+        s = extract_slots(t)
+        assert not f, f"실제 발화 {t!r} 가 filler-only 로 잘못 판정"
+        assert s, f"실제 발화 {t!r} 가 슬롯 추출되어야"
+        print(f"  ✓ real utterance: {t!r} slots={s}")
+    print("✅ PASS — 추임새/실제 발화 분리 정확")
+
+
 async def main():
     await scenario1_fast_consecutive()
     await scenario2_after_done()
     await scenario3_mid_stream_cancel()
+    test_slot_extraction_and_filler_trigger()
+    test_filler_only_detection()
     print("\n========== 모든 시나리오 통과 ==========")
 
 
