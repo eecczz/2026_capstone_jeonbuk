@@ -344,6 +344,11 @@ def _build_rag_processor(request: Request, websocket=None):
             self._pending_user_segments: list[str] = []
             self._active_user_segments: list[str] = []
             self._turn_debounce_secs: float = 0.85
+            # 봇 응답 음성이 한 번이라도 재생되기 시작했는지. True 이면 그 turn 은
+            # 종결된 것으로 보고, 다음 _restart_generation 진입 시 history pop /
+            # active merge 를 안 함 — 새 질문의 "합치는 시작점" 으로 리셋.
+            # barge-in 으로 끝까지 재생 안 됐어도 True 면 그 응답은 사용자가 들은 것.
+            self._reply_audio_started: bool = False
 
         def _is_current_generation(self, generation_id: int) -> bool:
             return generation_id == self._generation_id
@@ -371,9 +376,30 @@ def _build_rag_processor(request: Request, websocket=None):
                     await task
 
         async def _restart_generation(self, user_text: str):
-            # 직전 턴이 이미 done 까지 가서 history 에 박혀 있으면, 그 응답을 무효화하고
-            # 사용자 발화는 회수해 이번 합친 응답에 포함시킨다 (사용자 요구: 새 턴이 오면
-            # 직전 응답 삭제, 두 발화 모두 합쳐 한 응답으로).
+            # 봇 응답 음성이 이미 한 번이라도 재생됐다면 그 turn 은 종결 — 다음 발화는
+            # 새 질문의 시작점으로 리셋 (history 는 LLM 컨텍스트로 보존, 합치기만 안 함).
+            if self._reply_audio_started:
+                log.info(
+                    "[voice_ws] previous reply was played — resetting merge window for new question"
+                )
+                self._active_user_segments = []
+                self._pending_user_segments = [user_text.strip()] if user_text.strip() else []
+                self._reply_audio_started = False
+                self._generation_id += 1
+                generation_id = self._generation_id
+                log.info(
+                    "[voice_ws] restart generation id=%s pending=%s",
+                    generation_id,
+                    self._pending_user_segments,
+                )
+                await self._stop_current_generation()
+                self._generation_task = asyncio.create_task(
+                    self._generate_after_debounce(generation_id)
+                )
+                return
+
+            # 직전 턴 응답이 아직 음성 재생 시작 전 — barge-in 의도 있는 끼어들기로 보고
+            # 직전 응답을 무효화하고 사용자 발화는 회수해 합친 응답으로 처리.
             prev_user_for_merge: list[str] = []
             if not self._active_user_segments and self._history:
                 if self._history and self._history[-1].get("role") == "assistant":
@@ -566,6 +592,13 @@ def _build_rag_processor(request: Request, websocket=None):
 
         async def process_frame(self, frame, direction):  # type: ignore[override]
             await super().process_frame(frame, direction)
+
+            # 봇 응답 음성이 실제 재생 시작된 시점 마킹 — 다음 사용자 발화의 "합치는
+            # 시작점" 을 리셋하는 신호. barge-in 으로 끝까지 못 들었어도 시작은 된 것.
+            if isinstance(frame, BotStartedSpeakingFrame):
+                if not self._reply_audio_started:
+                    self._reply_audio_started = True
+                    log.info("[voice_ws] reply audio started — merge window will reset on next turn")
 
             # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
             if isinstance(frame, VADUserStartedSpeakingFrame):
