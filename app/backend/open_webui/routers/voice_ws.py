@@ -32,19 +32,11 @@ import asyncio
 import contextlib
 import logging
 import sys
-import time
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
 from open_webui.env import GLOBAL_LOG_LEVEL
-from open_webui.utils.voice_slot_tracker import (
-    extract_slots,
-    is_filler_only,
-    merge_slots,
-    compute_delta,
-    flatten_slots_for_display,
-)
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -352,13 +344,6 @@ def _build_rag_processor(request: Request, websocket=None):
             self._pending_user_segments: list[str] = []
             self._active_user_segments: list[str] = []
             self._turn_debounce_secs: float = 0.85
-            # 멀티턴 요약 filler — "그러니까 ...말씀이군요" 식 응답 직전 1줄.
-            # 슬롯 누적 (지역·대상·나이·상태·의도) 으로 trigger 조건 판정.
-            self._slots: dict[str, list[str]] = {}
-            self._last_summary_filler_ts: float = 0.0
-            self._summary_filler_cooldown_secs: float = 15.0
-            self._min_chars_for_summary: int = 25
-            self._min_turns_for_summary: int = 2
 
         def _is_current_generation(self, generation_id: int) -> bool:
             return generation_id == self._generation_id
@@ -438,21 +423,6 @@ def _build_rag_processor(request: Request, websocket=None):
                     self._active_user_segments = []
                     return
 
-                await _send_caption("phase", "understanding")
-                # 멀티턴 누적 슬롯 갱신 + delta 계산 → 요약 filler 발동 여부 결정.
-                # filler-only 발화 (추임새 단독) 는 슬롯 변화 0 으로 떨어져 자동 제외됨.
-                new_slots = extract_slots(user_text)
-                delta = compute_delta(self._slots, new_slots)
-                self._slots = merge_slots(self._slots, new_slots)
-                # 슬롯 chip frontend 로 push — 새로 추가된 게 있을 때만
-                if delta.get("new_slot_count", 0) > 0:
-                    import json as _json
-                    flat = flatten_slots_for_display(self._slots)
-                    await _send_caption("slots", _json.dumps(flat, ensure_ascii=False))
-                if self._should_emit_summary_filler(user_text, delta):
-                    await self._emit_summary_filler(generation_id, user_text)
-
-                await _send_caption("phase", "searching")
                 await self._generate_reply(generation_id, user_text)
             except asyncio.CancelledError:
                 log.info("[voice_ws] generation task cancelled id=%s", generation_id)
@@ -460,87 +430,6 @@ def _build_rag_processor(request: Request, websocket=None):
             finally:
                 if self._is_current_generation(generation_id):
                     self._active_user_segments = []
-
-        def _should_emit_summary_filler(self, merged_user_text: str, delta: dict) -> bool:
-            """요약 filler 발동 조건 — slot 변화 + 충분한 길이 + 쿨다운."""
-            if delta.get("new_slot_count", 0) < 1:
-                return False
-            if len(merged_user_text) < self._min_chars_for_summary:
-                return False
-            if len(self._active_user_segments) < self._min_turns_for_summary:
-                return False
-            if time.time() - self._last_summary_filler_ts < self._summary_filler_cooldown_secs:
-                return False
-            return True
-
-        async def _compose_summary_filler(self, user_text: str) -> str | None:
-            """mini-LLM 으로 1줄 요약. 실패 시 룰 fallback."""
-            slot_terms = flatten_slots_for_display(self._slots)
-            fallback = (
-                f"네, {', '.join(slot_terms[:4])} 관련해서 찾아볼게요."
-                if slot_terms
-                else "네, 잠시만요. 확인해볼게요."
-            )
-            try:
-                from open_webui.utils.chat import generate_chat_completion
-                from open_webui.routers.public_chatbot import _get_public_user
-
-                cfg = self._owi_request.app.state.config
-                model_id = (
-                    getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", None) or "jeonbuk-public-chatbot"
-                )
-                prompt = (
-                    "다음 사용자 발화를 친절한 한국어 안내원 톤으로 1문장으로 요약해."
-                    " '그러니까, ...말씀이군요' 또는 '...이시군요' 식으로 자연스럽게."
-                    " 60자 이내. 따옴표나 마크다운 없이.\n\n"
-                    f"발화: {user_text}"
-                )
-                user_obj = _get_public_user(self._owi_request)
-                resp = await asyncio.wait_for(
-                    generate_chat_completion(
-                        self._owi_request,
-                        {
-                            "model": model_id,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "stream": False,
-                        },
-                        user_obj,
-                    ),
-                    timeout=1.5,
-                )
-                # generate_chat_completion 의 응답 dict 구조: choices[0].message.content
-                text = (
-                    (resp or {}).get("choices", [{}])[0].get("message", {}).get("content", "")
-                    or ""
-                ).strip()
-                # 따옴표 제거 + 너무 길면 자름
-                text = text.strip("\"'`").strip()
-                if not text:
-                    return fallback
-                if len(text) > 80:
-                    text = text[:80].rstrip() + "."
-                return text
-            except asyncio.TimeoutError:
-                log.info("[voice_ws] summary filler LLM timeout, falling back")
-                return fallback
-            except Exception as e:
-                log.warning(f"[voice_ws] summary filler failed: {e}")
-                return fallback
-
-        async def _emit_summary_filler(self, generation_id: int, user_text: str):
-            """요약 filler 1줄 생성 후 TTS push. generation_id 가드로 stale 자동 무시."""
-            filler_text = await self._compose_summary_filler(user_text)
-            if not filler_text:
-                return
-            if not self._is_current_generation(generation_id):
-                return
-            log.info(
-                "[voice_ws] summary filler emitted id=%s text=%r",
-                generation_id,
-                filler_text[:80],
-            )
-            await self._push_tts_if_current(generation_id, _tts_text_postprocess(filler_text))
-            self._last_summary_filler_ts = time.time()
 
         async def _push_tts_if_current(self, generation_id: int, text: str):
             if not self._is_current_generation(generation_id):
@@ -615,12 +504,6 @@ def _build_rag_processor(request: Request, websocket=None):
                                     f"[voice_ws] stream sentence #{sentence_count}: {tts_sentence[:50]!r} id={generation_id}"
                                 )
                                 await self._push_tts_if_current(generation_id, tts_sentence)
-                                # 자막 sentence 단위 push — frontend 가 rotate 형태로 표시.
-                                # 첫 sentence 시 speaking phase 도 같이 알림.
-                                if self._is_current_generation(generation_id):
-                                    if sentence_count == 1:
-                                        await _send_caption("phase", "speaking")
-                                    await _send_caption("caption_segment", sentence_clean)
                     elif kind == "done":
                         final_text = payload or _hum(full_reply)
                         if sentence_buffer.strip():
@@ -632,8 +515,6 @@ def _build_rag_processor(request: Request, websocket=None):
                                 await self._push_tts_if_current(
                                     generation_id, _tts_text_postprocess(tail)
                                 )
-                                if self._is_current_generation(generation_id):
-                                    await _send_caption("caption_segment", tail)
                         if not self._is_current_generation(generation_id):
                             return
                         self._caption_observer.queue_reply(final_text)
@@ -1094,59 +975,6 @@ async def voice_ws(websocket: WebSocket):
 # ────────────────────────────────────────────────────────────────────────
 
 
-async def _compose_summary_filler_for_sim(
-    owi_request_proxy: Any, user_text: str, slots: dict[str, list[str]]
-) -> str | None:
-    """STT 시뮬레이터용 요약 filler 1줄. PipeCat 외부에서도 동작하도록 module-level."""
-    slot_terms = flatten_slots_for_display(slots)
-    fallback = (
-        f"네, {', '.join(slot_terms[:4])} 관련해서 찾아볼게요."
-        if slot_terms
-        else "네, 잠시만요. 확인해볼게요."
-    )
-    try:
-        from open_webui.utils.chat import generate_chat_completion
-        from open_webui.routers.public_chatbot import _get_public_user
-
-        cfg = owi_request_proxy.app.state.config
-        model_id = getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", None) or "jeonbuk-public-chatbot"
-        prompt = (
-            "다음 사용자 발화를 친절한 한국어 안내원 톤으로 1문장으로 요약해."
-            " '그러니까, ...말씀이군요' 또는 '...이시군요' 식으로 자연스럽게."
-            " 60자 이내. 따옴표나 마크다운 없이.\n\n"
-            f"발화: {user_text}"
-        )
-        user_obj = _get_public_user(owi_request_proxy)
-        resp = await asyncio.wait_for(
-            generate_chat_completion(
-                owi_request_proxy,
-                {
-                    "model": model_id,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                },
-                user_obj,
-            ),
-            timeout=1.5,
-        )
-        text = (
-            (resp or {}).get("choices", [{}])[0].get("message", {}).get("content", "")
-            or ""
-        ).strip()
-        text = text.strip("\"'`").strip()
-        if not text:
-            return fallback
-        if len(text) > 80:
-            text = text[:80].rstrip() + "."
-        return text
-    except asyncio.TimeoutError:
-        log.info("[voice_sim] summary filler LLM timeout, falling back")
-        return fallback
-    except Exception as e:
-        log.warning(f"[voice_sim] summary filler failed: {e}")
-        return fallback
-
-
 @router.websocket("/voice-sim-ws")
 async def voice_sim_ws(websocket: WebSocket):
     """텍스트로 STT/VAD 흉내내 turn merge 로직 테스트.
@@ -1183,11 +1011,6 @@ async def voice_sim_ws(websocket: WebSocket):
         "pending": [],
         "active": [],
         "debounce": 0.85,
-        "slots": {},
-        "last_summary_filler_ts": 0.0,
-        "summary_filler_cooldown_secs": 15.0,
-        "min_chars_for_summary": 25,
-        "min_turns_for_summary": 2,
     }
 
     async def send(kind: str, text: str = ""):
@@ -1269,29 +1092,6 @@ async def voice_sim_ws(websocket: WebSocket):
             if not user_text:
                 state["active"] = []
                 return
-
-            # 슬롯 누적 + 요약 filler 발동 결정 — JeonbukRAGProcessor 와 동일 로직
-            new_slots = extract_slots(user_text)
-            delta = compute_delta(state["slots"], new_slots)
-            state["slots"] = merge_slots(state["slots"], new_slots)
-            if delta.get("new_slot_count", 0) > 0:
-                flat = flatten_slots_for_display(state["slots"])
-                await send("slots", _json.dumps(flat, ensure_ascii=False))
-            if (
-                delta.get("new_slot_count", 0) >= 1
-                and len(user_text) >= state["min_chars_for_summary"]
-                and len(state["active"]) >= state["min_turns_for_summary"]
-                and time.time() - state["last_summary_filler_ts"]
-                >= state["summary_filler_cooldown_secs"]
-            ):
-                filler_text = await _compose_summary_filler_for_sim(
-                    owi_request_proxy, user_text, state["slots"]
-                )
-                if filler_text and is_current(gid):
-                    await send("summary_filler", filler_text)
-                    await debug(f"summary_filler id={gid} text={filler_text[:60]!r}")
-                    state["last_summary_filler_ts"] = time.time()
-
             await debug(f"debounce passed, calling LLM id={gid} text={user_text[:60]!r}")
             await generate_reply(gid, user_text)
         except asyncio.CancelledError:
