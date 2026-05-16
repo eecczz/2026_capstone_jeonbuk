@@ -349,6 +349,11 @@ def _build_rag_processor(request: Request, websocket=None):
             # active merge 를 안 함 — 새 질문의 "합치는 시작점" 으로 리셋.
             # barge-in 으로 끝까지 재생 안 됐어도 True 면 그 응답은 사용자가 들은 것.
             self._reply_audio_started: bool = False
+            # 직전 turn 의 응답이 재생된 후 reset 분기로 들어왔다는 표시. LLM 호출
+            # 시점에 사용자 발화 앞에 안내 prefix 를 붙여 "이전 질문은 답변 완료,
+            # 이번 발화에만 답해라" 명시. history (LLM 맥락) 는 보존되므로 정정/
+            # 후속 질문은 자연 처리되되 이전 질문의 재답변은 막힌다.
+            self._post_reply_reset: bool = False
 
         def _is_current_generation(self, generation_id: int) -> bool:
             return generation_id == self._generation_id
@@ -385,6 +390,7 @@ def _build_rag_processor(request: Request, websocket=None):
                 self._active_user_segments = []
                 self._pending_user_segments = [user_text.strip()] if user_text.strip() else []
                 self._reply_audio_started = False
+                self._post_reply_reset = True  # LLM 호출 시 안내 prefix 부착 신호
                 self._generation_id += 1
                 generation_id = self._generation_id
                 log.info(
@@ -487,12 +493,26 @@ def _build_rag_processor(request: Request, websocket=None):
 
                 import time as _time
 
+                # 직전 응답이 음성으로 사용자에게 이미 전달된 후의 새 발화라면 LLM 에
+                # 안내 prefix 부착 — history (이전 user/assistant) 는 보존되지만
+                # LLM 이 이전 질문을 다시 답변하지 않고 이번 발화에만 응답하도록.
+                effective_user_text = user_text
+                if self._post_reply_reset:
+                    effective_user_text = (
+                        "(시스템 안내: 직전 답변은 이미 사용자에게 음성으로 전달되었습니다. "
+                        "이번 발화는 그 응답 이후의 후속 질문이거나 정정입니다. "
+                        "이전 사용자 질문을 다시 답변하지 말고, 이번 발화에만 답해주세요.)\n\n"
+                        + user_text
+                    )
+                    log.info("[voice_ws] injecting post-reply-reset guidance into user_text")
+                    self._post_reply_reset = False
+
                 stream_failed = False
                 delta_count = 0
                 async for kind, payload in _stream_public_llm_reply(
                     self._owi_request,
                     user_obj,
-                    user_text,
+                    effective_user_text,
                     self._history,
                     session_id,
                     voice_mode=True,
