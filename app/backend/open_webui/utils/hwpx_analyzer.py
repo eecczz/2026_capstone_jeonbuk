@@ -15319,47 +15319,68 @@ chapter = 양식의 흐름 단위. 다른 주제 source가 적용돼도 같은 c
 chapter title이 양식 specific 단어 (특정 정책명/연도/주제어)를 포함해도 chapter입니다.
 다른 주제 source 적용 시 title 변경은 후속 stage(adaptation_plan)가 처리. Phase E는 chapter 단위 결정만.
 
-[같은 level 일관성 — 절대 원칙]
+[TOC tree 해석 — 첫 단계]
 
-같은 TOC level 안 모든 항목은 같은 분류 (chapter 또는 container 또는 subpattern).
-- 일부 항목이 자체 본문 짧거나 없거나 양식 specific 단어 박혀있어도 같은 level이면 같은 분류
-- 양식 evidence (본문 분량/구조/역할 차이)는 같은 level 안에서 분류를 가르는 근거가 될 수 없음
-- 같은 level이 chapter면 그 level의 모든 항목이 chapter
-- 같은 level이 container면 그 level의 모든 항목이 container
+먼저 TOC를 tree로 해석하십시오:
+- 각 항목의 level/depth와 parent-child 관계 정리
+- sibling group 식별 (같은 parent + 같은 depth 항목들)
 
-이 원칙 위반은 prompt 위반입니다. 일관 분류로 강제 재조정 + ambiguity_flags에 "level_classification_corrected" 추가.
+[chapter level 선택 — sibling group 단위 일관 적용]
 
-[chapter level 선택 — 핵심 task]
+핵심 원칙: chapter level은 **TOC tree의 sibling group 단위로 선택**합니다.
+개별 항목을 cherry pick으로 chapter / container / subpattern으로 가르지 마십시오.
 
-TOC 위계 분석 후, level 0(1차)과 level 1(2차) 중 양식의 chapter 흐름 단위로
-더 어울리는 level을 선택하십시오.
+**같은 sibling group 안에서는 parent level과 child level을 절대 섞지 마십시오.**
 
-선택 기준 (모두 종합):
+선택 logic:
 
-1. 양식 흐름:
+1. TOC 최상위 sibling group (level 0)을 chapter로 선택한 경우:
+   - 그 level의 **모든 항목**이 chapter (예외 없음. 분량/topic specific 차이 무관)
+   - 그 아래 child level은 모두 subpattern
+
+2. 또는 TOC 최상위 sibling group이 container 역할이고 child level이 작성 흐름이면:
+   - 최상위 sibling group의 **모든 항목**이 container (예외 없음)
+   - child level의 모든 항목이 chapter
+
+3. TOC level 1만 있으면: level 0이 chapter (자동, child level 없음)
+
+**금지된 분류** (level 섞임):
+- Ⅰ/Ⅱ = chapter, Ⅲ = container, Ⅲ 아래 = chapter
+- 같은 sibling group 안 일부 chapter + 일부 container
+- 의미상 어울려 보이는 child 항목 cherry pick으로 chapter 선택
+
+**선택 기준** (level 선택의 보조 근거. 개별 항목 cherry pick에 사용 금지):
+
+A. 양식 흐름:
    - 다른 주제 source가 적용돼도 같은 chapter 흐름이 유지되는 단위가 어느 level인가?
+   - parent level의 항목들이 sub-list 전체를 대표하는 큰 흐름 단위이면 → parent level이 chapter
+   - parent level이 단순 구분 라벨이고 child level이 실제 문서 작성 흐름이면 → child level이 chapter
 
-2. 보편적 chapter title 포함 비율:
-   - 그 level 항목들이 보편적 chapter 의미 단어를 더 많이 포함하는 level이 chapter.
-   - 보편적 chapter 의미 예: 목적/추진배경/추진방향/추진과제/결론/행정사항/평가/계획/관리/여건/방향/일정/현황 등
-   - 양식 specific topic이 박혀 있어도 보편적 chapter title (목적/추진배경 등) 포함이면 chapter 의미 있음
+B. 보편적 chapter 의미 (level 단위 비교):
+   - "어느 level의 항목들이 보편적 chapter 의미 (목적/추진배경/추진방향/결론/행정사항/평가/계획/관리/여건/방향/일정/현황 등)를 더 잘 표현하는가?"
+   - **개별 항목에 보편적 단어가 박혀있다는 이유로 cherry pick X**
+   - "관리/대응/구축/확립" 같은 단어가 양식 specific topic 안에 끼어 있으면 그건 양식 specific 표현이며, level 선택 근거 약함
 
-3. 같은 level 일관 처리 가능성:
-   - 선택한 level의 모든 항목이 chapter로 처리 가능한가?
-   - 분량 짧은 항목, 양식 specific topic 박힌 항목도 모두 chapter로 묶을 수 있어야 함
+C. 같은 sibling group 일관 처리:
+   - 선택한 level의 **모든 항목**이 같은 분류 (chapter / container)로 일관 처리 가능한가?
+   - 항목 일부가 자체 본문 짧거나 양식 specific topic 박혀있어도, 같은 sibling이면 같은 분류
 
-선택 결과:
-- level 0 = chapter:
-  * level 0 모든 항목 = chapter (분량/topic 차이 무관)
-  * level 1 (있으면) = subpattern (가변 sub-content)
-- level 1 = chapter:
-  * level 0 = container (chapter들을 묶는 상위 그룹)
-  * level 1 모든 항목 = chapter (분량/topic 차이 무관)
-- TOC level 1이 없으면: level 0 = chapter (자동)
+[양식별 예시 — 사용자 정책 명시]
+
+조달청 차례: Ⅰ. 추진성과 / Ⅱ. 여건·방향 / Ⅲ. 추진과제 (+ Ⅲ 아래 9개)
+→ level 0 (Ⅰ/Ⅱ/Ⅲ)이 chapter. 9개 = subpattern.
+→ Ⅲ가 자체 본문 적어도 Ⅰ/Ⅱ와 같은 sibling이므로 모두 chapter.
+
+민원인 차례: 제1장 / 제2장 (+ 각 장 아래 Ⅰ~Ⅷ, Ⅰ~Ⅴ)
+→ 제1장/제2장 = container (양식 흐름의 큰 구분 라벨)
+→ 각 장 아래 로마자 = chapter (실제 문서 작성 흐름)
+
+[output]
 
 unit_decision.selected_generation_unit_reason 에 다음 명시 필수:
-- 선택한 level (0 또는 1)
-- 두 level 비교 평가 (어느 level이 양식 흐름/보편적 chapter title/일관 처리 측면에서 더 적합한지)
+- 선택한 chapter level (0 또는 1)
+- 두 level 비교 평가 (어느 level이 양식 흐름/보편적 chapter 의미/일관 처리 측면에서 더 적합한지)
+- 같은 sibling group 일관 적용 확인 (모든 항목이 같은 분류로 처리됐는지)
 
 [unit 종류]
 
