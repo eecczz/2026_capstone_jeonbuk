@@ -6,20 +6,18 @@
 <title>전북도청 AI 안내원</title>
 <style>
   :root {
-    --primary: #0b5ed7;
-    --primary-dark: #084aa7;
+    --primary: #111111;
+    --primary-dark: #000000;
     --bg: #ffffff;
     --surface: #ffffff;
-    --text: #1d2b3a;
-    --muted: #6b7280;
-    --border: #e3e8ef;
-    --user-bubble: #0b5ed7;
-    --bot-bubble: #eef2f9;
-    --source-bg: #fffaf0;
-    --orb-c1: #c7e3ff;
-    --orb-c2: #5ea7ff;
-    --orb-c3: #1f6fff;
-    --orb-c4: #084aa7;
+    --text: #111111;
+    --muted: #888888;
+    --border: #e8e8e8;
+    --user-bubble: #111111;
+    --bot-bubble: #f3f3f3;
+    --source-bg: #f7f7f7;
+    --orb: #111111;
+    --danger: #ff3b30;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -39,135 +37,97 @@
     background: var(--surface);
   }
 
-  /* ── 헤더 ── */
+  /* ── 헤더 ── 로고 작게, 가운데 정렬, 다른 버튼 없음 */
   header {
-    padding: 12px 16px;
+    padding: 14px 16px 8px;
     display: flex;
     align-items: center;
-    gap: 10px;
+    justify-content: center;
     flex-shrink: 0;
   }
-  header img { height: 28px; }
-  header .titles { flex: 1; }
-  header .titles h1 { font-size: 15px; margin: 0; color: var(--primary-dark); }
-  header .titles p { font-size: 11px; margin: 1px 0 0; color: var(--muted); }
-  .reset-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 5px 10px;
-    font-size: 11px;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .reset-btn:hover { background: #f5f7fb; }
+  header img { height: 22px; opacity: 0.9; }
 
-  /* ── 음성 orb 영역 ── */
+  /* ── 음성 orb 영역 — 흑백, 큰 검은 원 ── */
   .voice-stage {
-    flex-shrink: 0;
-    padding: 16px 16px 8px;
+    flex: 1 1 auto;
+    padding: 24px 16px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 14px;
+    justify-content: center;
+    gap: 20px;
   }
   .orb-wrap {
     position: relative;
-    width: 200px;
-    height: 200px;
-    cursor: pointer;
+    width: 220px;
+    height: 220px;
     user-select: none;
   }
   .orb {
     width: 100%;
     height: 100%;
     border-radius: 50%;
-    background:
-      radial-gradient(circle at 30% 25%, var(--orb-c1) 0%, var(--orb-c2) 35%, var(--orb-c3) 65%, var(--orb-c4) 100%);
-    box-shadow:
-      inset 0 -20px 60px rgba(0,0,0,0.18),
-      inset 0 20px 50px rgba(255,255,255,0.5),
-      0 14px 40px rgba(31,111,255,0.32);
-    animation: orb-breathe 5.2s ease-in-out infinite;
-    transition: transform 0.25s ease, filter 0.25s ease;
-  }
-  .orb::before {
-    content: "";
-    position: absolute;
-    inset: 12% 28% 60% 18%;
-    background: radial-gradient(ellipse at center, rgba(255,255,255,0.85), rgba(255,255,255,0) 70%);
-    border-radius: 50%;
-    filter: blur(8px);
-    opacity: 0.7;
-    pointer-events: none;
+    background: radial-gradient(circle at 35% 30%, #2a2a2a 0%, #111111 60%, #000000 100%);
+    box-shadow: 0 10px 32px rgba(0,0,0,0.25);
+    animation: orb-breathe 4s ease-in-out infinite;
+    transition: transform 0.3s ease;
   }
   @keyframes orb-breathe {
-    0%,100% { transform: scale(1); filter: hue-rotate(0deg); }
-    50%     { transform: scale(1.04); filter: hue-rotate(8deg); }
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.03); }
   }
-  /* 펄스 (외부 ring) */
-  .orb-ring {
-    position: absolute;
-    inset: -10px;
-    border-radius: 50%;
-    border: 2px solid rgba(31,111,255,0.35);
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  /* 상태별 효과 */
-  .orb-wrap.listening .orb { animation: orb-listen 1.1s ease-in-out infinite; box-shadow: 0 18px 56px rgba(31,111,255,0.55), inset 0 -20px 60px rgba(0,0,0,0.2); }
-  .orb-wrap.listening .orb-ring { animation: ring-pulse 1.4s ease-out infinite; }
+  .orb-wrap.listening .orb { animation: orb-listen 1.1s ease-in-out infinite; }
   @keyframes orb-listen {
-    0%,100% { transform: scale(1); }
-    50%     { transform: scale(1.08); }
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.07); }
   }
-  @keyframes ring-pulse {
-    0%   { transform: scale(0.9); opacity: 0.7; }
-    100% { transform: scale(1.35); opacity: 0; }
-  }
-
   .orb-wrap.thinking .orb {
-    filter: grayscale(0.35) hue-rotate(40deg);
-    animation: orb-spin 2.2s linear infinite, orb-breathe 5.2s ease-in-out infinite;
+    animation: orb-think 1.6s ease-in-out infinite;
   }
-  @keyframes orb-spin {
-    from { background-position: 0% 50%; }
-    to   { background-position: 100% 50%; }
+  @keyframes orb-think {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50%      { transform: scale(0.96); opacity: 0.85; }
   }
-
   .orb-wrap.speaking .orb {
-    background:
-      radial-gradient(circle at 30% 25%, #e8d4ff 0%, #b67aff 35%, #7a3df0 65%, #3f1eaf 100%);
-    animation: orb-speak 0.7s ease-in-out infinite;
-    box-shadow: 0 18px 56px rgba(122,61,240,0.55), inset 0 -20px 60px rgba(0,0,0,0.22);
+    animation: orb-speak 0.55s ease-in-out infinite;
   }
   @keyframes orb-speak {
-    0%,100% { transform: scale(1); }
-    25%     { transform: scale(1.06); }
-    50%     { transform: scale(1.02); }
-    75%     { transform: scale(1.07); }
+    0%, 100% { transform: scale(1); }
+    33%      { transform: scale(1.05); }
+    66%      { transform: scale(1.02); }
   }
-  .orb-wrap.speaking .orb-ring {
-    border-color: rgba(122,61,240,0.45);
-    animation: ring-pulse 1.0s ease-out infinite;
-  }
-
-  .orb-wrap.disabled { cursor: not-allowed; opacity: 0.7; }
 
   .voice-state {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text);
-    min-height: 22px;
-    text-align: center;
-  }
-  .voice-hint {
-    font-size: 12px;
+    font-size: 13px;
+    font-weight: 500;
     color: var(--muted);
+    min-height: 18px;
     text-align: center;
-    margin-top: -8px;
+    letter-spacing: -0.01em;
   }
+  .voice-hint { display: none; }
+
+  /* 음성 모드 비활성화 (X) 버튼 — 우하단 빨강 원 */
+  .voice-close-btn {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: var(--danger);
+    color: #fff;
+    border: 0;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 16px rgba(255,59,48,0.3);
+    z-index: 10;
+  }
+  .voice-close-btn:hover { transform: scale(1.05); }
+  .voice-close-btn svg { width: 22px; height: 22px; stroke: #fff; stroke-width: 2.5; fill: none; }
+  body.mode-voice .voice-close-btn { display: flex; }
 
   /* ── 채팅 히스토리 (orb 아래 작게) ── */
   .chat {
@@ -206,14 +166,14 @@
   .sources {
     margin-top: 4px;
     background: var(--source-bg);
-    border: 1px solid #f0e3c0;
+    border: 1px solid var(--border);
     border-radius: 10px;
     padding: 6px 8px;
     font-size: 12px;
-    color: #5a4a18;
+    color: var(--muted);
   }
-  .sources .src-title { font-weight: 600; margin-bottom: 3px; }
-  .sources a { color: var(--primary); text-decoration: none; }
+  .sources .src-title { font-weight: 600; margin-bottom: 3px; color: var(--text); }
+  .sources a { color: var(--text); text-decoration: underline; }
   .empty-hint {
     text-align: center;
     color: var(--muted);
@@ -224,66 +184,65 @@
   /* ── 입력바 ── */
   .input-bar {
     border-top: 1px solid var(--border);
-    padding: 10px 12px;
+    padding: 12px 14px;
     background: var(--surface);
     flex-shrink: 0;
   }
-  .input-row { display: flex; gap: 8px; align-items: center; }
+  .input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    background: #f3f3f3;
+    border-radius: 22px;
+    padding: 6px 6px 6px 16px;
+  }
   .input-row textarea {
     flex: 1;
-    border: 1px solid var(--border);
-    border-radius: 22px;
-    padding: 9px 14px;
+    border: none;
+    background: transparent;
+    padding: 8px 0;
     font-size: 14px;
     resize: none;
     max-height: 100px;
-    min-height: 40px;
+    min-height: 28px;
     font-family: inherit;
     color: var(--text);
-    background: #fff;
+    outline: none;
   }
-  .input-row textarea:focus { outline: 2px solid var(--primary); }
-  .send-btn {
+  .icon-btn {
     flex-shrink: 0;
-    width: 42px;
-    height: 42px;
+    width: 36px;
+    height: 36px;
     border-radius: 50%;
     border: none;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  .icon-btn:hover { background: rgba(0,0,0,0.06); }
+  .icon-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .icon-btn.send {
     background: var(--primary);
     color: #fff;
-    font-size: 16px;
-    cursor: pointer;
   }
-  .send-btn:hover:not(:disabled) { background: var(--primary-dark); }
-  .send-btn:disabled { background: #94a3b8; cursor: not-allowed; }
+  .icon-btn.send:hover { background: var(--primary-dark); }
+  .icon-btn.send:disabled { background: #cccccc; cursor: not-allowed; }
+  .icon-btn.send svg { stroke: #fff; }
 
   /* 좁은 화면에서 */
   @media (max-width: 480px) {
-    .voice-stage { padding: 12px 12px 4px; gap: 8px; }
-    .orb-wrap { width: 168px; height: 168px; }
-    .voice-state { font-size: 15px; }
-    .chat { padding: 6px 12px; }
+    .orb-wrap { width: 180px; height: 180px; }
   }
 
-  /* ── 모드 토글 (텍스트 ↔ 음성) ── */
-  .mode-toggle {
-    background: var(--primary);
-    color: #fff;
-    border: none;
-    border-radius: 14px;
-    padding: 5px 12px;
-    font-size: 11px;
-    cursor: pointer;
-    margin-right: 6px;
-  }
-  .mode-toggle:hover { background: var(--primary-dark); }
-
-  /* 텍스트 모드 = 기본: orb 영역과 음성 자막 숨김, 대화창/입력 표시 */
+  /* 텍스트 모드 = 기본: orb 영역 + 자막 숨김, 대화창/입력바 표시 */
   body.mode-text .voice-stage { display: none; }
   body.mode-text .voice-caption { display: none; }
 
-  /* 음성 모드 = orb 큰 화면 + 자막만, 채팅창과 텍스트 입력 숨김.
-     단, history 에는 voice 발화/응답이 누적되므로 텍스트 모드로 토글하면 같이 보임. */
+  /* 음성 모드 = orb + 자막만, 헤더 일부와 채팅창/입력바 숨김 */
   body.mode-voice .chat { display: none; }
   body.mode-voice .input-bar { display: none; }
 
@@ -326,21 +285,15 @@
 <body class="mode-text">
 <div class="app">
   <header>
-    <img src="/static/jblogo.png" alt="전북도청" onerror="this.style.display='none'" />
-    <div class="titles">
-      <h1>전북도청 AI 안내원</h1>
-    </div>
-    <button class="mode-toggle" id="modeToggleBtn" title="음성/텍스트 모드 전환" type="button">🎤 음성</button>
-    <button class="reset-btn" id="resetBtn" title="대화 기록 초기화">초기화</button>
+    <img src="/static/jblogo.png" alt="전북특별자치도" onerror="this.style.display='none'" />
   </header>
 
   <div class="voice-stage">
     <div class="orb-wrap" id="orb" role="button" aria-label="음성 입력 시작/중지" tabindex="0">
-      <div class="orb-ring"></div>
       <div class="orb"></div>
     </div>
-    <div class="voice-state" id="voiceState">탭하여 말하기</div>
-    <div class="voice-hint" id="voiceHint">한국어로 자연스럽게 질문해 주세요</div>
+    <div class="voice-state" id="voiceState"></div>
+    <div class="voice-hint" id="voiceHint"></div>
     <div class="voice-caption" id="voiceCaption">
       <div class="vc-bubble vc-user" id="vcUser"></div>
       <div class="vc-bubble vc-bot" id="vcBot"></div>
@@ -348,15 +301,24 @@
   </div>
 
   <div class="chat" id="chat">
-    <div class="empty-hint" id="emptyHint">대화 내용이 여기에 표시됩니다</div>
+    <div class="empty-hint" id="emptyHint"></div>
   </div>
 
   <div class="input-bar">
     <div class="input-row">
-      <textarea id="input" rows="1" placeholder="텍스트로도 질문할 수 있어요. Enter 전송"></textarea>
-      <button class="send-btn" id="sendBtn" title="전송">▶</button>
+      <textarea id="input" rows="1" placeholder="질문을 입력하세요"></textarea>
+      <button class="icon-btn" id="voiceBtn" type="button" title="음성으로 질문" aria-label="음성 모드">
+        <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+      </button>
+      <button class="icon-btn send" id="sendBtn" type="button" title="전송" aria-label="전송">
+        <svg viewBox="0 0 24 24"><line x1="12" y1="20" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></svg>
+      </button>
     </div>
   </div>
+
+  <button class="voice-close-btn" id="voiceCloseBtn" type="button" title="음성 모드 종료" aria-label="음성 모드 종료">
+    <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+  </button>
 </div>
 
 <script>
@@ -370,9 +332,9 @@
   const orbEl = document.getElementById("orb");
   const stateEl = document.getElementById("voiceState");
   const hintEl = document.getElementById("voiceHint");
-  const resetBtn = document.getElementById("resetBtn");
   const emptyHint = document.getElementById("emptyHint");
-  const modeToggleBtn = document.getElementById("modeToggleBtn");
+  const voiceBtn = document.getElementById("voiceBtn");
+  const voiceCloseBtn = document.getElementById("voiceCloseBtn");
   const vcUserEl = document.getElementById("vcUser");
   const vcBotEl = document.getElementById("vcBot");
 
@@ -569,25 +531,21 @@
     document.body.classList.toggle("mode-voice", uiMode === "voice");
     document.body.classList.toggle("mode-text", uiMode === "text");
     if (uiMode === "voice") {
-      modeToggleBtn.textContent = "💬 텍스트";
       clearVoiceCaption();
-      // Pipecat WebSocket 모드 — 기존 HTTP POST /voice-chat 흐름 안 탐
       if (typeof stopMicLoop === "function") stopMicLoop();
       startVoicePipecat();
     } else {
-      modeToggleBtn.textContent = "🎤 음성";
       // 음성 모드 → 텍스트 모드 전환: 모든 음성 활동 완전 정지
-      stopVoicePipecat();                                    // Pipecat WebSocket + mic stream
-      if (typeof stopMicLoop === "function") stopMicLoop();  // VAD RAF tick 중단
-      if (typeof stopMediaRecorderFully === "function") stopMediaRecorderFully();  // PCM ring buffer clear
-      if (typeof stopAllAudio === "function") stopAllAudio();  // 진행 중 TTS 재생 중단
+      stopVoicePipecat();
+      if (typeof stopMicLoop === "function") stopMicLoop();
+      if (typeof stopMediaRecorderFully === "function") stopMediaRecorderFully();
+      if (typeof stopAllAudio === "function") stopAllAudio();
       if (typeof stopReply === "function") stopReply();
-      // 마이크 stream 도 명시적으로 stop (track 해제 → 브라우저 mic LED 끔)
       if (typeof micStream !== "undefined" && micStream) {
         try { micStream.getTracks().forEach(t => t.stop()); } catch (_) {}
       }
       pausedByUser = true;
-      if (typeof setMode === "function") setMode("idle", "텍스트 모드", "텍스트로 질문해 주세요");
+      if (typeof setMode === "function") setMode("idle", "", "");
     }
   }
 
@@ -1078,28 +1036,14 @@
     inputEl.style.height = Math.min(100, inputEl.scrollHeight) + "px";
   });
 
-  resetBtn.addEventListener("click", () => {
-    if (!confirm("대화 기록을 초기화할까요?")) return;
-    history = [];
-    localStorage.removeItem(STORAGE_KEY);
-    chatEl.innerHTML = '<div class="empty-hint" id="emptyHint">대화 내용이 여기에 표시됩니다</div>';
-    clearVoiceCaption();
-    stopAllAudio();
-    if (uiMode === "voice") {
-      setMode("idle", "탭하여 말하기", "한국어로 자연스럽게 질문해 주세요");
-    }
-  });
+  // 입력바 음성 버튼 → 음성 모드 진입
+  voiceBtn.addEventListener("click", () => setUiMode("voice"));
+  // 음성 모드 우하단 X 버튼 → 텍스트 모드 복귀
+  voiceCloseBtn.addEventListener("click", () => setUiMode("text"));
 
-  // 모드 토글 버튼 (텍스트 ↔ 음성)
-  modeToggleBtn.addEventListener("click", () => {
-    setUiMode(uiMode === "voice" ? "text" : "voice");
-  });
-
-  // 초기 모드: 텍스트 (body class="mode-text" + 이벤트 미부착 상태에서 정렬)
+  // 초기 모드: 텍스트
   setUiMode("text");
-
-  // 초기 안내 — 사용자가 orb 한 번 탭해야 mic 권한 요청 + 자동 모드 진입
-  setMode("idle", "탭하여 시작", "Orb 를 탭하면 자동으로 듣기 시작해요");
+  setMode("idle", "", "");
   renderHistory();
 </script>
 </body>
