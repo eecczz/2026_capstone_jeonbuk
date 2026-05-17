@@ -471,6 +471,7 @@ def _build_rag_processor(request: Request, websocket=None):
                     self._active_user_segments = []
                     return
 
+                await _send_caption("phase_label", "관련 자료 찾는 중")
                 await self._generate_reply(generation_id, user_text)
             except asyncio.CancelledError:
                 log.info("[voice_ws] generation task cancelled id=%s", generation_id)
@@ -550,6 +551,8 @@ def _build_rag_processor(request: Request, websocket=None):
                         if _stream_t0 is None:
                             _stream_t0 = now
                             log.info("[voice_ws] FIRST delta arrived id=%s", generation_id)
+                            # LLM 이 답변을 만들기 시작 — orb 는 여전히 thinking
+                            await _send_caption("phase_label", "답변 작성 중")
                         delta_count += 1
                         if delta_count <= 5 or delta_count % 20 == 0:
                             log.info(
@@ -661,8 +664,9 @@ def _build_rag_processor(request: Request, websocket=None):
                     await self._stop_current_generation()
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 log.info("[voice_ws] VAD: user stopped speaking")
-                # 사용자 발화 끝 → frontend orb thinking (yin-yang 회전) 으로
+                # 사용자 발화 끝 → frontend orb thinking + 단계 라벨
                 await _send_caption("vad", "stop")
+                await _send_caption("phase_label", "발화 정리 중")
 
             if isinstance(frame, TranscriptionFrame):
                 user_text = (frame.text or "").strip()

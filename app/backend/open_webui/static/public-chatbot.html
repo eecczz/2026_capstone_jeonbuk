@@ -469,7 +469,7 @@
     const i16 = new Int16Array(arrayBuf);
     if (!i16.length) return;
     pcReplyAudioChunks += 1;
-    // 첫 audio chunk 도착 → speaking 모드 (4-bar 파형 애니메이션)
+    // 첫 audio chunk 도착 → speaking 모드 (4-bar 파형). 단계 라벨 비움.
     if (pcReplyAudioChunks === 1 && typeof setMode === "function") {
       setMode("speaking", "", "");
     }
@@ -537,12 +537,18 @@
           else if (msg && msg.type === "vad") {
             // backend 의 VAD started/stopped 신호 — orb 전환의 가장 정확한 시점
             if (msg.text === "start") {
-              // 사용자 발화 시작 → 기본 orb (검은 원)
+              // 사용자 발화 시작 → 기본 orb (검은 원). 라벨은 비움.
               if (typeof setMode === "function") setMode("listening", "", "");
             } else if (msg.text === "stop") {
               // 사용자 발화 끝 → thinking orb (yin-yang 회전, 응답 생성 중)
               if (typeof setMode === "function") setMode("thinking", "", "");
             }
+          }
+          else if (msg && msg.type === "phase_label") {
+            // 응답 생성 중 단계 라벨 — orb 아래 작은 텍스트.
+            // backend 가 단계별 push: '발화 정리 중' → '관련 자료 찾는 중'
+            // → '답변 작성 중'. speaking 으로 전환 시 frontend 가 알아서 비움.
+            if (stateEl) stateEl.textContent = msg.text || "";
           }
           else if (msg && msg.type === "reply") {
             pcAcceptAudio = true;
