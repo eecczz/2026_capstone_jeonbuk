@@ -15329,22 +15329,37 @@ chapter title이 양식 specific 단어 (특정 정책명/연도/주제어)를 �
 
 이 원칙 위반은 prompt 위반입니다. 일관 분류로 강제 재조정 + ambiguity_flags에 "level_classification_corrected" 추가.
 
-[chapter level 식별 — strict 원리]
+[chapter level 선택 — 핵심 task]
 
-DEFAULT: TOC 1차 level = chapter
+TOC 위계 분석 후, level 0(1차)과 level 1(2차) 중 양식의 chapter 흐름 단위로
+더 어울리는 level을 선택하십시오.
 
-EXCEPTION (chapter level이 sub-list level인 경우 — 오직 이 조건일 때만):
-- TOC 1차 level의 모든 항목이 양식 specific (보편적 chapter title 없음)
-- + sub-list level에 보편적 chapter title 포함
-- → 1차 level = container, sub-list level = chapter
+선택 기준 (모두 종합):
 
-위 EXCEPTION 조건 둘 다 충족이어야 적용. 그 외에는 DEFAULT.
+1. 양식 흐름:
+   - 다른 주제 source가 적용돼도 같은 chapter 흐름이 유지되는 단위가 어느 level인가?
 
-보편적 chapter title:
-- 목적/추진배경/추진방향/추진과제/결론/행정사항/평가/계획/관리/여건/방향/일정/현황 등
-  여러 양식에 흔히 등장하는 보편적 chapter 의미 단어
-- 특정 정책명/과제명/연도/주제 specific 단어가 박혀있으면 보편적 chapter title 아님
-- 1차 level에 하나라도 보편적 chapter title 있으면 → DEFAULT 적용 (1차 level = chapter)
+2. 보편적 chapter title 포함 비율:
+   - 그 level 항목들이 보편적 chapter 의미 단어를 더 많이 포함하는 level이 chapter.
+   - 보편적 chapter 의미 예: 목적/추진배경/추진방향/추진과제/결론/행정사항/평가/계획/관리/여건/방향/일정/현황 등
+   - 양식 specific topic이 박혀 있어도 보편적 chapter title (목적/추진배경 등) 포함이면 chapter 의미 있음
+
+3. 같은 level 일관 처리 가능성:
+   - 선택한 level의 모든 항목이 chapter로 처리 가능한가?
+   - 분량 짧은 항목, 양식 specific topic 박힌 항목도 모두 chapter로 묶을 수 있어야 함
+
+선택 결과:
+- level 0 = chapter:
+  * level 0 모든 항목 = chapter (분량/topic 차이 무관)
+  * level 1 (있으면) = subpattern (가변 sub-content)
+- level 1 = chapter:
+  * level 0 = container (chapter들을 묶는 상위 그룹)
+  * level 1 모든 항목 = chapter (분량/topic 차이 무관)
+- TOC level 1이 없으면: level 0 = chapter (자동)
+
+unit_decision.selected_generation_unit_reason 에 다음 명시 필수:
+- 선택한 level (0 또는 1)
+- 두 level 비교 평가 (어느 level이 양식 흐름/보편적 chapter title/일관 처리 측면에서 더 적합한지)
 
 [unit 종류]
 
