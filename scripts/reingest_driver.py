@@ -90,6 +90,10 @@ def post_reingest(jwt: str, urls: list[str], timeout: int = 600) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return {"error": "401_unauthorized"}
+        return {"error": f"HTTP {e.code}: {e.reason}"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -125,6 +129,15 @@ def main():
     for i in range(0, len(urls), args.chunk):
         chunk = urls[i : i + args.chunk]
         resp = post_reingest(jwt, chunk)
+        # JWT 만료 시 자동 갱신 후 1회 재시도. backend uvicorn 재시작 직후 같은
+        # 일시적 401 도 같이 처리.
+        if resp.get("error") == "401_unauthorized":
+            log.info("JWT expired or backend restarted — refreshing token...")
+            try:
+                jwt = get_admin_jwt()
+                resp = post_reingest(jwt, chunk)
+            except Exception as e:
+                log.warning(f"JWT refresh failed: {e}")
         if "error" in resp:
             log.warning(f"chunk {i}: HTTP error {resp['error']}")
             agg["errors"] += len(chunk)
