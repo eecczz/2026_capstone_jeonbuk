@@ -15182,3 +15182,881 @@ def observe_section_plan_compliance(
         "generated_heading_texts": gen_heading_texts,
         "primary_heading_role": primary_role,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase E — TOC-based Chapter Unit Planner (debug-only, debug에 둘 다 dump)
+#
+# 책임 분리:
+#   - has_toc_gate           : 차례/목차 paragraph 존재 약한 detection (role + text)
+#   - build_..._prompt       : 양식 self-description(차례) primary + 본문 secondary
+#                              + 1c reference-only로 chapter unit 결정 prompt
+#   - parse_..._from_llm     : JSON 추출
+#   - validate_..._plan      : paragraph_refs 실존 검증 + schema 필드 검증
+#                              invalid는 해당 claim ambiguity 강등 (전체 plan 유지)
+#   - diagnose_1c_non_body_handling : 1c가 비-본문 paragraph parent/level
+#                                     양식 의도와 맞는지 측정 (1c 개선 task용)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# 차례/목차/순서 detect 키워드 (약한 detection — false negative 방지)
+_TOC_TEXT_HINT_PATTERNS = [
+    r"^\s*차\s*례\s*$",
+    r"^\s*차\s*례\s+",
+    r"^\s*목\s*차\s*$",
+    r"^\s*목\s*차\s+",
+    r"^\s*순\s*서\s*$",
+    r"^\s*순\s*서\s+",
+    r"^\s*목\s*록\s*$",
+    r"^\s*목\s*록\s+",
+    r"^\s*Contents\s*$",
+    r"^\s*CONTENTS\s*$",
+    r"^\s*Table\s+of\s+Contents",
+]
+_TOC_ROLE_HINTS = {"table_of_contents", "toc"}
+
+
+def has_toc_gate(section_results: dict) -> dict:
+    """
+    Phase E gate: 양식에 차례/목차 paragraph가 존재하는지 약하게 detect.
+
+    role(1d) hit 또는 text pattern hit이 한 건이라도 있으면 has_toc=True.
+    false negative 방지가 우선. 정확한 toc paragraph 식별은 toc AI 책임.
+
+    Args:
+        section_results: {str(section_id) or int: {"structure": {paragraphs, ...},
+                                                    "idx_texts": {...} or "idx_full_texts": ...}}
+    Returns:
+        {
+          "has_toc": bool,
+          "toc_paragraph_hints": [
+            {"section_id": int, "local_idx": int, "role": str,
+             "text_preview": str, "hit_by": "role"|"text"|"both"}
+          ],
+          "detection_method": "role"|"text"|"both"|"none",
+          "scanned_section_count": int,
+          "scanned_paragraph_count": int,
+        }
+    """
+    hints: list[dict] = []
+    role_hits = 0
+    text_hits = 0
+    scanned_sections = 0
+    scanned_paragraphs = 0
+
+    patterns = [re.compile(p) for p in _TOC_TEXT_HINT_PATTERNS]
+
+    for raw_sid, sresult in section_results.items():
+        try:
+            section_id = int(raw_sid)
+        except (TypeError, ValueError):
+            continue
+        scanned_sections += 1
+
+        structure = (sresult or {}).get("structure") or {}
+        paragraphs = structure.get("paragraphs") or []
+        idx_texts = (sresult or {}).get("idx_texts") or {}
+        idx_full_texts = (sresult or {}).get("idx_full_texts") or {}
+
+        for p in paragraphs:
+            scanned_paragraphs += 1
+            local_idx = p.get("idx")
+            if local_idx is None:
+                continue
+            role = (p.get("canonical_role") or p.get("role") or "").strip().lower()
+            text = (
+                idx_full_texts.get(str(local_idx))
+                or idx_full_texts.get(local_idx)
+                or idx_texts.get(str(local_idx))
+                or idx_texts.get(local_idx)
+                or ""
+            )
+
+            role_hit = role in _TOC_ROLE_HINTS
+            text_hit = any(pat.search(text or "") for pat in patterns)
+
+            if role_hit or text_hit:
+                if role_hit:
+                    role_hits += 1
+                if text_hit:
+                    text_hits += 1
+                hit_by = "both" if role_hit and text_hit else ("role" if role_hit else "text")
+                hints.append({
+                    "section_id": section_id,
+                    "local_idx": local_idx,
+                    "role": role,
+                    "text_preview": (text or "")[:120],
+                    "hit_by": hit_by,
+                })
+
+    if role_hits and text_hits:
+        detection = "both"
+    elif role_hits:
+        detection = "role"
+    elif text_hits:
+        detection = "text"
+    else:
+        detection = "none"
+
+    return {
+        "has_toc": bool(hints),
+        "toc_paragraph_hints": hints,
+        "detection_method": detection,
+        "scanned_section_count": scanned_sections,
+        "scanned_paragraph_count": scanned_paragraphs,
+    }
+
+
+TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 generation unit (chapter 단위)을 결정하는 분석가입니다.
+이 판단은 추후 source content를 양식의 어느 단위에 채울지 결정하는 데 사용됩니다.
+
+[INPUT 구성]
+
+1. TOC PARAGRAPHS — PRIMARY evidence
+   양식이 자기 자신의 chapter 구조를 차례/목차/순서에 명시적으로 적어놓은 paragraph.
+   양식 self-description입니다. generation unit 결정의 일차 근거입니다.
+
+2. BODY PARAGRAPHS — SECONDARY evidence (모든 section)
+   본문 paragraph. 차례에 적힌 chapter가 실제로 어디에 위치하는지 matching 용도.
+   각 paragraph: (section_id, local_idx, marker, role, text).
+
+3. 1C TREE (level, parent_idx) — REFERENCE ONLY, 정답 아님
+   1c는 paragraph 간 부모/자식 관계를 추정한 결과이며 양식 의도와 다를 수 있습니다.
+   비-본문 paragraph를 본문 컨테이너로 오인하거나 본문 unit을 sub-level로 잡는 사례가 관측됩니다.
+   1c level/parent를 generation_unit 경계 결정의 직접 근거로 쓰지 마십시오.
+
+[판단 원칙]
+
+- 차례에 적힌 위계가 양식 의도입니다. 차례를 양식 self-description으로 처리하십시오.
+- generation_unit은 차례 위계 중 "독립된 생성 단위로 다뤄질 만한 단위"를 선택하십시오.
+  임의로 가장 깊은 leaf로 내려가거나 특정 level을 기계적으로 고르지 마십시오.
+- 같은 양식 안에 chapter 종류가 여러 개일 수 있습니다. 단일 종류만 있다고 가정하지 마십시오.
+- container_unit: 여러 generation_unit을 의미적으로 묶는 상위 그룹. 그 자체로 독립 생성 단위는 아닙니다.
+- subpattern_unit: generation_unit 안에서 반복되는 하위 heading. 그 자체로 독립 생성 단위는 아니지만
+  chapter-local pattern 보존에 필요합니다.
+- 차례에 없는 영역(표지, header, footer, 부록 등)은 out_of_toc_preserve_regions에 분류하십시오.
+  생성 대상이 아니라 preserve 대상입니다.
+- 차례에 적혀있지만 본문에서 매칭 paragraph를 못 찾으면 matching_failed에 기록하십시오.
+
+[evidence 처리]
+
+- 차례를 우선 검토하되, 본문 paragraph 흐름과 매칭 evidence를 함께 보고 판단하십시오.
+- 차례, 본문, 1c가 서로 어긋나면 ambiguity_flags에 기록하고 evidence가 충분한 해석을 택하십시오.
+- 1c와 차례/본문이 충돌하면 ambiguity_flags에 "1c_disagreement"를 추가하십시오.
+- 차례 entry와 본문 매칭이 부분적이거나 애매하면 ambiguity_flags에 기록하십시오.
+- 차례 위계 자체가 모호하면 alternative_interpretations에 다른 해석을 나열하고 unit_decision.confidence=low.
+
+[hardcode 금지]
+
+- 특정 marker family(순서 표기 체계)가 항상 generation_unit이라는 가정 금지.
+- 특정 제목 문자열, 특정 양식명에 따른 분기 금지.
+- marker family는 양식별로 다양합니다. 차례 evidence로부터 양식이 어떤 표기 체계를 쓰는지 추론하십시오.
+
+[evidence cite 의무]
+
+- 모든 claim은 paragraph_refs (section_id, local_idx)로 cite하십시오.
+- 존재하지 않는 idx를 만들지 마십시오. INPUT에서 받은 paragraph 중 하나여야 합니다.
+- quoted_text에는 cite한 paragraph 실제 text의 짧은 인용을 넣으십시오.
+- evidence 각 항목마다 confidence를 high/medium/low로 표기하십시오.
+
+[idx_range 의미]
+
+list of spans 형식: [{"section_id", "start_local_idx", "end_local_idx"}, ...]
+보통 list 길이 1 (한 section 안). 어떤 unit이 여러 section에 걸치면 길이 2+.
+
+- container: 자기 시작 paragraph ~ 그 container 마지막 children 끝.
+- generation: 자기 시작 paragraph ~ 자기 영역 끝.
+- subpattern: 자기 시작 paragraph ~ 자기 영역 끝.
+
+결정 불가하면 null + ambiguity_flag.
+
+[OUTPUT — JSON ONLY, 다른 텍스트 금지]
+
+{
+  "toc_detection": {
+    "has_toc": true,
+    "toc_paragraphs": [{"section_id": <int>, "local_idx": <int>, "evidence_text": <str>}],
+    "confidence": "high"|"medium"|"low"
+  },
+  "toc_interpretation": {
+    "container_units": [
+      {
+        "title_text": <str>,
+        "paragraph_ref": {"section_id": <int>, "local_idx": <int>} | null,
+        "marker_family_hint": <str>,
+        "child_unit_count": <int>,
+        "idx_range": [{"section_id": <int>, "start_local_idx": <int>, "end_local_idx": <int>}] | null
+      }
+    ],
+    "generation_units": [
+      {
+        "title_text": <str>,
+        "paragraph_ref": {"section_id": <int>, "local_idx": <int>} | null,
+        "parent_container_index": <int> | null,
+        "marker_family_hint": <str>,
+        "idx_range": [{"section_id": <int>, "start_local_idx": <int>, "end_local_idx": <int>}] | null
+      }
+    ],
+    "subpattern_units": [
+      {
+        "title_text": <str>,
+        "parent_generation_unit_index": <int>,
+        "paragraph_ref": {"section_id": <int>, "local_idx": <int>} | null,
+        "idx_range": [{"section_id": <int>, "start_local_idx": <int>, "end_local_idx": <int>}] | null
+      }
+    ],
+    "out_of_toc_preserve_regions": [
+      {
+        "region_label": <str>,
+        "paragraph_refs": [{"section_id": <int>, "local_idx": <int>}],
+        "reason_free_text": <str>
+      }
+    ]
+  },
+  "matching_failed": [
+    {"toc_entry_text": <str>, "reason_free_text": <str>}
+  ],
+  "unit_decision": {
+    "selected_generation_unit_reason": <str>,
+    "alternative_interpretations": [
+      {"description": <str>, "reason_rejected": <str>}
+    ],
+    "ambiguity_flags": [<str>],
+    "confidence": "high"|"medium"|"low"
+  },
+  "evidence": [
+    {
+      "claim": <str>,
+      "paragraph_refs": [{"section_id": <int>, "local_idx": <int>}],
+      "quoted_text": <str>,
+      "confidence": "high"|"medium"|"low"
+    }
+  ]
+}
+"""
+
+
+def build_toc_based_chapter_plan_prompt(
+    toc_paragraphs: list[dict],
+    body_paragraphs_by_section: dict,
+    one_c_tree_by_section: dict,
+    max_body_text_preview: int = 200,
+) -> list[dict]:
+    """
+    Phase E: toc-based chapter unit AI planner prompt 생성.
+
+    Args:
+        toc_paragraphs: [
+            {"section_id": int, "local_idx": int, "role": str, "text": str (full)}
+        ]
+        body_paragraphs_by_section: {
+            section_id (int): [
+                {"local_idx": int, "marker": str, "role": str, "text": str}
+            ]
+        }
+        one_c_tree_by_section: {
+            section_id (int): [
+                {"local_idx": int, "level": int, "parent_idx": int|None}
+            ]
+        }
+        max_body_text_preview: body paragraph text truncate 길이 (token 절약, 양식 의도는 보존)
+    """
+    # TOC paragraphs: full text 그대로 (양식 self-description, primary evidence)
+    toc_entries = []
+    for tp in toc_paragraphs:
+        toc_entries.append({
+            "section_id": tp.get("section_id"),
+            "local_idx": tp.get("local_idx"),
+            "role": tp.get("role"),
+            "text": tp.get("text", ""),  # full text
+        })
+
+    # BODY paragraphs: text는 truncate (token 절약).
+    body_by_section_serializable = {}
+    for sid, plist in (body_paragraphs_by_section or {}).items():
+        try:
+            sid_int = int(sid)
+        except (TypeError, ValueError):
+            continue
+        out_list = []
+        for p in plist:
+            text = p.get("text", "") or ""
+            if len(text) > max_body_text_preview:
+                text_preview = text[:max_body_text_preview] + "…"
+            else:
+                text_preview = text
+            out_list.append({
+                "local_idx": p.get("local_idx"),
+                "marker": p.get("marker", ""),
+                "role": p.get("role", ""),
+                "text": text_preview,
+            })
+        body_by_section_serializable[str(sid_int)] = out_list
+
+    # 1c tree: level + parent_idx만
+    tree_by_section_serializable = {}
+    for sid, plist in (one_c_tree_by_section or {}).items():
+        try:
+            sid_int = int(sid)
+        except (TypeError, ValueError):
+            continue
+        out_list = []
+        for p in plist:
+            out_list.append({
+                "local_idx": p.get("local_idx"),
+                "level": p.get("level"),
+                "parent_idx": p.get("parent_idx"),
+            })
+        tree_by_section_serializable[str(sid_int)] = out_list
+
+    payload = {
+        "toc_paragraphs": toc_entries,
+        "body_paragraphs_by_section": body_by_section_serializable,
+        "one_c_tree_by_section_reference_only": tree_by_section_serializable,
+    }
+
+    user_msg = (
+        "## INPUT\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n\n위 양식의 generation unit 결정을 OUTPUT SCHEMA에 따라 JSON으로만 답하십시오."
+    )
+
+    return [
+        {"role": "system", "content": TOC_BASED_CHAPTER_PLAN_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_toc_based_chapter_plan_from_llm(llm_response: str) -> dict:
+    """Phase E: AI 응답 JSON 파싱. 실패 시 parse_error 필드 포함 dict 반환."""
+    text = (llm_response or "").strip()
+
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0].strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(_repair_json(text))
+        except Exception as e:
+            log.warning(f"Phase E toc plan JSON 파싱 실패: {e}")
+            return {"parse_error": str(e), "raw_preview": (llm_response or "")[:200]}
+
+    if not isinstance(parsed, dict):
+        return {"parse_error": "top-level is not dict", "raw_preview": (llm_response or "")[:200]}
+
+    return parsed
+
+
+def validate_toc_based_chapter_plan(
+    plan: dict,
+    all_paragraphs_by_section: dict,
+) -> dict:
+    """
+    Phase E: AI output schema + paragraph_refs 실존 검증.
+
+    invalid paragraph_ref는 해당 claim ambiguity로 강등 (전체 plan은 valid 유지).
+    schema field 누락은 ambiguity_flags에 'schema_missing_<field>'로 기록.
+
+    Args:
+        plan: parse_toc_based_chapter_plan_from_llm 결과
+        all_paragraphs_by_section: {section_id (int): set of local_idx (int)}
+
+    Returns:
+        plan에 validation_result 필드 추가:
+        {
+            "valid": bool,                                # schema 큰 결손 없으면 True
+            "invalid_paragraph_refs": [...],              # 존재 안 하는 ref
+            "schema_missing_fields": [...],
+            "downgraded_claim_count": int,                # ambiguity 강등 수
+            "fallback_required": bool,                    # True면 _build_chapter_types fallback
+        }
+    """
+    if "parse_error" in plan:
+        plan["validation_result"] = {
+            "valid": False,
+            "invalid_paragraph_refs": [],
+            "schema_missing_fields": ["parse_error"],
+            "downgraded_claim_count": 0,
+            "fallback_required": True,
+        }
+        return plan
+
+    # paragraph_refs 실존 집합 변환
+    valid_refs: dict[int, set] = {}
+    for sid, idxs in (all_paragraphs_by_section or {}).items():
+        try:
+            sid_int = int(sid)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(idxs, (list, tuple)):
+            valid_refs[sid_int] = {int(i) for i in idxs if i is not None}
+        elif isinstance(idxs, set):
+            valid_refs[sid_int] = {int(i) for i in idxs if i is not None}
+        else:
+            valid_refs[sid_int] = set()
+
+    def _ref_exists(ref) -> bool:
+        if not isinstance(ref, dict):
+            return False
+        sid = ref.get("section_id")
+        lid = ref.get("local_idx")
+        if sid is None or lid is None:
+            return False
+        try:
+            return int(lid) in valid_refs.get(int(sid), set())
+        except (TypeError, ValueError):
+            return False
+
+    invalid_refs: list[dict] = []
+    downgraded = 0
+
+    # toc_detection.toc_paragraphs
+    toc_det = plan.get("toc_detection") or {}
+    for tp in toc_det.get("toc_paragraphs", []) or []:
+        if not _ref_exists(tp):
+            invalid_refs.append({"location": "toc_detection.toc_paragraphs", "ref": tp})
+
+    # toc_interpretation 안 각 unit list
+    toc_interp = plan.get("toc_interpretation") or {}
+
+    def _check_unit_refs(unit_list, list_name):
+        nonlocal downgraded
+        for i, unit in enumerate(unit_list or []):
+            pref = unit.get("paragraph_ref")
+            if pref is not None and not _ref_exists(pref):
+                invalid_refs.append({"location": f"{list_name}[{i}].paragraph_ref", "ref": pref})
+                unit["paragraph_ref"] = None
+                flags = unit.setdefault("_validation_flags", [])
+                flags.append("invalid_paragraph_ref_downgraded")
+                downgraded += 1
+            # idx_range 안 span의 start/end도 실존 ref 검증
+            ir = unit.get("idx_range")
+            if isinstance(ir, list):
+                for j, span in enumerate(ir):
+                    if not isinstance(span, dict):
+                        continue
+                    sid = span.get("section_id")
+                    start = span.get("start_local_idx")
+                    end = span.get("end_local_idx")
+                    for which, val in (("start_local_idx", start), ("end_local_idx", end)):
+                        if sid is None or val is None:
+                            continue
+                        if not _ref_exists({"section_id": sid, "local_idx": val}):
+                            invalid_refs.append({
+                                "location": f"{list_name}[{i}].idx_range[{j}].{which}",
+                                "ref": {"section_id": sid, "local_idx": val},
+                            })
+
+    _check_unit_refs(toc_interp.get("container_units"), "container_units")
+    _check_unit_refs(toc_interp.get("generation_units"), "generation_units")
+    _check_unit_refs(toc_interp.get("subpattern_units"), "subpattern_units")
+
+    # out_of_toc_preserve_regions
+    for i, region in enumerate(toc_interp.get("out_of_toc_preserve_regions") or []):
+        for j, pref in enumerate(region.get("paragraph_refs") or []):
+            if not _ref_exists(pref):
+                invalid_refs.append({
+                    "location": f"out_of_toc_preserve_regions[{i}].paragraph_refs[{j}]",
+                    "ref": pref,
+                })
+
+    # evidence
+    for i, ev in enumerate(plan.get("evidence") or []):
+        ref_invalid_any = False
+        for j, pref in enumerate(ev.get("paragraph_refs") or []):
+            if not _ref_exists(pref):
+                invalid_refs.append({
+                    "location": f"evidence[{i}].paragraph_refs[{j}]",
+                    "ref": pref,
+                })
+                ref_invalid_any = True
+        if ref_invalid_any:
+            ev["_validation_flags"] = ev.get("_validation_flags", []) + ["invalid_paragraph_ref"]
+            if ev.get("confidence") in ("high", "medium"):
+                ev["confidence"] = "low"
+            downgraded += 1
+
+    # schema 필수 필드
+    required_top = ["toc_detection", "toc_interpretation", "unit_decision", "evidence"]
+    schema_missing = [f for f in required_top if f not in plan]
+    required_interp = [
+        "container_units",
+        "generation_units",
+        "subpattern_units",
+        "out_of_toc_preserve_regions",
+    ]
+    for f in required_interp:
+        if f not in toc_interp:
+            schema_missing.append(f"toc_interpretation.{f}")
+
+    fallback_required = bool(schema_missing)  # 필수 필드 결손 시 fallback 권고
+
+    plan["validation_result"] = {
+        "valid": not schema_missing,
+        "invalid_paragraph_refs": invalid_refs,
+        "schema_missing_fields": schema_missing,
+        "downgraded_claim_count": downgraded,
+        "fallback_required": fallback_required,
+    }
+    return plan
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase E parallel — 1c diagnostic
+#
+# 1c가 추정한 parent/level이 양식 의도와 맞는지 측정 (debug-only).
+# 1c 개선 task 범위 결정용 evidence.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 비-본문 role hint (1d AI가 부여한 role 기준)
+_NON_BODY_ROLE_HINTS = {
+    "table_of_contents",
+    "toc",
+    "document_title",
+    "document_date",
+    "document_subtitle",
+    "appendix_title",
+    "appendix_subtitle",
+    "header_slot",
+    "footer_slot",
+    "cover",
+    "spacer",
+    "spacer_text",
+    "fixed",
+}
+
+
+def diagnose_1c_non_body_handling(section_results: dict) -> dict:
+    """
+    Phase E 보조 진단: 1c parent/level이 비-본문 paragraph 처리에서 양식 의도와 맞는지 측정.
+
+    1d role을 기준으로 비-본문 paragraph 식별 (1d 자체 정확도는 별 watch).
+    1c가 만든 parent 관계가 양식 의도와 어긋날 가능성을 case별로 집계.
+
+    측정 case:
+      A. non_body_as_parent_of_body : 비-본문이 본문의 parent — 양식 의도와 어긋날 가능성 높음
+      B. body_as_parent_of_non_body : 본문이 비-본문의 parent — 부록/header 등 분류 확인 필요
+      C. non_body_orphans           : 비-본문 paragraph 중 parent 없음 (level 0) — 정상 가능
+      D. section_level_distribution : section별 1c level 분포 (들쭉날쭉 신호)
+      E. section_role_disagreement  : 같은 양식 다른 section에서 비-본문 role 처리 일관성
+
+    Args:
+        section_results: cache section_results dict
+
+    Returns:
+        {
+          "per_section": {section_id: {...}},
+          "summary": {
+            "total_non_body_paragraphs": int,
+            "case_A_non_body_as_parent_of_body": int,
+            "case_B_body_as_parent_of_non_body": int,
+            "case_C_non_body_orphans": int,
+            "section_level_distribution": {section_id: {level: count}},
+            "section_role_disagreement_signals": [...]
+          },
+          "samples": {
+            "case_A": [{section_id, local_idx, role, parent_idx, parent_role}],
+            "case_B": [...]
+          }
+        }
+    """
+    per_section: dict[int, dict] = {}
+    case_a_total = 0
+    case_b_total = 0
+    case_c_total = 0
+    case_a_samples: list[dict] = []
+    case_b_samples: list[dict] = []
+    section_level_dist: dict[int, dict] = {}
+    section_non_body_roles: dict[int, set] = {}
+    total_non_body = 0
+
+    for raw_sid, sresult in (section_results or {}).items():
+        try:
+            sid = int(raw_sid)
+        except (TypeError, ValueError):
+            continue
+
+        structure = (sresult or {}).get("structure") or {}
+        paragraphs = structure.get("paragraphs") or []
+
+        # idx -> paragraph lookup
+        para_by_idx: dict = {}
+        for p in paragraphs:
+            pidx = p.get("idx")
+            if pidx is not None:
+                para_by_idx[pidx] = p
+
+        def _is_non_body(p_obj) -> bool:
+            role = (p_obj.get("canonical_role") or p_obj.get("role") or "").strip().lower()
+            return role in _NON_BODY_ROLE_HINTS
+
+        non_body_count = 0
+        case_a_count = 0
+        case_b_count = 0
+        case_c_count = 0
+        level_dist: dict = {}
+        non_body_roles_in_section: set = set()
+
+        for p in paragraphs:
+            level = p.get("level")
+            if level is not None:
+                level_dist[level] = level_dist.get(level, 0) + 1
+
+            if _is_non_body(p):
+                non_body_count += 1
+                role = (p.get("canonical_role") or p.get("role") or "").strip().lower()
+                non_body_roles_in_section.add(role)
+
+                parent_idx = p.get("parent_idx")
+                if parent_idx is None:
+                    case_c_count += 1
+                else:
+                    parent_p = para_by_idx.get(parent_idx)
+                    if parent_p is not None and not _is_non_body(parent_p):
+                        # 비-본문 paragraph의 parent가 본문 — case B
+                        case_b_count += 1
+                        if len(case_b_samples) < 30:
+                            case_b_samples.append({
+                                "section_id": sid,
+                                "local_idx": p.get("idx"),
+                                "role": role,
+                                "parent_idx": parent_idx,
+                                "parent_role": (parent_p.get("canonical_role")
+                                                or parent_p.get("role") or ""),
+                            })
+            else:
+                # 본문 paragraph — parent가 비-본문이면 case A
+                parent_idx = p.get("parent_idx")
+                if parent_idx is not None:
+                    parent_p = para_by_idx.get(parent_idx)
+                    if parent_p is not None and _is_non_body(parent_p):
+                        case_a_count += 1
+                        if len(case_a_samples) < 30:
+                            case_a_samples.append({
+                                "section_id": sid,
+                                "local_idx": p.get("idx"),
+                                "role": (p.get("canonical_role") or p.get("role") or ""),
+                                "parent_idx": parent_idx,
+                                "parent_role": (parent_p.get("canonical_role")
+                                                or parent_p.get("role") or ""),
+                            })
+
+        per_section[sid] = {
+            "paragraph_count": len(paragraphs),
+            "non_body_count": non_body_count,
+            "case_A_non_body_as_parent_of_body": case_a_count,
+            "case_B_body_as_parent_of_non_body": case_b_count,
+            "case_C_non_body_orphans": case_c_count,
+            "level_distribution": level_dist,
+            "non_body_roles": sorted(non_body_roles_in_section),
+        }
+        total_non_body += non_body_count
+        case_a_total += case_a_count
+        case_b_total += case_b_count
+        case_c_total += case_c_count
+        section_level_dist[sid] = level_dist
+        section_non_body_roles[sid] = non_body_roles_in_section
+
+    # section 간 disagreement: 같은 양식 다른 section에서 다른 role 처리
+    disagreement_signals: list[dict] = []
+    if len(section_non_body_roles) >= 2:
+        # 모든 section에 공통 role이 있나
+        section_ids_sorted = sorted(section_non_body_roles.keys())
+        all_roles_union = set()
+        for s in section_ids_sorted:
+            all_roles_union |= section_non_body_roles[s]
+        for role in sorted(all_roles_union):
+            sections_having = [s for s in section_ids_sorted if role in section_non_body_roles[s]]
+            sections_missing = [s for s in section_ids_sorted if role not in section_non_body_roles[s]]
+            if sections_having and sections_missing:
+                # 일부 section에만 있는 role — 양식 specific일 수도, 1c/1d 들쭉날쭉일 수도
+                disagreement_signals.append({
+                    "role": role,
+                    "sections_having": sections_having,
+                    "sections_missing": sections_missing,
+                })
+
+    return {
+        "per_section": per_section,
+        "summary": {
+            "total_non_body_paragraphs": total_non_body,
+            "case_A_non_body_as_parent_of_body": case_a_total,
+            "case_B_body_as_parent_of_non_body": case_b_total,
+            "case_C_non_body_orphans": case_c_total,
+            "section_level_distribution": section_level_dist,
+            "section_role_disagreement_signals": disagreement_signals,
+        },
+        "samples": {
+            "case_A_non_body_parent_of_body": case_a_samples,
+            "case_B_body_parent_of_non_body": case_b_samples,
+        },
+    }
+
+
+def run_phase_e_chapter_planner(
+    section_results: dict,
+    call_llm,
+    log_obj=None,
+    task_name: str = "hwpx_phase_e_toc_plan",
+) -> dict:
+    """
+    Phase E orchestrator (DB tool에서 1줄 호출).
+
+    - has_toc_gate (약한 detection)
+    - has_toc=true면 toc AI 호출 + parse + validate
+    - has_toc=false면 AI 호출 X, no_toc_deferred 기록
+    - 1c diagnostic은 has_toc 무관 항상 실행
+
+    debug-only. cache 안 건드림.
+
+    Args:
+        section_results: cache의 section_results dict (v5+ schema)
+        call_llm: DB tool의 LLM caller. signature: (task_name, messages) -> str
+        log_obj: logger (None이면 module log)
+        task_name: AI 호출 task name (default "hwpx_phase_e_toc_plan")
+
+    Returns:
+        {
+          "gate": {has_toc, toc_paragraph_hints, detection_method, ...},
+          "status": "ok"|"no_toc_deferred"|"ai_call_failed"|"validation_fallback",
+          "toc_plan": validated_plan or None,
+          "one_c_diagnostic": {...},
+          "retry_count": int,
+        }
+    """
+    log_obj = log_obj or log
+
+    # 1c diagnostic — has_toc 무관 항상 실행
+    one_c_diag = diagnose_1c_non_body_handling(section_results)
+
+    # has_toc gate
+    gate = has_toc_gate(section_results)
+
+    if not gate["has_toc"]:
+        return {
+            "gate": gate,
+            "status": "no_toc_deferred",
+            "toc_plan": None,
+            "one_c_diagnostic": one_c_diag,
+            "retry_count": 0,
+        }
+
+    # toc paragraphs + body paragraphs + 1c tree 수집
+    toc_paragraphs: list[dict] = []
+    seen_toc_keys: set[tuple] = set()
+    for hint in gate["toc_paragraph_hints"]:
+        sid = hint["section_id"]
+        lid = hint["local_idx"]
+        key = (sid, lid)
+        if key in seen_toc_keys:
+            continue
+        seen_toc_keys.add(key)
+        sresult = (
+            section_results.get(str(sid))
+            or section_results.get(sid)
+            or {}
+        )
+        idx_full = sresult.get("idx_full_texts") or {}
+        text = (
+            idx_full.get(str(lid))
+            or idx_full.get(lid)
+            or hint.get("text_preview", "")
+        )
+        toc_paragraphs.append({
+            "section_id": sid,
+            "local_idx": lid,
+            "role": hint.get("role", ""),
+            "text": text,
+        })
+
+    body_by_section: dict[int, list[dict]] = {}
+    tree_by_section: dict[int, list[dict]] = {}
+    all_paragraphs_by_section: dict[int, set] = {}
+
+    for raw_sid, sresult in section_results.items():
+        try:
+            sid = int(raw_sid)
+        except (TypeError, ValueError):
+            continue
+        structure = (sresult or {}).get("structure") or {}
+        paragraphs = structure.get("paragraphs") or []
+        idx_texts = (sresult or {}).get("idx_texts") or {}
+        body_list: list[dict] = []
+        tree_list: list[dict] = []
+        all_idxs: set = set()
+        for p in paragraphs:
+            lid = p.get("idx")
+            if lid is None:
+                continue
+            all_idxs.add(int(lid))
+            text = idx_texts.get(str(lid)) or idx_texts.get(lid) or ""
+            body_list.append({
+                "local_idx": lid,
+                "marker": p.get("marker", ""),
+                "role": p.get("canonical_role") or p.get("role") or "",
+                "text": text,
+            })
+            tree_list.append({
+                "local_idx": lid,
+                "level": p.get("level"),
+                "parent_idx": p.get("parent_idx"),
+            })
+        body_by_section[sid] = body_list
+        tree_by_section[sid] = tree_list
+        all_paragraphs_by_section[sid] = all_idxs
+
+    # AI 호출 (재시도 1회)
+    messages = build_toc_based_chapter_plan_prompt(
+        toc_paragraphs=toc_paragraphs,
+        body_paragraphs_by_section=body_by_section,
+        one_c_tree_by_section=tree_by_section,
+    )
+
+    plan = None
+    last_parse_error = None
+    last_exception = None
+    retry_count = 0
+    max_retries = 1
+
+    while retry_count <= max_retries:
+        try:
+            llm_response = call_llm(task_name, messages)
+            parsed = parse_toc_based_chapter_plan_from_llm(llm_response)
+            if "parse_error" not in parsed:
+                plan = parsed
+                break
+            last_parse_error = parsed.get("parse_error")
+            log_obj.warning(
+                f"Phase E parse error (retry {retry_count}): {last_parse_error}"
+            )
+        except Exception as e:
+            last_exception = str(e)
+            log_obj.warning(f"Phase E AI 호출 실패 (retry {retry_count}): {e}")
+        retry_count += 1
+
+    if plan is None:
+        return {
+            "gate": gate,
+            "status": "ai_call_failed",
+            "toc_plan": None,
+            "one_c_diagnostic": one_c_diag,
+            "retry_count": retry_count,
+            "last_parse_error": last_parse_error,
+            "last_exception": last_exception,
+        }
+
+    validated = validate_toc_based_chapter_plan(plan, all_paragraphs_by_section)
+    val_result = validated.get("validation_result") or {}
+    status = "validation_fallback" if val_result.get("fallback_required") else "ok"
+
+    return {
+        "gate": gate,
+        "status": status,
+        "toc_plan": validated,
+        "one_c_diagnostic": one_c_diag,
+        "retry_count": retry_count,
+    }
