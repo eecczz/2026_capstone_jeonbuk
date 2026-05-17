@@ -16346,6 +16346,156 @@ def parse_chapter_pattern_family_from_llm(llm_response: str) -> dict:
     return parsed
 
 
+def _phase_e_to_target_unit_plan(phase_e_result: dict, structure: dict) -> dict:
+    """
+    Phase E generation_units + out_of_toc_preserve_regions → target_unit_plan schema.
+
+    Production 전환 1단계: 변환 결과를 debug에 dump하여 legacy AI 결과와 비교.
+    실제 target_unit_plan은 덮어쓰지 않음 (단계적 안전 전환).
+
+    매핑:
+      - generation_unit → region (unit_type="chapter")
+      - out_of_toc_preserve_regions → region (unit_type="slot")
+      - container/subpattern은 chapter region에 metadata로만 포함 (별 region 아님)
+
+    Multi-section 양식 (section_id != 0)은 section 0만 매핑하고 나머지는
+    _multi_section_units_skipped에 기록 (13.7b multi-section 정책과 일관).
+
+    Returns:
+        target_unit_plan-compatible dict:
+        {
+          "regions": [{region_id, unit_type, paragraph_indices, description, ...}],
+          "source": "phase_e",
+          "_phase_e_status": str,
+          "_generation_unit_count": int,
+          "_out_of_toc_count": int,
+          "_multi_section_units_skipped": [...]
+        }
+    """
+    plan = (phase_e_result or {}).get("toc_plan") or {}
+    interp = plan.get("toc_interpretation") or {}
+    gen_units = interp.get("generation_units") or []
+    out_of_toc = interp.get("out_of_toc_preserve_regions") or []
+
+    regions: list[dict] = []
+    region_counter = 0
+    multi_section_skipped: list[dict] = []
+
+    def _expand_idx_range(idx_range, allow_section_id: int = 0):
+        """idx_range list of spans → paragraph_indices flat list (section_id == allow_section_id만)."""
+        out: list[int] = []
+        skipped_sections: set[int] = set()
+        for span in idx_range or []:
+            if not isinstance(span, dict):
+                continue
+            try:
+                sid = int(span.get("section_id"))
+            except (TypeError, ValueError):
+                continue
+            if sid != allow_section_id:
+                skipped_sections.add(sid)
+                continue
+            try:
+                start = int(span.get("start_local_idx"))
+                end = int(span.get("end_local_idx"))
+            except (TypeError, ValueError):
+                continue
+            if start > end:
+                continue
+            out.extend(range(start, end + 1))
+        return out, skipped_sections
+
+    # generation_units → chapter regions
+    for unit_idx, unit in enumerate(gen_units):
+        idx_range = unit.get("idx_range") or []
+        paragraph_indices, skipped = _expand_idx_range(idx_range)
+        if skipped:
+            multi_section_skipped.append({
+                "unit_index": unit_idx,
+                "title": unit.get("title_text", ""),
+                "skipped_section_ids": sorted(skipped),
+                "reason": "multi_section_handling_deferred_to_13_7b",
+            })
+        if not paragraph_indices:
+            continue
+        region_counter += 1
+        regions.append({
+            "region_id": f"phase_e_chapter_{region_counter}",
+            "unit_type": "chapter",
+            "paragraph_indices": paragraph_indices,
+            "description": unit.get("title_text", ""),
+            "_phase_e_source": True,
+            "_unit_index": unit_idx,
+            "_marker_family_hint": unit.get("marker_family_hint", ""),
+            "_parent_container_index": unit.get("parent_container_index"),
+        })
+
+    # out_of_toc_preserve → slot regions (단순 매핑: 모두 slot)
+    for region_idx, region in enumerate(out_of_toc):
+        paragraph_indices: list[int] = []
+        skipped_sections: set[int] = set()
+        for ref in region.get("paragraph_refs", []) or []:
+            if not isinstance(ref, dict):
+                continue
+            try:
+                sid = int(ref.get("section_id"))
+            except (TypeError, ValueError):
+                continue
+            if sid != 0:
+                skipped_sections.add(sid)
+                continue
+            try:
+                paragraph_indices.append(int(ref.get("local_idx")))
+            except (TypeError, ValueError):
+                continue
+        if skipped_sections:
+            multi_section_skipped.append({
+                "preserve_region_index": region_idx,
+                "label": region.get("region_label", ""),
+                "skipped_section_ids": sorted(skipped_sections),
+                "reason": "multi_section_handling_deferred_to_13_7b",
+            })
+        if not paragraph_indices:
+            continue
+        region_counter += 1
+        regions.append({
+            "region_id": f"phase_e_preserve_{region_counter}",
+            "unit_type": "slot",
+            "paragraph_indices": paragraph_indices,
+            "description": region.get("region_label", "preserve"),
+            "_phase_e_source": True,
+            "_preserve_reason": region.get("reason_free_text", ""),
+        })
+
+    return {
+        "regions": regions,
+        "source": "phase_e",
+        "_phase_e_status": phase_e_result.get("status"),
+        "_generation_unit_count": len(gen_units),
+        "_out_of_toc_count": len(out_of_toc),
+        "_multi_section_units_skipped": multi_section_skipped,
+    }
+
+
+def build_target_unit_plan_dispatcher_decision(
+    phase_e_result: dict | None,
+) -> dict:
+    """
+    §6 책임 분리: target_unit_plan 결정 route 선택.
+
+    Phase E status=ok → "phase_e" (Phase E 결과를 target_unit_plan으로 변환)
+    Phase E 실패 / no_toc_deferred / 없음 → "legacy_ai" (기존 target_unit_planning AI 호출)
+
+    Returns: {"route": "phase_e"|"legacy_ai", "reason": str}
+    """
+    if not phase_e_result:
+        return {"route": "legacy_ai", "reason": "phase_e_result_missing"}
+    status = phase_e_result.get("status")
+    if status == "ok" and phase_e_result.get("toc_plan"):
+        return {"route": "phase_e", "reason": f"phase_e_status_{status}"}
+    return {"route": "legacy_ai", "reason": f"phase_e_status_{status}"}
+
+
 def validate_chapter_pattern_family(plan: dict, n_units: int) -> dict:
     """
     Track C validation:
