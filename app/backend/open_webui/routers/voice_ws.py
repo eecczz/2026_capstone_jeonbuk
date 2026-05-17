@@ -687,6 +687,11 @@ def _build_rag_processor(request: Request, websocket=None):
 
                 # 사용자 발화 자막 즉시 push
                 await _send_caption("transcription", user_text)
+                # 사용자 발화 요약을 첫 phase_label 로 — 챗봇이 무엇을 들었는지 즉시 보임.
+                # 짧으면 통째로, 길면 앞부분 만 (자연스럽게 잘라 …).
+                _summary_src = user_text.strip().replace("\n", " ")
+                _summary = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
+                await _send_caption("phase_label", f"질문은 “{_summary}”")
                 await self._restart_generation(user_text)
                 return
 

@@ -535,19 +535,16 @@
             if (typeof setMode === "function") setMode("thinking", "", "");
           }
           else if (msg && msg.type === "vad") {
-            // backend 의 VAD started/stopped 신호 — orb 전환의 가장 정확한 시점
+            console.log("[voice] vad:", msg.text, "orb.class=", orbEl.className);
             if (msg.text === "start") {
-              // 사용자 발화 시작 → 기본 orb (검은 원). 라벨은 비움.
               if (typeof setMode === "function") setMode("listening", "", "");
             } else if (msg.text === "stop") {
-              // 사용자 발화 끝 → thinking orb (yin-yang 회전, 응답 생성 중)
               if (typeof setMode === "function") setMode("thinking", "", "");
             }
+            console.log("[voice] vad post-setMode orb.class=", orbEl.className);
           }
           else if (msg && msg.type === "phase_label") {
-            // 응답 생성 중 단계 라벨 — orb 아래 작은 텍스트.
-            // backend 가 단계별 push: '발화 정리 중' → '관련 자료 찾는 중'
-            // → '답변 작성 중'. speaking 으로 전환 시 frontend 가 알아서 비움.
+            console.log("[voice] phase_label:", msg.text);
             if (stateEl) stateEl.textContent = msg.text || "";
           }
           else if (msg && msg.type === "reply") {
@@ -650,6 +647,8 @@
 
   let mode = "idle"; // idle | listening | thinking | speaking
   function setMode(next, label, hint) {
+    console.log("[voice] setMode:", next, "label=", label, "(caller stack):");
+    console.trace("setMode call stack");
     mode = next;
     orbEl.classList.toggle("listening", next === "listening");
     orbEl.classList.toggle("thinking",  next === "thinking");
