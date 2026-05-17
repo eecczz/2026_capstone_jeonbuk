@@ -32,7 +32,10 @@
 | **13.7c** | **Source-to-Template Adaptation Planning** | **done** | Template-first 흐름. source inventory + chapter mapping (AI 2회). action: generate / adapted_title_generate / preserve. evidence-driven |
 | **13.7b** | **Multi-Section Analysis (deadline scope)** | **done (B3 deferred)** | B0a/B6/B1/B2.1/B2.2/B0b 완료. section-local generation-lite (chapter-local exemplars, 1a→xml mapping, anchor priority, multi-body fallback, invariant). 3개 양식 검증 통과 (조달청 17/0, 민원인 정상, CC7 shallow regression 0). **B3 document-level merge는 deferred** |
 | **13.7b-followup** | **남은 issue 정리** | **not started** | 아래 "13.7b 완료 후 남은 issue" 섹션 참조 |
-| **Phase E** | **AI Chapter Title Decision** (1d 대체) | **not started** | 1d AI가 chapter title role 부정확 — AI가 직접 chapter title 결정. ~400 lines + cache schema bump |
+| **Phase E** | **TOC-based Chapter Unit Planner** (debug-only) | **in progress** | 양식 3개 검증 ✓. 양식 self-description(차례) primary + 1c reference-only로 generation_unit 결정. production 전환은 양식 5+ + low_confidence < 20% 후 |
+| **Track C** | **Chapter Pattern Family** (debug-only) | **in progress** | 양식 3개 검증 ✓. 같은 골격 반복 unit family 식별 + expandable 판단. confidence high만 expandable=true |
+| **Track D-2** | **1c diagnostic LEAF/CONTAINER 분리** | **done** | case A false positive 해결. appendix_title/document_title은 컨테이너 role로 분리. case A는 leaf role만 |
+| **Track D-1** | **1c prompt 개선 (table_of_contents 처리)** | **pending — 사용자 확인 후** | cache invalidate 필요. 양식 3개 1a~1f 재호출 비용 |
 | **template-first 강화** | **양식 우선, source는 도구** (전 stage 적용) | **not started** | 13.7c AI 보수성 fine-tune + shallow heading 보존 강화. 현재 AI가 source mismatch에 너무 보수적 preserve. 양식 흐름이 source 위에서 우선이어야 |
 | 14 | Open Notebook Source Planning | not started | KB→파일 선택 경로, source contract 유지 |
 | 14-table | Table Cell Filling | not started | 표 셀 채우기 (14와 별도 scope) |
@@ -132,17 +135,17 @@
 
 deadline scope에서 deferred되거나 minor wrong이라 별 stage로 정리.
 
-### [Phase E] 1d AI Chapter Title Decision (HIGH priority)
+### [Phase E] TOC-based Chapter Unit Planner (진행 중, debug-only)
 
-**문제**: 1d AI가 양식의 chapter title role 부정확 결정. 민원인 section 0의 진짜 chapter (Ⅰ~Ⅷ, role_cluster_4)을 chapter title로 안 잡고 "차례" + "붙임"을 잡음. 13.4b가 section 0 본문 187 paragraph를 1 chapter ("- 제1장 -")로 묶음. assembly가 chapter body 영역을 remove → Ⅰ~Ⅷ 본문 사라짐.
+**원래 문제**: 1c가 차례를 본문 chapter parent로 오인 → `_build_chapter_types`가 level 0 자식 카운트로 chapter_title_level 결정 시 wrong (민원인 section 0의 진짜 chapter Ⅰ~Ⅷ 안 잡고 "차례"+"붙임" 잡음).
 
-**해결 방향**: chapter title을 AI가 직접 결정. 1d code-based level/role logic 대체.
-- 새 AI sub-step (1c 다음)
-- input: paragraphs + 1a/1c 결과
-- output: chapter_title_indices + chapter_title_roles + evidence
-- code _build_chapter_types가 그 결과 사용 (자동 level 결정 폐기)
+**채택 방향** (2026-05-17 사용자 결정): 1d 자체 변경 X. **TOC-based AI planner** 추가. 양식 self-description(차례) primary + 1c reference-only로 generation_unit 결정. `_build_chapter_types` 위치에 debug-only로 새 결과 비교 dump. 양식 5+ 검증 후 production 전환.
 
-**분량**: ~400 lines + AI 호출 추가 + CACHE_SCHEMA_VERSION bump
+**진행 기록**: 아래 "## Phase E + Track C + Track D 진행 기록 (2026-05-17)" 섹션 참조.
+
+**남은 작업**:
+- Track D-1: 1c prompt 자체 개선 (table_of_contents wrong fix) — cache invalidate 필요, 사용자 확인 후
+- Production 전환: 양식 5+ 추가 검증 + low_confidence < 20% 후
 
 ### [template-first 강화] AI 보수성 fine-tune + heading 보존 (HIGH priority)
 
@@ -197,6 +200,96 @@ shallow route도 마찬가지: 양식의 □ heading 흐름 (□ 개요, □ 추
 - section-aware append 고도화
 
 12단계에서 `emphasis_spans` interface만 열어둠. 실제 구현은 later.
+
+---
+
+## Phase E + Track C + Track D 진행 기록 (2026-05-17)
+
+### 배경
+
+1c가 차례(`table_of_contents`)를 본문 chapter title의 parent로 잘못 잡는 wrong이 양식 evidence로 확인됨 (민원인 section 0 idx=3 "제1장" → parent=idx=2 차례; 조달청 Ⅰ/Ⅱ/Ⅲ 모두 같은 wrong). `_build_chapter_types`의 level 기반 heuristic이 이 wrong 위에서 chapter_title_level 결정 → wrong chapter title.
+
+### 채택 방향 (2026-05-17 합의)
+
+1. **1c 자체는 변경 X (Track D-1은 사용자 확인 후 별도)**. 1c는 paragraph hierarchy 책임, generation_unit 결정은 별 책임 (§6 책임 분리).
+2. **Phase E (TOC-based AI planner)**를 `_build_chapter_types` 위치에 debug-only로 추가. 양식 self-description(차례) primary + 1c reference-only.
+3. **Track C (Chapter Pattern Family AI)**: Phase E 결과 위에 같은 골격 반복 unit family 식별 + expandable 여부. confidence high만 expandable=true (보수적 안전망).
+4. **Track D-2 (1c diagnostic 정정)**: NON_BODY_ROLE을 CONTAINER(자식 OK) / LEAF(자식 wrong)로 분리. case A는 leaf only.
+5. Production 전환은 양식 5+ + low_confidence < 20% + AI hallucinate 0건 후 검토.
+
+### 사용자 결정 — generation_unit 정책 A
+
+**TOC에 명시된 단위 = generation_unit**. 양식 한 인스턴스의 chapter 흐름 그대로 채택.
+
+5원칙:
+1. template flow 우선 — 양식 명시 흐름 최대한 유지
+2. source 부족 → preserve/source_gap/insufficient_source (억지 생성 X)
+3. source 더 많음 → AI 재량 (template/source evidence + confidence + debug log 강제)
+4. 임의 확장 금지 — 차례/본문 local pattern 반복 evidence 있을 때만
+5. 비용 우선순위 제외 — HWP 품질/template flow 보존 우선
+
+### 양식 3개 검증 결과
+
+| 양식 | Phase E | Track C | Track D-2 (정정 후) | Assembly |
+|------|---------|---------|---------------------|----------|
+| 민원인 | 13 generation_unit (제1장 container + 8 + 제2장 container + 5) | family 3개 (Ⅳ+Ⅶ high+expandable=true, 나머지 2개 low → false 강제) + non_grouped 7 | case A: 25 → 1 (idx=3 wrong만) | success 22 fail 0 invariant 0 |
+| 조달청 | 11 generation_unit (Ⅰ+Ⅱ+9개 과제, Ⅲ container) | family 1개 (9개 과제 high+expandable=true) + non_grouped [0,1] | case A: 3 → 3 (Ⅰ/Ⅱ/Ⅲ wrong) | success 18~21 fail 0 invariant 0 |
+| CC7 | no_toc_deferred (차례 없음) | skipped | case A: 4 → 0 (document_title parent 모두 false positive였음) | success 10 fail 0 invariant 0 |
+
+invariant violations 0. 기존 pipeline regression 0.
+
+### 핵심 코드 추가 (hwpx_analyzer.py)
+
+| 함수 | 책임 |
+|------|------|
+| `has_toc_gate` | role + text pattern 약한 detection (false negative 방지) |
+| `build_toc_based_chapter_plan_prompt` | TOC primary + 1c reference-only + hardcode 금지 + paragraph_refs cite 강제 |
+| `parse_toc_based_chapter_plan_from_llm` + `validate_toc_based_chapter_plan` | invalid paragraph_ref는 해당 claim ambiguity 강등 (전체 plan 유지). schema 필드 누락 시 fallback |
+| `run_phase_e_chapter_planner` | Phase E orchestrator (sync wrapper) |
+| `extract_generation_unit_subtrees` | Track C code fact 추출 (similarity 계산 X) |
+| `build_chapter_pattern_family_prompt` + `parse` + `validate` | Track C AI. confidence medium/low → expandable=false 강제 |
+| `diagnose_1c_non_body_handling` | 1c 진단. Track D-2 정정 (leaf only case A) |
+| `_NON_BODY_CONTAINER_ROLES` / `_NON_BODY_LEAF_ROLES` | role 카테고리 분리 |
+
+### DB tool 변경 (debug-only)
+
+| block | 위치 | 역할 |
+|-------|------|------|
+| Phase E block | section_results 완성 후, chapter_classify 전 | toc plan AI + 1c diagnostic dump |
+| Track C block | Phase E block 직후 | Phase E status=ok일 때만 pattern family AI 호출 |
+
+기존 `_build_chapter_types` + 후속 stage (13.4b/13.6/13.7a/13.7b) 무영향.
+
+### 1c 진짜 wrong 패턴 — 양식 2개에서 일관
+
+- `s0 idx=3 chapter_header → parent=idx=2 (table_of_contents)` (민원인)
+- `s0 idx=4/21/38 section_header → parent=idx=3 (table_of_contents)` (조달청)
+
+**진짜 1c wrong = 차례를 본문 chapter parent로 잡는 case**. Track D-1 (1c prompt 개선)로 fix 가능 — 단 cache invalidate 필요.
+
+### Watch items
+
+- **단일 반복 후보 family 못 잡힘**: 반복 가능한 구조가 양식 안에 1개만 존재하면 Track C가 family 못 묶음. 양식 5+ 검증 시 watch.
+- **chapter 확장 logic 미구현 (정책 #3)**: source 더 많을 때 chapter 늘리는 logic 새 stage 필요. expandable=true family로 확장하는 코드 path 별 작업.
+- **민원인 Ⅳ+Ⅶ family expandable=true**: 양식 8장 흐름 깨지 않는 범위에서 확장 가능. 단 generation 시점에 자동 확장할지는 별 정책.
+- **Track D-1 1c prompt 개선**: cache invalidate 비용 → 사용자 확인 후 진입.
+
+### Production 전환 기준
+
+| 조건 | 현재 상태 |
+|------|----------|
+| 양식 5+ 검증 | 3/5 (부족) |
+| low_confidence 비율 < 20% | 조달청 0/2 high, 민원인 1/3 high, CC7 N/A. **확인 필요** |
+| AI hallucinate (paragraph_refs invalid) 0건 | 양식 3개 invalid 0건 ✓ |
+| Assembly regression 0 | ✓ (양식 3개) |
+| 사용자 확정 | 양식 5+ 후 |
+
+### 다음 stage 후보
+
+1. **Track D-1** (1c prompt 개선) — 사용자 확인 후. cache invalidate.
+2. **양식 4번째/5번째 추가 검증** — TOC 다양성 (multi-toc, no-toc patterns).
+3. **Chapter 확장 logic 구현 stage** — expandable=true family에서 source 가변 대응 chapter 추가.
+4. **Phase E/Track C production 전환** — 양식 5+ 검증 통과 시.
 
 ---
 
