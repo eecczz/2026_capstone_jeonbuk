@@ -15729,21 +15729,29 @@ def validate_toc_based_chapter_plan(
 # ═══════════════════════════════════════════════════════════════════════════
 
 # 비-본문 role hint (1d AI가 부여한 role 기준)
-_NON_BODY_ROLE_HINTS = {
-    "table_of_contents",
-    "toc",
+# Track D-2: 컨테이너 역할 / leaf 역할 분리.
+# - 컨테이너 비-본문: 그 영역의 root로, 자식 가지는 게 양식 의도 (예: appendix_title이
+#   부록 내용의 parent, document_title이 문서 root). 자식 가져도 case A wrong 아님.
+# - leaf 비-본문: 단일 정보. 자식 가지면 양식 의도와 어긋남 (예: table_of_contents가
+#   본문 chapter의 parent로 잡히면 1c wrong).
+_NON_BODY_CONTAINER_ROLES = {
     "document_title",
-    "document_date",
     "document_subtitle",
     "appendix_title",
     "appendix_subtitle",
+    "cover",
+}
+_NON_BODY_LEAF_ROLES = {
+    "table_of_contents",
+    "toc",
+    "document_date",
     "header_slot",
     "footer_slot",
-    "cover",
     "spacer",
     "spacer_text",
     "fixed",
 }
+_NON_BODY_ROLE_HINTS = _NON_BODY_CONTAINER_ROLES | _NON_BODY_LEAF_ROLES
 
 
 def diagnose_1c_non_body_handling(section_results: dict) -> dict:
@@ -15754,7 +15762,9 @@ def diagnose_1c_non_body_handling(section_results: dict) -> dict:
     1c가 만든 parent 관계가 양식 의도와 어긋날 가능성을 case별로 집계.
 
     측정 case:
-      A. non_body_as_parent_of_body : 비-본문이 본문의 parent — 양식 의도와 어긋날 가능성 높음
+      A. non_body_as_parent_of_body : **LEAF** 비-본문이 본문의 parent — 진짜 1c wrong 후보
+                                       (container 비-본문 [appendix_title/document_title 등]이
+                                        parent인 경우는 양식 의도 — case A에서 제외)
       B. body_as_parent_of_non_body : 본문이 비-본문의 parent — 부록/header 등 분류 확인 필요
       C. non_body_orphans           : 비-본문 paragraph 중 parent 없음 (level 0) — 정상 가능
       D. section_level_distribution : section별 1c level 분포 (들쭉날쭉 신호)
@@ -15810,6 +15820,11 @@ def diagnose_1c_non_body_handling(section_results: dict) -> dict:
             role = (p_obj.get("canonical_role") or p_obj.get("role") or "").strip().lower()
             return role in _NON_BODY_ROLE_HINTS
 
+        def _is_non_body_leaf(p_obj) -> bool:
+            """LEAF 비-본문 (자식 가지면 wrong 가능): table_of_contents, document_date 등."""
+            role = (p_obj.get("canonical_role") or p_obj.get("role") or "").strip().lower()
+            return role in _NON_BODY_LEAF_ROLES
+
         non_body_count = 0
         case_a_count = 0
         case_b_count = 0
@@ -15845,11 +15860,13 @@ def diagnose_1c_non_body_handling(section_results: dict) -> dict:
                                                 or parent_p.get("role") or ""),
                             })
             else:
-                # 본문 paragraph — parent가 비-본문이면 case A
+                # 본문 paragraph — parent가 LEAF 비-본문이면 case A (진짜 1c wrong 후보)
+                # Track D-2: container 비-본문 (appendix_title/document_title 등)이 parent면
+                # 양식 의도 (부록 root, 문서 root) — case A에서 제외.
                 parent_idx = p.get("parent_idx")
                 if parent_idx is not None:
                     parent_p = para_by_idx.get(parent_idx)
-                    if parent_p is not None and _is_non_body(parent_p):
+                    if parent_p is not None and _is_non_body_leaf(parent_p):
                         case_a_count += 1
                         if len(case_a_samples) < 30:
                             case_a_samples.append({
