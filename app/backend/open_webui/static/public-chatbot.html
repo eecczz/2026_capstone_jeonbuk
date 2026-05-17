@@ -948,6 +948,9 @@
 
   function startMicLoop() {
     if (micRafId || pausedByUser) return;
+    // PipeCat WebSocket (voice-ws) 이 활성이면 별도 mic loop / voice-chat
+    // POST 흐름 시작하지 않는다. 두 음성 path 동시 동작 → backend 부하 + 502.
+    if (typeof pcWs !== "undefined" && pcWs) return;
     speechStartedAt = 0;
     micRafId = requestAnimationFrame(micTick);
   }
@@ -995,9 +998,16 @@
   }
 
   async function submitVoice(blob) {
-    // 안전망: 텍스트 모드면 /voice-chat 호출 자체를 막음.
-    // (마이크 listening 이 어떤 경로로 남아 있어도 음성 응답 흐름 안 탐)
+    // 안전망 1: 텍스트 모드면 /voice-chat 호출 자체를 막음.
     if (typeof uiMode !== "undefined" && uiMode !== "voice") {
+      stopMicLoop();
+      stopMediaRecorderFully();
+      return;
+    }
+    // 안전망 2: PipeCat WebSocket (voice-ws) 이 살아 있으면 /voice-chat
+    // POST 흐름을 절대 호출 안 함. 두 흐름 동시 동작 시 backend 부하 +
+    // /voice-chat 응답 지연으로 nginx 502 발생 (외부 노이즈 연쇄 발화 케이스).
+    if (typeof pcWs !== "undefined" && pcWs) {
       stopMicLoop();
       stopMediaRecorderFully();
       return;
