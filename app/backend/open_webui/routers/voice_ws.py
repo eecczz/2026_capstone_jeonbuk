@@ -647,6 +647,8 @@ def _build_rag_processor(request: Request, websocket=None):
             # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
             if isinstance(frame, VADUserStartedSpeakingFrame):
                 log.info("[voice_ws] VAD: user started speaking")
+                # 사용자 발화 시작 → frontend orb 기본 (검은 원) 으로
+                await _send_caption("vad", "start")
                 # 사용자가 끼어들면 STT 결과 도착 전에 진행 중 generation 을 먼저 멈춘다.
                 # 짧은 발화 (LLM stream 이 1.5s 내 done) 케이스에서 cancel 못 잡는 문제 보강.
                 # 단 history pop 은 _restart_generation 에서 — 여기선 in-flight 만 정리.
@@ -659,6 +661,8 @@ def _build_rag_processor(request: Request, websocket=None):
                     await self._stop_current_generation()
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 log.info("[voice_ws] VAD: user stopped speaking")
+                # 사용자 발화 끝 → frontend orb thinking (yin-yang 회전) 으로
+                await _send_caption("vad", "stop")
 
             if isinstance(frame, TranscriptionFrame):
                 user_text = (frame.text or "").strip()

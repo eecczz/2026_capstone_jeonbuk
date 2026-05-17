@@ -531,8 +531,18 @@
             pcAcceptAudio = false;
             pcDroppedAudioChunks = 0;
             setVoiceCaption(msg.text || "", null);
-            // 사용자 발화 끝 → 응답 생성 중 (thinking — yin-yang 회전)
+            // STT 도착 시점도 안전망으로 thinking 유지 (vad stop 이 먼저 와도 OK)
             if (typeof setMode === "function") setMode("thinking", "", "");
+          }
+          else if (msg && msg.type === "vad") {
+            // backend 의 VAD started/stopped 신호 — orb 전환의 가장 정확한 시점
+            if (msg.text === "start") {
+              // 사용자 발화 시작 → 기본 orb (검은 원)
+              if (typeof setMode === "function") setMode("listening", "", "");
+            } else if (msg.text === "stop") {
+              // 사용자 발화 끝 → thinking orb (yin-yang 회전, 응답 생성 중)
+              if (typeof setMode === "function") setMode("thinking", "", "");
+            }
           }
           else if (msg && msg.type === "reply") {
             pcAcceptAudio = true;
