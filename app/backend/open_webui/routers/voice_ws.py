@@ -204,6 +204,22 @@ def _tts_text_postprocess(text: str) -> str:
     # 5. 5자리 이상 단독 숫자 (자릿수 발음으로) — 코드/식별자 같은 거
     text = _re.sub(r"\b\d{5,}\b", lambda m: _digits_to_kor(m.group(0)), text)
 
+    # 6. 단위 미동반 1~4자리 단독 숫자 → 한자어 (Sohee 가 영어식 "twenty-five"
+    # 발음하는 케이스 차단). "25세", "63-280" 같이 단위/하이픈 동반 케이스는
+    # 위 규칙들에서 이미 처리됐거나 자연스럽게 한국어로 읽힘.
+    _UNIT_KO = ("세", "살", "원", "년", "월", "일", "시", "분", "초", "명", "개",
+                "층", "호", "회", "차", "번", "쪽", "건", "위", "급", "도", "%")
+    def _repl_short_num(m):
+        n = int(m.group(0))
+        # 뒤 단위 한국어면 그대로 (이미 자연 발음). 미동반이면 한자어.
+        end = m.end()
+        rest = text[end:end + 1] if end < len(text) else ""
+        if rest in _UNIT_KO:
+            return m.group(0)
+        return _int_to_sino(n)
+    # 단어 경계 + 1~4자리. 단 뒤 글자가 한국어 단위면 변환 안 함.
+    text = _re.sub(r"(?<![\d.\-])\d{1,4}(?![\d.\-])", _repl_short_num, text)
+
     return text
 
 
@@ -472,14 +488,22 @@ def _build_rag_processor(request: Request, websocket=None):
             import re as _re
             import uuid as _uuid
 
+            # 문장부호 + 한국어 종결어미 결합만 매치. 단순 "다\s" / "요\s" 매치는
+            # 짧은 종결 ("했다.", "이고요,") 마다 끊겨 TTS 호출이 빈번해지고,
+            # 합성 시간 ≈ 재생 시간이 되어 frontend buffer 가 비는 무음 구간이 생김.
             _sentence_pat = _re.compile(
-                r"(?<!\d)\.\s|(?<!\d)\.$|[!?]\s|[!?]$|다\s|요\s|니다\s|에요\s|어요\s"
+                r"(?<!\d)\.\s|(?<!\d)\.$|[!?]\s|[!?]$"
+                r"|다\.\s|요\.\s|니다\.\s|에요\.\s|어요\.\s"
+                r"|다\.$|요\.$|니다\.$|에요\.$|어요\.$"
             )
             sentence_buffer = ""
             full_reply = ""
             sentence_count = 0
             _stream_t0 = None
-            MIN_SENT_LEN = 20
+            # 60자 이상에서만 sentence 분리 push — 합성 시간을 재생 시간보다 길게
+            # 유지해 audio buffer 가 비는 무음 구간 방지. 첫 sentence 도 60자가
+            # 모일 때까지 대기하므로 응답 시작 latency 가 0.5~1s 추가될 수 있음.
+            MIN_SENT_LEN = 60
 
             try:
                 from open_webui.routers.public_chatbot import (
@@ -640,6 +664,17 @@ def _build_rag_processor(request: Request, websocket=None):
                 user_text = (frame.text or "").strip()
                 log.info(f"[voice_ws] STT transcript: {user_text!r}")
                 if not user_text:
+                    return
+
+                # STT 가 한국어가 아닌 외국어/영문 비스무리하게 transcribe 한 결과는
+                # 노이즈로 drop — LLM 컨텍스트 오염을 막아 응답 품질과 TTS 발음
+                # 안정성 보장. 도청 챗봇은 한국어 발화 가정.
+                from open_webui.routers.public_chatbot import _looks_like_korean
+                if not _looks_like_korean(user_text, threshold=0.5):
+                    log.info(
+                        f"[voice_ws] non-Korean STT transcript dropped (noise): {user_text!r}"
+                    )
+                    await _send_caption("clear", "")
                     return
 
                 # 사용자 발화 자막 즉시 push
