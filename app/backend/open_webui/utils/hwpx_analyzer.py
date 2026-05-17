@@ -15369,6 +15369,20 @@ sub-list 항목 텍스트의 의미 분석으로 판단합니다.
 - container_unit: 여러 chapter를 묶는 상위 그룹. 자체 생성 단위 아님.
   chapter level이 sub-list level일 때만 1차 level이 container.
 
+[같은 level 일관성 — 절대 원칙]
+
+같은 TOC level 안에서 chapter vs container 분류는 절대 섞이지 마십시오.
+
+- 1차 level이 chapter level이면 1차 level의 모든 항목이 chapter입니다.
+  일부 1차 항목이 자체 본문 거의 없고 sub-list만 있어도, 같은 level의 다른 항목과
+  같은 분류 (chapter) 유지하십시오. 자체 본문 분량으로 분류 가르지 마십시오.
+- 1차 level이 container level이면 1차 level의 모든 항목이 container입니다.
+  일부 1차 항목이 자체 본문 있어도 다른 1차 항목과 같은 분류 (container) 유지하십시오.
+- sub-list level도 동일 원칙. 같은 sub-list level 안에서 chapter vs subpattern 섞임 X.
+
+같은 level 내 분류 일관성을 어기는 결과는 prompt 위반입니다.
+일관 분류로 재조정하고 ambiguity_flags에 "level_classification_inconsistent"를 추가하십시오.
+
 [chapter title의 topic-specificity 처리 — 중요]
 
 - chapter title이 양식 specific 단어를 포함하더라도 (특정 부처/연도/주제어 등),
