@@ -16076,3 +16076,340 @@ def run_phase_e_chapter_planner(
         "one_c_diagnostic": one_c_diag,
         "retry_count": retry_count,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Track C — Chapter Pattern Family Analysis (Phase E 후 sub-step, debug-only)
+#
+# 책임 분리 (§22):
+#   - extract_generation_unit_subtrees : code fact 추출만 (similarity 계산 X,
+#                                        family 후보 미리 판단 X). raw/summary fact만.
+#   - build_chapter_pattern_family_prompt : AI에게 fact 제공 + 판단 원칙
+#   - parse + validate : member index 실존 + confidence medium/low →
+#                        expandable=false 강제 (보수적 안전망)
+#
+# 목적: 같은 양식이 반복 사용한 단위(template이 반복 허용)를 family로 묶고
+#       expandable 여부 판단. 추후 source 가변 대응 시 chapter 확장 evidence로 사용.
+#
+# 단일 반복 후보(반복 가능한 구조가 양식 안에 1개만 존재)는 family로 못 묶일 수 있음.
+# 양식 5+ 검증 시 watch.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def extract_generation_unit_subtrees(toc_plan: dict, section_results: dict) -> list[dict]:
+    """
+    Track C fact extraction (code): generation_unit별 subtree fact 정리.
+
+    code는 raw/summary fact만 추출. similarity 계산 X. family 후보 판단 X.
+    AI가 evidence 기반으로 family 판단.
+
+    Returns: [
+      {
+        "unit_index": int,
+        "title": str,
+        "paragraph_ref": {section_id, local_idx} | None,
+        "idx_range": list,
+        "subtree_paragraphs": [{section_id, local_idx, marker, role, level,
+                                parent_local_idx, text_preview}],
+        "subtree_paragraph_total": int,
+        "structural_summary": {
+          "depth": int,
+          "role_distribution": {role: count},
+          "marker_set": [unique markers sorted],
+          "level_distribution": {level_str: count},
+          "direct_children_count": int,
+        },
+        "parent_container_index": int | None,
+        "fact_extraction_status": "ok" | "no_idx_range",
+      }
+    ]
+    """
+    interp = (toc_plan or {}).get("toc_interpretation") or {}
+    gen_units = interp.get("generation_units") or []
+    results: list[dict] = []
+
+    for unit_idx, unit in enumerate(gen_units):
+        idx_range = unit.get("idx_range") or []
+        if not idx_range:
+            results.append({
+                "unit_index": unit_idx,
+                "title": unit.get("title_text", ""),
+                "paragraph_ref": unit.get("paragraph_ref"),
+                "idx_range": None,
+                "subtree_paragraphs": [],
+                "subtree_paragraph_total": 0,
+                "structural_summary": None,
+                "parent_container_index": unit.get("parent_container_index"),
+                "fact_extraction_status": "no_idx_range",
+            })
+            continue
+
+        all_paras: list[dict] = []
+        for span in idx_range:
+            if not isinstance(span, dict):
+                continue
+            try:
+                sid = int(span.get("section_id"))
+                start = int(span.get("start_local_idx"))
+                end = int(span.get("end_local_idx"))
+            except (TypeError, ValueError):
+                continue
+            sresult = (
+                section_results.get(sid)
+                or section_results.get(str(sid))
+                or {}
+            )
+            structure = (sresult or {}).get("structure") or {}
+            paragraphs = structure.get("paragraphs") or []
+            idx_texts = (sresult or {}).get("idx_texts") or {}
+            for p in paragraphs:
+                pidx = p.get("idx")
+                if pidx is None:
+                    continue
+                try:
+                    pidx_int = int(pidx)
+                except (TypeError, ValueError):
+                    continue
+                if pidx_int < start or pidx_int > end:
+                    continue
+                text = idx_texts.get(str(pidx_int)) or idx_texts.get(pidx_int) or ""
+                all_paras.append({
+                    "section_id": sid,
+                    "local_idx": pidx_int,
+                    "marker": p.get("marker", ""),
+                    "role": p.get("canonical_role") or p.get("role") or "",
+                    "level": p.get("level"),
+                    "parent_local_idx": p.get("parent_idx"),
+                    "text_preview": text[:80],
+                })
+
+        # structural summary: raw fact만 (similarity / family 판단 X)
+        role_dist: dict = {}
+        marker_set: set = set()
+        level_dist: dict = {}
+        direct_children = 0
+
+        unit_ref = unit.get("paragraph_ref") or {}
+        unit_local_idx = unit_ref.get("local_idx") if isinstance(unit_ref, dict) else None
+
+        for p in all_paras:
+            role = p.get("role") or ""
+            if role:
+                role_dist[role] = role_dist.get(role, 0) + 1
+            mk = p.get("marker") or ""
+            if mk:
+                marker_set.add(mk)
+            lvl = p.get("level")
+            if lvl is not None:
+                level_dist[lvl] = level_dist.get(lvl, 0) + 1
+            if p.get("parent_local_idx") == unit_local_idx:
+                direct_children += 1
+
+        levels_present = [l for l in level_dist.keys() if l is not None]
+        depth = (max(levels_present) - min(levels_present)) if levels_present else 0
+
+        # subtree_paragraphs truncate to limit token (unit당 최대 50 paragraph)
+        sub_truncated = all_paras[:50]
+
+        results.append({
+            "unit_index": unit_idx,
+            "title": unit.get("title_text", ""),
+            "paragraph_ref": unit_ref or None,
+            "idx_range": idx_range,
+            "subtree_paragraphs": sub_truncated,
+            "subtree_paragraph_total": len(all_paras),
+            "structural_summary": {
+                "depth": depth,
+                "role_distribution": role_dist,
+                "marker_set": sorted(marker_set),
+                "level_distribution": {str(k): v for k, v in level_dist.items()},
+                "direct_children_count": direct_children,
+            },
+            "parent_container_index": unit.get("parent_container_index"),
+            "fact_extraction_status": "ok",
+        })
+
+    return results
+
+
+CHAPTER_PATTERN_FAMILY_PROMPT = """당신은 양식의 generation_unit들이 같은 local pattern family에 속하는지 판단하는 분석가입니다.
+이 판단은 양식이 어떤 unit을 반복 허용했는지를 보고, 추후 source가 더 많을 때 chapter를 같은 pattern으로 늘릴 수 있는지 결정하는 근거가 됩니다.
+
+[INPUT]
+
+generation_unit list. 각 unit:
+- title, paragraph_ref, idx_range
+- subtree_paragraphs (자기 영역 안 paragraph: local_idx, marker, role, level, parent, text_preview)
+- structural_summary: depth, role_distribution, marker_set, level_distribution, direct_children_count
+- parent_container_index (container 그룹 단위)
+
+[판단 원칙]
+
+- 완전 동일이 아니라 구조적 골격 유사성 기준입니다.
+- 같은 parent 아래에서 marker / role / depth / 하위 구조 흐름이 유사하게 반복되면 같은 family입니다.
+- 제목 텍스트, 하위 항목 개수, 분량 차이는 family 판단 기준이 아닙니다.
+- 역할이 서로 다르면 같은 family가 아닙니다 (예: 한 unit은 도입/서두 성격, 다른 unit은 본문 추진 성격, 다른 unit은 결론 성격 — 이런 경우 family X).
+- 같은 parent container 아래 단위들이 family 후보입니다. 단 parent가 같다고 무조건 family는 아닙니다.
+
+[expandable 의미]
+
+- expandable=true는 "양식이 이 family pattern을 더 반복할 수 있다"는 의미입니다.
+- supporting_evidence와 counter_evidence를 모두 채우십시오.
+- confidence가 medium 또는 low이면 expandable=false로 두십시오.
+  확장은 양식 구조를 바꾸는 작업이므로 보수적으로 판단합니다.
+- counter_evidence가 supporting_evidence보다 강하면 expandable=false로 두십시오.
+
+[evidence cite 의무]
+
+- supporting / counter evidence는 generation_unit_indices 또는 paragraph_refs로 cite하십시오.
+- 골격이 같다는 근거는 어떤 marker / role / depth / 하위 구조 흐름이 일치하는지 구체적으로 인용하십시오.
+- 임의로 unit_index를 만들지 마십시오. INPUT의 unit_index 중 하나여야 합니다.
+
+[hardcode 금지]
+
+- 특정 marker family, 특정 role 이름, 특정 양식명에 따른 분기 금지.
+- 구조적 골격 비교는 input fact에 기반하십시오.
+- 분량 균일성, 개수 정확 일치를 기준으로 사용하지 마십시오. 구조 흐름의 유사성만 기준입니다.
+
+[OUTPUT — JSON ONLY, 다른 텍스트 금지]
+
+{
+  "pattern_families": [
+    {
+      "family_id": <str>,
+      "members": [<unit_index>, ...],
+      "expandable": <bool>,
+      "structural_summary": <str>,
+      "supporting_evidence": [<str>],
+      "counter_evidence": [<str>],
+      "confidence": "high"|"medium"|"low"
+    }
+  ],
+  "non_grouped_units": [<unit_index>, ...],
+  "ambiguity_flags": [<str>]
+}
+"""
+
+
+def build_chapter_pattern_family_prompt(unit_subtrees: list[dict]) -> list[dict]:
+    """Track C: chapter pattern family AI prompt 생성."""
+    payload = {"generation_units": unit_subtrees}
+    user_msg = (
+        "## INPUT\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n\n위 generation_unit들의 pattern family를 OUTPUT SCHEMA에 따라 JSON으로만 답하십시오."
+    )
+    return [
+        {"role": "system", "content": CHAPTER_PATTERN_FAMILY_PROMPT},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_chapter_pattern_family_from_llm(llm_response: str) -> dict:
+    """Track C: AI 응답 JSON 파싱."""
+    text = (llm_response or "").strip()
+
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0].strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = json.loads(_repair_json(text))
+        except Exception as e:
+            log.warning(f"Track C pattern family JSON 파싱 실패: {e}")
+            return {"parse_error": str(e), "raw_preview": (llm_response or "")[:200]}
+
+    if not isinstance(parsed, dict):
+        return {"parse_error": "top-level is not dict", "raw_preview": (llm_response or "")[:200]}
+
+    return parsed
+
+
+def validate_chapter_pattern_family(plan: dict, n_units: int) -> dict:
+    """
+    Track C validation:
+    - member unit_index 실존 검증 (0 <= idx < n_units)
+    - confidence medium/low이면 expandable=false 강제 (보수적 안전망)
+    - 단일 member family는 singleton_family_weak_evidence flag
+
+    expandable_forced_false_count 기록.
+    """
+    if "parse_error" in plan:
+        plan["validation_result"] = {
+            "valid": False,
+            "invalid_member_indices": [],
+            "expandable_forced_false_count": 0,
+            "fallback_required": True,
+        }
+        return plan
+
+    invalid_members: list[dict] = []
+    forced_false = 0
+
+    for fam in plan.get("pattern_families", []) or []:
+        invalid_in_family: list = []
+        valid_members: list[int] = []
+        for m in fam.get("members", []) or []:
+            try:
+                m_int = int(m)
+            except (TypeError, ValueError):
+                invalid_in_family.append(m)
+                continue
+            if 0 <= m_int < n_units:
+                valid_members.append(m_int)
+            else:
+                invalid_in_family.append(m)
+        fam["members"] = valid_members
+        if invalid_in_family:
+            invalid_members.extend([
+                {"family_id": fam.get("family_id"), "invalid_ref": m}
+                for m in invalid_in_family
+            ])
+
+        # confidence-based expandable enforcement (보수적 안전망)
+        conf = (fam.get("confidence") or "").lower()
+        if conf in ("medium", "low"):
+            if fam.get("expandable"):
+                fam["expandable"] = False
+                fam["_validation_flags"] = fam.get("_validation_flags", []) + [
+                    "expandable_forced_false_by_confidence"
+                ]
+                forced_false += 1
+
+        # 단일 멤버 family는 family 의미 약함 watch
+        if len(valid_members) < 2:
+            fam["_validation_flags"] = fam.get("_validation_flags", []) + [
+                "singleton_family_weak_evidence"
+            ]
+
+    # non_grouped_units index 검증
+    invalid_non_grouped: list = []
+    valid_non_grouped: list[int] = []
+    for m in plan.get("non_grouped_units", []) or []:
+        try:
+            m_int = int(m)
+        except (TypeError, ValueError):
+            invalid_non_grouped.append(m)
+            continue
+        if 0 <= m_int < n_units:
+            valid_non_grouped.append(m_int)
+        else:
+            invalid_non_grouped.append(m)
+    plan["non_grouped_units"] = valid_non_grouped
+    if invalid_non_grouped:
+        invalid_members.extend([
+            {"location": "non_grouped_units", "invalid_ref": m}
+            for m in invalid_non_grouped
+        ])
+
+    plan["validation_result"] = {
+        "valid": True,
+        "invalid_member_indices": invalid_members,
+        "expandable_forced_false_count": forced_false,
+        "fallback_required": False,
+    }
+    return plan
