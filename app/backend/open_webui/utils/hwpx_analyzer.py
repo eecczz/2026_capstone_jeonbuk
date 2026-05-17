@@ -15307,143 +15307,76 @@ def has_toc_gate(section_results: dict) -> dict:
     }
 
 
-TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 generation unit (chapter 단위)을 결정하는 분석가입니다.
-이 판단은 추후 source content를 양식의 어느 단위에 채울지 결정하는 데 사용됩니다.
+TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 chapter 단위(generation unit)를 결정합니다.
 
-[INPUT 구성]
+[INPUT]
+1. TOC paragraphs — 양식 self-description (가장 신뢰)
+2. Body paragraphs (모든 section)
+3. 1c tree (level, parent_idx) — reference only, 정답 X
 
-1. TOC PARAGRAPHS — PRIMARY evidence
-   양식이 자기 자신의 chapter 구조를 차례/목차/순서에 명시적으로 적어놓은 paragraph.
-   양식 self-description입니다. generation unit 결정의 일차 근거입니다.
-
-2. BODY PARAGRAPHS — SECONDARY evidence (모든 section)
-   본문 paragraph. 차례에 적힌 chapter가 실제로 어디에 위치하는지 matching 용도.
-   각 paragraph: (section_id, local_idx, marker, role, text).
-
-3. 1C TREE (level, parent_idx) — REFERENCE ONLY, 정답 아님
-   1c는 paragraph 간 부모/자식 관계를 추정한 결과이며 양식 의도와 다를 수 있습니다.
-   비-본문 paragraph를 본문 컨테이너로 오인하거나 본문 unit을 sub-level로 잡는 사례가 관측됩니다.
-   1c level/parent를 generation_unit 경계 결정의 직접 근거로 쓰지 마십시오.
-
-[판단 원칙 — chapter 흐름 정의]
-
-- chapter는 양식의 큰 흐름 단위입니다. 양식이 다른 주제 source를 받아도 같은 chapter 흐름으로 채워질 수 있는 단위입니다.
-  chapter title이 topic-specific 단어를 포함하더라도, chapter 흐름 자체는 양식이 정한 단위이므로 그대로 유지됩니다.
-- 차례에 적힌 위계가 양식 의도입니다. 차례를 양식 self-description으로 처리하십시오.
-- 같은 양식 안에 chapter 종류가 여러 개일 수 있습니다. 단일 종류만 있다고 가정하지 마십시오.
-- 차례에 적혀있지만 본문에서 매칭 paragraph를 못 찾으면 matching_failed에 기록하십시오.
-
-[chapter level 식별 — 핵심 원리]
-
-DEFAULT:
-- TOC 1차 level = chapter
-
-EXCEPTION (chapter level이 sub-list level인 경우 — 오직 이 조건일 때만):
-- TOC 1차 level 항목이 모두 양식 specific 단어 박힘 (보편적 chapter title 없음)
-- + sub-list level에 보편적 chapter title 포함 (목적/추진배경/추진방향/결론/행정사항 등)
-- 이 경우만 → 1차 level = container, sub-list level = chapter
-
-같은 level 처리:
-- chapter level이 식별되면 그 level의 모든 항목이 chapter (일부가 양식 specific해도)
-- chapter level 위 level = container (있으면)
-- chapter level 아래 level = subpattern (default. 양식 specific N개 sub-content)
-
-보편적 chapter title의 의미:
-- 목적/추진배경/추진방향/추진과제/결론/행정사항/평가/계획/관리/여건/방향/일정/현황
-  등 여러 양식에 흔히 등장하는 보편적 chapter 의미 단어
-- 특정 정책명/특정 과제명/특정 연도/양식 specific 단어가 박혀있으면 보편적 chapter title 아님
-
-판단 방식:
-- 각 level 항목 텍스트에 보편적 chapter title 의미가 포함되는지 자율 판단
-- 1차 level에 하나라도 보편적 chapter title 있으면 → 1차 level이 chapter level
-- 1차 level이 전부 specific이고 sub-list에 보편적 chapter title 있으면 → sub-list가 chapter level
-- 같은 level 안 일부만 보편적이어도 그 level의 모든 항목이 chapter
-
-특정 marker family / 양식명 / 제목 문자열 hardcode 분기 금지.
-sub-list 항목 텍스트의 의미 분석으로 판단합니다.
-
-[subpattern / container 정의]
-
-- subpattern_unit: chapter 아래 가변 sub-content. 양식이 N개 sub를 나열한 것으로,
-  다른 주제 source에서 개수와 내용이 변동될 수 있습니다.
-- container_unit: 여러 chapter를 묶는 상위 그룹. 자체 생성 단위 아님.
-  chapter level이 sub-list level일 때만 1차 level이 container.
+[chapter 정의]
+chapter = 양식의 흐름 단위. 다른 주제 source가 적용돼도 같은 chapter 흐름이 유지되는 단위.
+chapter title이 양식 specific 단어 (특정 정책명/연도/주제어)를 포함해도 chapter입니다.
+다른 주제 source 적용 시 title 변경은 후속 stage(adaptation_plan)가 처리. Phase E는 chapter 단위 결정만.
 
 [같은 level 일관성 — 절대 원칙]
 
-같은 TOC level 안에서 chapter vs container 분류는 절대 섞이지 마십시오.
+같은 TOC level 안 모든 항목은 같은 분류 (chapter 또는 container 또는 subpattern).
+- 일부 항목이 자체 본문 짧거나 없거나 양식 specific 단어 박혀있어도 같은 level이면 같은 분류
+- 양식 evidence (본문 분량/구조/역할 차이)는 같은 level 안에서 분류를 가르는 근거가 될 수 없음
+- 같은 level이 chapter면 그 level의 모든 항목이 chapter
+- 같은 level이 container면 그 level의 모든 항목이 container
 
-- 1차 level이 chapter level이면 1차 level의 모든 항목이 chapter입니다.
-  일부 1차 항목이 자체 본문 거의 없고 sub-list만 있어도, 같은 level의 다른 항목과
-  같은 분류 (chapter) 유지하십시오. 자체 본문 분량으로 분류 가르지 마십시오.
-- 1차 level이 container level이면 1차 level의 모든 항목이 container입니다.
-  일부 1차 항목이 자체 본문 있어도 다른 1차 항목과 같은 분류 (container) 유지하십시오.
-- sub-list level도 동일 원칙. 같은 sub-list level 안에서 chapter vs subpattern 섞임 X.
+이 원칙 위반은 prompt 위반입니다. 일관 분류로 강제 재조정 + ambiguity_flags에 "level_classification_corrected" 추가.
 
-같은 level 내 분류 일관성을 어기는 결과는 prompt 위반입니다.
-일관 분류로 재조정하고 ambiguity_flags에 "level_classification_inconsistent"를 추가하십시오.
+[chapter level 식별 — strict 원리]
 
-[chapter title의 topic-specificity 처리 — 중요]
+DEFAULT: TOC 1차 level = chapter
 
-- chapter title이 양식 specific 단어를 포함하더라도 (특정 부처/연도/주제어 등),
-  그 chapter는 양식 흐름의 일부이므로 generation_unit으로 유지하십시오.
-- 다른 주제 source가 적용될 때 chapter title은 후속 stage(adaptation_plan)가 변경합니다.
-  Phase E는 chapter 흐름 단위 결정만 책임집니다. title 변경은 책임 X.
-- 다음 이유로 chapter를 preserve로 격하하지 마십시오:
-  * "분량이 짧다" — 양식 흐름의 짧은 서두/결론도 chapter
-  * "도입/평가/배경 성격이다" — 역할 차이는 chapter 격하 사유 아님
-  * "title이 topic-specific하다" — 다른 주제는 adaptation_plan이 처리
-- 양식 흐름에 속하면 generation_unit입니다.
+EXCEPTION (chapter level이 sub-list level인 경우 — 오직 이 조건일 때만):
+- TOC 1차 level의 모든 항목이 양식 specific (보편적 chapter title 없음)
+- + sub-list level에 보편적 chapter title 포함
+- → 1차 level = container, sub-list level = chapter
 
-[out_of_toc_preserve_regions 엄격 정의]
+위 EXCEPTION 조건 둘 다 충족이어야 적용. 그 외에는 DEFAULT.
 
-- 다음 영역만 out_of_toc_preserve_regions에 포함하십시오:
-  * 차례 본문에 등장하지 않는 paragraph (표지 메타데이터, header, footer 등)
-  * 차례 자체의 paragraph (table_of_contents)
-  * 부록 (차례에 명시 안 된 경우만)
-  * 양식이 명백히 보존 의도한 영역 (예: 보안등급, 발행기관 슬롯, spacer)
-- 차례 본문에 등장한 chapter 단위는 절대 out_of_toc_preserve_regions에 포함하지 마십시오.
-  → preserve 격하 대신 chapter / container / subpattern 중 하나로 분류하십시오.
+보편적 chapter title:
+- 목적/추진배경/추진방향/추진과제/결론/행정사항/평가/계획/관리/여건/방향/일정/현황 등
+  여러 양식에 흔히 등장하는 보편적 chapter 의미 단어
+- 특정 정책명/과제명/연도/주제 specific 단어가 박혀있으면 보편적 chapter title 아님
+- 1차 level에 하나라도 보편적 chapter title 있으면 → DEFAULT 적용 (1차 level = chapter)
 
-[generation_unit 개수 / 위계 안정성]
+[unit 종류]
 
-- source content가 바뀌어도 generation_unit의 개수와 위계가 유지되어야 합니다.
-- 양식 안에서 반복되지만 다른 주제 source에서 개수가 가변일 수 있는 단위는 subpattern입니다.
-- 판단 질문: "이 양식이 다른 주제 source를 받아도 이 단위는 같은 개수로 유지될 것인가?"
-  yes → generation_unit / container
-  no  → subpattern
+- chapter = 양식 흐름 단위 (개수 고정). chapter level의 모든 항목.
+- container = 여러 chapter 묶는 상위 그룹 (EXCEPTION case만). 자체 생성 단위 아님.
+- subpattern = chapter 아래 가변 sub-content. 양식 specific N개 (다른 주제면 개수/내용 변동).
 
-[evidence 처리]
+chapter level 아래 level = subpattern. chapter level 위 level = container (EXCEPTION case만 존재).
 
-- 차례를 우선 검토하되, 본문 paragraph 흐름과 매칭 evidence를 함께 보고 판단하십시오.
-- 차례, 본문, 1c가 서로 어긋나면 ambiguity_flags에 기록하고 evidence가 충분한 해석을 택하십시오.
-- 1c와 차례/본문이 충돌하면 ambiguity_flags에 "1c_disagreement"를 추가하십시오.
-- 차례 entry와 본문 매칭이 부분적이거나 애매하면 ambiguity_flags에 기록하십시오.
-- 차례 위계 자체가 모호하면 alternative_interpretations에 다른 해석을 나열하고 unit_decision.confidence=low.
+[out_of_toc_preserve_regions — 엄격]
+
+다음만 포함:
+- 차례 본문에 등장하지 않는 paragraph (표지, header, footer, 차례 외 부록 등)
+- 차례 자체 paragraph (table_of_contents role)
+
+차례 본문에 등장한 chapter 단위는 절대 preserve 격하 X.
+
+[evidence cite + ambiguity]
+
+- 모든 claim은 paragraph_refs (section_id, local_idx) cite
+- 존재하지 않는 idx 만들지 마십시오. INPUT 안 paragraph 중 하나여야 함.
+- evidence 항목마다 confidence (high/medium/low)
+- 차례/본문/1c 충돌 시 ambiguity_flags 기록 (예: "1c_disagreement")
+- 차례 위계 모호 시 alternative_interpretations + unit_decision.confidence=low
 
 [hardcode 금지]
+특정 marker family / 양식명 / 제목 문자열 분기 금지. sub-list 항목 텍스트 의미 분석으로 판단.
 
-- 특정 marker family(순서 표기 체계)가 항상 generation_unit이라는 가정 금지.
-- 특정 제목 문자열, 특정 양식명에 따른 분기 금지.
-- marker family는 양식별로 다양합니다. 차례 evidence로부터 양식이 어떤 표기 체계를 쓰는지 추론하십시오.
-
-[evidence cite 의무]
-
-- 모든 claim은 paragraph_refs (section_id, local_idx)로 cite하십시오.
-- 존재하지 않는 idx를 만들지 마십시오. INPUT에서 받은 paragraph 중 하나여야 합니다.
-- quoted_text에는 cite한 paragraph 실제 text의 짧은 인용을 넣으십시오.
-- evidence 각 항목마다 confidence를 high/medium/low로 표기하십시오.
-
-[idx_range 의미]
-
-list of spans 형식: [{"section_id", "start_local_idx", "end_local_idx"}, ...]
-보통 list 길이 1 (한 section 안). 어떤 unit이 여러 section에 걸치면 길이 2+.
-
-- container: 자기 시작 paragraph ~ 그 container 마지막 children 끝.
-- generation: 자기 시작 paragraph ~ 자기 영역 끝.
-- subpattern: 자기 시작 paragraph ~ 자기 영역 끝.
-
-결정 불가하면 null + ambiguity_flag.
+[idx_range — list of spans]
+[{"section_id", "start_local_idx", "end_local_idx"}, ...]
+- chapter/container/subpattern: 자기 시작 paragraph ~ 자기 영역 끝.
+- 결정 불가 시 null + ambiguity_flag.
 
 [OUTPUT — JSON ONLY, 다른 텍스트 금지]
 
