@@ -921,11 +921,24 @@ _PUBLIC_CHATBOT_HTML_CANDIDATES = [
 
 @router.get("/chatbot.html")
 async def public_chatbot_ui():
-    """공개 챗봇 UI HTML 서빙 (영구 볼륨 우선, fallback 으로 image 경로)."""
+    """공개 챗봇 UI HTML 서빙 (영구 볼륨 우선, fallback 으로 image 경로).
+
+    빈번한 UI 디자인 갱신이 캐시에 막히는 걸 방지하기 위해 Cache-Control:
+    no-cache 헤더 부착. 브라우저가 항상 서버에 재검증.
+    """
+    no_cache_headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
     for path in _PUBLIC_CHATBOT_HTML_CANDIDATES:
         try:
             if os.path.isfile(path):
-                return FileResponse(path, media_type="text/html; charset=utf-8")
+                return FileResponse(
+                    path,
+                    media_type="text/html; charset=utf-8",
+                    headers=no_cache_headers,
+                )
         except Exception as e:
             log.debug(f"chatbot_ui candidate {path} failed: {e}")
     raise HTTPException(
