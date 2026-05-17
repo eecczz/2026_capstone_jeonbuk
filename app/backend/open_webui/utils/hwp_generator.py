@@ -1050,12 +1050,46 @@ def _reassign_unique_ids(elem, counter):
     단순 deepcopy 시 같은 id가 100+회 반복 → 한컴 위조/변조 경고.
 
     paragraph(p), table(tbl), 기타 id attribute 가진 element 모두 처리.
+    빈 문자열 id는 skip (subList 등 schema상 빈 값 의도).
     counter는 [int] mutable list로 외부에서 전달 (call 간 누적).
     """
     for e in elem.iter():
-        if e.get("id") is not None:
+        eid = e.get("id")
+        if eid is not None and eid != "":
             counter[0] += 1
             e.set("id", str(counter[0]))
+
+
+def _reassign_all_section_ids(section_elements, counter_start: int = 4_000_000_000) -> dict:
+    """전체 section element 안 모든 paragraph/tbl/element id를 unique sequential로 재할당.
+
+    양식 원본 element는 default id (0, 2147483648 등)가 그대로 남아 있음.
+    preserve된 양식 영역이 큰 경우 (multi-section 부록 등) → id 중복 → HWPX 위변조 경고.
+    assembly 끝에 호출하여 새 element + 양식 원본 element 모두 unique 보장.
+
+    빈 문자열 id (subList 등)는 schema 의도이므로 skip.
+    """
+    counter = [counter_start]
+    reassigned = 0
+    skipped_empty = 0
+    for sec_elem in section_elements:
+        if sec_elem is None:
+            continue
+        for e in sec_elem.iter():
+            eid = e.get("id")
+            if eid is None:
+                continue
+            if eid == "":
+                skipped_empty += 1
+                continue
+            counter[0] += 1
+            e.set("id", str(counter[0]))
+            reassigned += 1
+    return {
+        "reassigned_count": reassigned,
+        "skipped_empty_count": skipped_empty,
+        "final_counter": counter[0],
+    }
 
 
 def assemble_hwpx_hybrid(
@@ -2650,6 +2684,27 @@ def assemble_hwpx_hybrid(
         f"body 항목 {len(body_items)}개, marker rewrite {changed}/{len(_marker_rewrite_log)}"
         + (f", phase2: conflicts={len(_phase2_rewrite_conflicts)}, residuals={_phase2_ai_marker_residuals}" if content_only_mode else "")
     )
+
+    # ── final unique id reassignment ──
+    # 양식 원본 paragraph id가 default (0, 2147483648 등)이라 preserve된 영역에
+    # 중복 id 다수 → HWPX viewer 위변조 경고. 모든 section element의 id를 unique
+    # sequential로 재할당. 빈 문자열 id (subList 등 schema 의도)는 skip.
+    try:
+        _all_section_elements = []
+        for _s in _all_sections:
+            try:
+                _all_section_elements.append(_s.element if hasattr(_s, 'element') else _s)
+            except Exception:
+                pass
+        _final_reassign = _reassign_all_section_ids(_all_section_elements, counter_start=4_000_000_000)
+        structure["_final_id_reassignment"] = _final_reassign
+        log.info(
+            f"final id reassignment: reassigned={_final_reassign['reassigned_count']} "
+            f"skipped_empty={_final_reassign['skipped_empty_count']}"
+        )
+    except Exception as _fri_e:
+        log.warning(f"final id reassignment 실패: {_fri_e}")
+        structure["_final_id_reassignment"] = {"error": str(_fri_e)}
 
     return HwpxResult(
         data=_doc_to_bytes(doc),
