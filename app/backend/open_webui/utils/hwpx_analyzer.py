@@ -15333,42 +15333,41 @@ TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 generation
 - 같은 양식 안에 chapter 종류가 여러 개일 수 있습니다. 단일 종류만 있다고 가정하지 마십시오.
 - 차례에 적혀있지만 본문에서 매칭 paragraph를 못 찾으면 matching_failed에 기록하십시오.
 
-[TOC 위계와 chapter/container/subpattern 매핑]
+[chapter level 식별 — 핵심 원리]
 
-- TOC 1차 level이 chapter (generation_unit)의 default입니다.
-- 단 양식 evidence에 따라 다음과 같이 판단하십시오:
-  - 1차 level이 자체 본문 거의 없고 sub-list가 양식 chapter 흐름의 큰 단위를 형성하면
-    → 1차 level = container_unit, 2차 level = chapter (generation_unit)
-  - 1차 level이 자체 본문 있고 sub-list가 양식 specific N개 sub-content 나열이면
-    → 1차 level = chapter (generation_unit), 2차 level = subpattern_unit
-- subpattern_unit: chapter 안 가변 sub-content. 양식이 N개 sub를 나열한 것으로,
-  다른 주제 source에서 개수가 변동될 수 있습니다.
-- container_unit: 여러 chapter를 묶는 상위 그룹. 자체 생성 단위 아님.
-
-[TOC sub-list 분류 — strict default 원리]
-
-DEFAULT (대부분 양식에 적용):
+DEFAULT:
 - TOC 1차 level = chapter
-- TOC sub-list (1차 아래 항목) = subpattern
 
-EXCEPTION (sub-list도 chapter로 분류하는 경우 — 오직 이 조건일 때만):
-- sub-list 항목이 모두 보편적/일반적 chapter title 의미를 가질 때
-  (목적/추진배경/추진방향/결론/추진과제/행정사항/현황/평가/계획/관리 등
-   여러 양식에 흔히 등장하는 보편적 chapter 의미)
-- 이 경우만 sub-list도 chapter
+EXCEPTION (chapter level이 sub-list level인 경우 — 오직 이 조건일 때만):
+- TOC 1차 level 항목이 모두 양식 specific 단어 박힘 (보편적 chapter title 없음)
+- + sub-list level에 보편적 chapter title 포함 (목적/추진배경/추진방향/결론/행정사항 등)
+- 이 경우만 → 1차 level = container, sub-list level = chapter
 
-DEFAULT 우선 원칙:
-- sub-list 항목에 양식 specific 단어가 박혀있으면 (특정 정책명, 특정 과제명,
-  특정 연도, 특정 주제 specific 단어) → DEFAULT 적용 (subpattern)
-- "양식이 N개로 명시했다"는 이유로 chapter 격상 X
-- 양식 한 인스턴스가 N개를 명시했어도 다른 주제 source 적용 시 가변일 수 있음
+같은 level 처리:
+- chapter level이 식별되면 그 level의 모든 항목이 chapter (일부가 양식 specific해도)
+- chapter level 위 level = container (있으면)
+- chapter level 아래 level = subpattern (default. 양식 specific N개 sub-content)
 
-판단 질문:
-- sub-list 항목이 일반적 chapter 이름인가? yes → chapter (예외 적용)
-- sub-list 항목이 양식 specific 내용 나열인가? yes → subpattern (default)
+보편적 chapter title의 의미:
+- 목적/추진배경/추진방향/추진과제/결론/행정사항/평가/계획/관리/여건/방향/일정/현황
+  등 여러 양식에 흔히 등장하는 보편적 chapter 의미 단어
+- 특정 정책명/특정 과제명/특정 연도/양식 specific 단어가 박혀있으면 보편적 chapter title 아님
 
-특정 marker family / 양식명 / 제목 문자열로 hardcode 분기 금지.
+판단 방식:
+- 각 level 항목 텍스트에 보편적 chapter title 의미가 포함되는지 자율 판단
+- 1차 level에 하나라도 보편적 chapter title 있으면 → 1차 level이 chapter level
+- 1차 level이 전부 specific이고 sub-list에 보편적 chapter title 있으면 → sub-list가 chapter level
+- 같은 level 안 일부만 보편적이어도 그 level의 모든 항목이 chapter
+
+특정 marker family / 양식명 / 제목 문자열 hardcode 분기 금지.
 sub-list 항목 텍스트의 의미 분석으로 판단합니다.
+
+[subpattern / container 정의]
+
+- subpattern_unit: chapter 아래 가변 sub-content. 양식이 N개 sub를 나열한 것으로,
+  다른 주제 source에서 개수와 내용이 변동될 수 있습니다.
+- container_unit: 여러 chapter를 묶는 상위 그룹. 자체 생성 단위 아님.
+  chapter level이 sub-list level일 때만 1차 level이 container.
 
 [chapter title의 topic-specificity 처리 — 중요]
 
