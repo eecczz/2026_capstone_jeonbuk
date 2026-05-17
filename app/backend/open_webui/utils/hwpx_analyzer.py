@@ -15345,6 +15345,26 @@ TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 generation
   다른 주제 source에서 개수가 변동될 수 있습니다.
 - container_unit: 여러 chapter를 묶는 상위 그룹. 자체 생성 단위 아님.
 
+[TOC sub-list의 chapter vs subpattern 구분 — 핵심 원리]
+
+차례의 sub-list (1차 level 아래 항목)를 분류할 때, sub-list 항목 텍스트 내용으로 판단하십시오:
+
+- sub-list 항목이 일반적/보편적 chapter 의미를 가지면 (목적, 추진배경, 추진방향, 추진과제,
+  결론, 행정사항 등 여러 양식에 흔히 등장하는 chapter title 의미)
+  → chapter (양식 흐름의 일부. 다른 주제 source 적용 시 같은 chapter 흐름 유지)
+
+- sub-list 항목이 양식 specific 내용을 나열한 것이면 (특정 정책명, 특정 과제명,
+  특정 주제 단어가 박혀있음)
+  → subpattern (양식이 N개 sub-content를 나열한 것. 다른 주제 source가 적용되면
+    완전히 다른 내용/다른 개수로 채워짐)
+
+구분 질문: "이 sub-list 항목들이 다른 주제 source로 양식 적용 시:
+  (a) 같은 chapter 흐름 유지하되 title만 약간 변경 → chapter
+  (b) 완전히 다른 내용으로 채워지고 개수가 가변 → subpattern"
+
+이 구분은 sub-list 항목 텍스트의 의미 분석으로 판단합니다.
+특정 marker family / 양식명 / 제목 문자열로 hardcode 분기하지 마십시오.
+
 [chapter title의 topic-specificity 처리 — 중요]
 
 - chapter title이 양식 specific 단어를 포함하더라도 (특정 부처/연도/주제어 등),
