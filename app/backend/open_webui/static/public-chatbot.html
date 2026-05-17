@@ -441,6 +441,10 @@
   let pcReplyAudioChunks = 0;
   let pcDroppedAudioChunks = 0;
   let pcPausedByUser = false;
+  // phase_overlay (사용자 발화 요약 잠깐 끼어들기) 잠금 — 3.5s 동안 stateEl 점유.
+  let phaseOverlayUntil = 0;
+  let phaseOverlayPending = null;
+  let phaseOverlayTimer = null;
   // 입력: 마이크 16kHz (Cohere STT 호환). 출력: TTS endpoint 응답 24kHz (Qwen3-TTS).
   const PC_SAMPLE_RATE = 16000;
   const PC_TTS_SAMPLE_RATE = 24000;
@@ -535,17 +539,43 @@
             if (typeof setMode === "function") setMode("thinking", "", "");
           }
           else if (msg && msg.type === "vad") {
-            console.log("[voice] vad:", msg.text, "orb.class=", orbEl.className);
             if (msg.text === "start") {
-              if (typeof setMode === "function") setMode("listening", "", "");
+              // 이미 thinking 이면 그대로 — 멀티턴 발화 중 짧은 멈춤마다 VAD
+              // start 가 다시 들어와 listening 으로 덮어 yin-yang 안 보이던 버그.
+              // 응답 생성 중 (thinking) 에는 vad start 무시. listening/idle/
+              // recording/speaking 상태일 때만 listening 으로 복귀.
+              if (mode !== "thinking" && typeof setMode === "function") {
+                setMode("listening", "", "");
+              }
             } else if (msg.text === "stop") {
               if (typeof setMode === "function") setMode("thinking", "", "");
             }
-            console.log("[voice] vad post-setMode orb.class=", orbEl.className);
           }
           else if (msg && msg.type === "phase_label") {
             console.log("[voice] phase_label:", msg.text);
+            const text = msg.text || "";
+            // overlay 잠금 중이면 마지막 phase 로만 기억, 잠금 끝나면 그게 적용
+            if (Date.now() < phaseOverlayUntil) {
+              phaseOverlayPending = text;
+            } else if (stateEl) {
+              stateEl.textContent = text;
+            }
+          }
+          else if (msg && msg.type === "phase_overlay") {
+            // 잠깐 끼어드는 라벨 (예: 발화 요약). 3.5s 동안 stateEl 점유 →
+            // 그 후 마지막에 도착한 phase_label 로 자동 복귀.
+            console.log("[voice] phase_overlay:", msg.text);
             if (stateEl) stateEl.textContent = msg.text || "";
+            phaseOverlayUntil = Date.now() + 3500;
+            phaseOverlayPending = null;
+            clearTimeout(phaseOverlayTimer);
+            phaseOverlayTimer = setTimeout(() => {
+              phaseOverlayUntil = 0;
+              if (stateEl && phaseOverlayPending !== null) {
+                stateEl.textContent = phaseOverlayPending;
+              }
+              phaseOverlayPending = null;
+            }, 3500);
           }
           else if (msg && msg.type === "reply") {
             pcAcceptAudio = true;
@@ -647,8 +677,6 @@
 
   let mode = "idle"; // idle | listening | thinking | speaking
   function setMode(next, label, hint) {
-    console.log("[voice] setMode:", next, "label=", label, "(caller stack):");
-    console.trace("setMode call stack");
     mode = next;
     orbEl.classList.toggle("listening", next === "listening");
     orbEl.classList.toggle("thinking",  next === "thinking");

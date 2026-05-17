@@ -471,6 +471,12 @@ def _build_rag_processor(request: Request, websocket=None):
                     self._active_user_segments = []
                     return
 
+                # 멀티턴 합쳐진 최종 user_text — '질문은 …' 요약을 잠깐 띄움.
+                # frontend 가 3.5s 동안 stateEl 에 표시 후 마지막 정상 phase_label
+                # 로 자동 복귀. 끼어들기 형식이라 정상 순서를 안 깨뜨림.
+                _summary_src = user_text.strip().replace("\n", " ")
+                _summary = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
+                await _send_caption("phase_overlay", f"질문은 “{_summary}”")
                 await _send_caption("phase_label", "관련 자료 찾는 중")
                 await self._generate_reply(generation_id, user_text)
             except asyncio.CancelledError:
@@ -687,11 +693,6 @@ def _build_rag_processor(request: Request, websocket=None):
 
                 # 사용자 발화 자막 즉시 push
                 await _send_caption("transcription", user_text)
-                # 사용자 발화 요약을 첫 phase_label 로 — 챗봇이 무엇을 들었는지 즉시 보임.
-                # 짧으면 통째로, 길면 앞부분 만 (자연스럽게 잘라 …).
-                _summary_src = user_text.strip().replace("\n", " ")
-                _summary = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
-                await _send_caption("phase_label", f"질문은 “{_summary}”")
                 await self._restart_generation(user_text)
                 return
 
