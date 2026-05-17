@@ -15338,6 +15338,22 @@ TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 generation
   생성 대상이 아니라 preserve 대상입니다.
 - 차례에 적혀있지만 본문에서 매칭 paragraph를 못 찾으면 matching_failed에 기록하십시오.
 
+[generation_unit의 고정성 원리 — 중요]
+
+- generation_unit은 양식의 고정 chapter 흐름 단위입니다.
+- source content가 바뀌어도 unit의 개수와 위계가 유지되어야 합니다.
+- 양식 안에서 반복되지만 source에 따라 개수가 가변적인 단위는 generation_unit이 아니라 subpattern입니다.
+- 판단 기준 질문: "이 양식이 다른 source를 받아도 이 단위는 같은 개수로 유지될 것인가?"
+  yes → generation_unit
+  no  → subpattern
+
+[분량 무관 원칙]
+
+- generation_unit이라고 분량이 균일해야 하는 것은 아닙니다.
+- 양식 chapter 흐름에서 짧은 서두/결론 항목도 generation_unit입니다.
+- 분량이 다르다는 이유로 짧은 unit을 generation_unit에서 제외하지 마십시오.
+- preserve는 분량 적다고 결정하는 게 아니라, 차례에 없거나 양식이 명시한 보존 영역인 경우입니다.
+
 [evidence 처리]
 
 - 차례를 우선 검토하되, 본문 paragraph 흐름과 매칭 evidence를 함께 보고 판단하십시오.
