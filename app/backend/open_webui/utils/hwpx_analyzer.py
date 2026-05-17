@@ -15325,34 +15325,55 @@ TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 generation
    비-본문 paragraph를 본문 컨테이너로 오인하거나 본문 unit을 sub-level로 잡는 사례가 관측됩니다.
    1c level/parent를 generation_unit 경계 결정의 직접 근거로 쓰지 마십시오.
 
-[판단 원칙]
+[판단 원칙 — chapter 흐름 정의]
 
+- chapter는 양식의 큰 흐름 단위입니다. 양식이 다른 주제 source를 받아도 같은 chapter 흐름으로 채워질 수 있는 단위입니다.
+  chapter title이 topic-specific 단어를 포함하더라도, chapter 흐름 자체는 양식이 정한 단위이므로 그대로 유지됩니다.
 - 차례에 적힌 위계가 양식 의도입니다. 차례를 양식 self-description으로 처리하십시오.
-- generation_unit은 차례 위계 중 "독립된 생성 단위로 다뤄질 만한 단위"를 선택하십시오.
-  임의로 가장 깊은 leaf로 내려가거나 특정 level을 기계적으로 고르지 마십시오.
 - 같은 양식 안에 chapter 종류가 여러 개일 수 있습니다. 단일 종류만 있다고 가정하지 마십시오.
-- container_unit: 여러 generation_unit을 의미적으로 묶는 상위 그룹. 그 자체로 독립 생성 단위는 아닙니다.
-- subpattern_unit: generation_unit 안에서 반복되는 하위 heading. 그 자체로 독립 생성 단위는 아니지만
-  chapter-local pattern 보존에 필요합니다.
-- 차례에 없는 영역(표지, header, footer, 부록 등)은 out_of_toc_preserve_regions에 분류하십시오.
-  생성 대상이 아니라 preserve 대상입니다.
 - 차례에 적혀있지만 본문에서 매칭 paragraph를 못 찾으면 matching_failed에 기록하십시오.
 
-[generation_unit의 고정성 원리 — 중요]
+[TOC 위계와 chapter/container/subpattern 매핑]
 
-- generation_unit은 양식의 고정 chapter 흐름 단위입니다.
-- source content가 바뀌어도 unit의 개수와 위계가 유지되어야 합니다.
-- 양식 안에서 반복되지만 source에 따라 개수가 가변적인 단위는 generation_unit이 아니라 subpattern입니다.
-- 판단 기준 질문: "이 양식이 다른 source를 받아도 이 단위는 같은 개수로 유지될 것인가?"
-  yes → generation_unit
+- TOC 1차 level이 chapter (generation_unit)의 default입니다.
+- 단 양식 evidence에 따라 다음과 같이 판단하십시오:
+  - 1차 level이 자체 본문 거의 없고 sub-list가 양식 chapter 흐름의 큰 단위를 형성하면
+    → 1차 level = container_unit, 2차 level = chapter (generation_unit)
+  - 1차 level이 자체 본문 있고 sub-list가 양식 specific N개 sub-content 나열이면
+    → 1차 level = chapter (generation_unit), 2차 level = subpattern_unit
+- subpattern_unit: chapter 안 가변 sub-content. 양식이 N개 sub를 나열한 것으로,
+  다른 주제 source에서 개수가 변동될 수 있습니다.
+- container_unit: 여러 chapter를 묶는 상위 그룹. 자체 생성 단위 아님.
+
+[chapter title의 topic-specificity 처리 — 중요]
+
+- chapter title이 양식 specific 단어를 포함하더라도 (특정 부처/연도/주제어 등),
+  그 chapter는 양식 흐름의 일부이므로 generation_unit으로 유지하십시오.
+- 다른 주제 source가 적용될 때 chapter title은 후속 stage(adaptation_plan)가 변경합니다.
+  Phase E는 chapter 흐름 단위 결정만 책임집니다. title 변경은 책임 X.
+- 다음 이유로 chapter를 preserve로 격하하지 마십시오:
+  * "분량이 짧다" — 양식 흐름의 짧은 서두/결론도 chapter
+  * "도입/평가/배경 성격이다" — 역할 차이는 chapter 격하 사유 아님
+  * "title이 topic-specific하다" — 다른 주제는 adaptation_plan이 처리
+- 양식 흐름에 속하면 generation_unit입니다.
+
+[out_of_toc_preserve_regions 엄격 정의]
+
+- 다음 영역만 out_of_toc_preserve_regions에 포함하십시오:
+  * 차례 본문에 등장하지 않는 paragraph (표지 메타데이터, header, footer 등)
+  * 차례 자체의 paragraph (table_of_contents)
+  * 부록 (차례에 명시 안 된 경우만)
+  * 양식이 명백히 보존 의도한 영역 (예: 보안등급, 발행기관 슬롯, spacer)
+- 차례 본문에 등장한 chapter 단위는 절대 out_of_toc_preserve_regions에 포함하지 마십시오.
+  → preserve 격하 대신 chapter / container / subpattern 중 하나로 분류하십시오.
+
+[generation_unit 개수 / 위계 안정성]
+
+- source content가 바뀌어도 generation_unit의 개수와 위계가 유지되어야 합니다.
+- 양식 안에서 반복되지만 다른 주제 source에서 개수가 가변일 수 있는 단위는 subpattern입니다.
+- 판단 질문: "이 양식이 다른 주제 source를 받아도 이 단위는 같은 개수로 유지될 것인가?"
+  yes → generation_unit / container
   no  → subpattern
-
-[분량 무관 원칙]
-
-- generation_unit이라고 분량이 균일해야 하는 것은 아닙니다.
-- 양식 chapter 흐름에서 짧은 서두/결론 항목도 generation_unit입니다.
-- 분량이 다르다는 이유로 짧은 unit을 generation_unit에서 제외하지 마십시오.
-- preserve는 분량 적다고 결정하는 게 아니라, 차례에 없거나 양식이 명시한 보존 영역인 경우입니다.
 
 [evidence 처리]
 
