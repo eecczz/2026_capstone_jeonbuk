@@ -5046,7 +5046,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 5  # 13.7b: B1 multi-section schema 변경 직전 bump
+CACHE_SCHEMA_VERSION = 6  # Phase E: phase_e_chapter_planner + chapter_pattern_family cache 통합
 
 
 def compute_template_hash(template_path: str) -> str:
@@ -16534,6 +16534,86 @@ def _phase_e_to_target_unit_plan(phase_e_result: dict, structure: dict) -> dict:
         "_out_of_toc_count": len(out_of_toc),
         "_multi_section_units_skipped": multi_section_skipped,
     }
+
+
+def _phase_e_to_chapter_types(
+    phase_e_result: dict,
+    track_c_result: dict | None,
+    structure: dict,
+) -> dict:
+    """
+    Phase E generation_units + Track C family → chapter_types schema 매핑.
+
+    매핑 정책 (3-A 단순 매핑, 호환 유지):
+    - Track C family 멤버 → 같은 type
+    - non_grouped unit → 각자 singleton type
+    - title_role: 첫 unit의 paragraph_ref → 1d role
+    - description: title_text
+    - pattern: {} (legacy field. 13.6 per_chapter_pattern로 대체됨)
+    - merged_chapter_count: family size
+
+    chapter_types schema 호환 유지로 2a/13.4b/13.6/13.7a/13.7b/13.7c 기존 코드 무변경.
+
+    Returns: chapter_types-compatible dict {"type_1": {...}, "type_2": {...}}
+    """
+    plan = (phase_e_result or {}).get("toc_plan") or {}
+    interp = plan.get("toc_interpretation") or {}
+    gen_units = interp.get("generation_units") or []
+
+    paragraphs = (structure or {}).get("paragraphs") or []
+    para_by_idx = {}
+    for p in paragraphs:
+        pidx = p.get("idx")
+        if pidx is not None:
+            para_by_idx[(0, int(pidx))] = p  # section_id=0 매핑 (section 0 only)
+
+    # Track C family로 grouping
+    family_map: dict[int, str] = {}  # unit_idx → family_id
+    if track_c_result and track_c_result.get("status") == "ok":
+        result = track_c_result.get("result") or {}
+        for fam in result.get("pattern_families", []) or []:
+            fid = fam.get("family_id")
+            if not fid:
+                continue
+            for m in fam.get("members", []) or []:
+                try:
+                    family_map[int(m)] = fid
+                except (TypeError, ValueError):
+                    continue
+
+    # type grouping: family_id 또는 singleton
+    type_groups: dict[str, list[int]] = {}
+    for i, _unit in enumerate(gen_units):
+        key = family_map.get(i, f"singleton_{i}")
+        type_groups.setdefault(key, []).append(i)
+
+    chapter_types: dict[str, dict] = {}
+    for type_counter, (type_key, indices) in enumerate(type_groups.items(), 1):
+        type_name = f"type_{type_counter}"
+        first_unit = gen_units[indices[0]] if indices else {}
+        ref = first_unit.get("paragraph_ref") or {}
+        title_role = ""
+        if isinstance(ref, dict):
+            try:
+                sid = int(ref.get("section_id", 0))
+                lid = int(ref.get("local_idx"))
+                para = para_by_idx.get((sid, lid))
+                if para:
+                    title_role = para.get("canonical_role") or para.get("role") or ""
+            except (TypeError, ValueError):
+                pass
+
+        chapter_types[type_name] = {
+            "title_role": title_role,
+            "description": first_unit.get("title_text", ""),
+            "pattern": {},  # legacy field. 13.6 per_chapter_pattern로 대체
+            "merged_chapter_count": len(indices),
+            "_phase_e_source": True,
+            "_phase_e_family_id": type_key,
+            "_phase_e_member_unit_indices": indices,
+        }
+
+    return chapter_types
 
 
 def build_target_unit_plan_dispatcher_decision(
