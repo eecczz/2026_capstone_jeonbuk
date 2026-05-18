@@ -5167,7 +5167,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 7  # Phase E를 1c 후로 이동 + paragraph에 chapter_id 추가 + 1e chapter-aware
+CACHE_SCHEMA_VERSION = 8  # 형제 배타: blacklist(variants) → white-list(cooccurrence) 전환
 
 
 def compute_template_hash(template_path: str) -> str:
@@ -7861,6 +7861,58 @@ def _normalize_marker_type(marker: str) -> str:
         return "hangul_dot"
     # 단일 문자 마커 (□, ㅇ, *, ※, ◈, ◇, ◆, ⇒, →, ▪, -)
     return f"char_{first}"
+
+
+def compute_sibling_cooccurrence_rules(parent_instances: dict) -> list[dict]:
+    """양식 paragraph 전수 분석 — parent별 한 instance 안에 함께 등장한 sibling
+    cluster 쌍 추출 (white-list 데이터).
+
+    2b prompt가 "기본 배타 + 양식 관찰 공존만 허용" 룰을 적용하기 위한 데이터.
+    같은 parent의 각 instance마다 자식 cluster set 보고, set 안의 모든 cluster
+    쌍을 cooccurred_pairs에 추가 (instance 간 합집합).
+
+    Args:
+        parent_instances: {parent_role: [{children_set}, ...]}
+                          compute_parent_instance_children 또는
+                          compute_parent_instance_children_by_parent_idx 결과
+
+    Returns:
+        [{
+          "parent": str,                          # parent role
+          "all_children_clusters": [str, ...],    # 양식에서 관찰된 자식 cluster union
+          "cooccurred_pairs": [[a, b], ...],      # 같은 instance에 함께 등장한 쌍 (정렬됨)
+          "instance_count": int,                  # parent instance 수
+        }, ...]
+
+    cooccurred_pairs가 빈 list = 완전 배타 (양식에서 어떤 자식 쌍도 함께 등장 X).
+    parent.all_children_clusters 단일 원소 = sibling 1개라 쌍 자체 불가능 → 빈 list.
+    """
+    rules = []
+    for parent_role, child_sets in (parent_instances or {}).items():
+        if not parent_role or not child_sets:
+            continue
+        # 자식 cluster union
+        all_children = set()
+        for cs in child_sets:
+            all_children.update(cs)
+        all_children_list = sorted(all_children)
+
+        # cooccurred pairs — 같은 instance 안에 함께 등장한 쌍
+        cooccurred = set()
+        for cs in child_sets:
+            cs_sorted = sorted(cs)
+            for i in range(len(cs_sorted)):
+                for j in range(i + 1, len(cs_sorted)):
+                    cooccurred.add((cs_sorted[i], cs_sorted[j]))
+        cooccurred_pairs = [list(p) for p in sorted(cooccurred)]
+
+        rules.append({
+            "parent": parent_role,
+            "all_children_clusters": all_children_list,
+            "cooccurred_pairs": cooccurred_pairs,
+            "instance_count": len(child_sets),
+        })
+    return rules
 
 
 def compute_exclusivity_rules_code(parent_instances: dict) -> list[dict]:
@@ -14543,9 +14595,13 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
    - `필수(최소 1개)`: 반드시 1개 이상 포함
    - `선택(생략 가능)`: 해당 내용이 소스에 없으면 생략
 4. **children 관계를 지키세요** — 부모 role 뒤에 자식 role이 와야 합니다
-5. **형제 배타 규칙이 주어지면 반드시 지키세요** — 프롬프트에 "형제 배타 규칙" 섹션이 있으면, 각 부모 인스턴스마다 제시된 variant 중 **하나만** 사용. 한 인스턴스 안에서 variant를 섞지 마세요.
-   - **인스턴스마다 다른 variant 적극 활용**: 양식이 여러 variant를 제공하는 이유는 인스턴스마다 다른 표현이 가능하다는 뜻. 모든 인스턴스에 같은 variant만 쓰지 말고, **소스 내용의 성격(나열·각주·세부 단계·요약 등)에 맞는 variant를 인스턴스마다 적합하게 선택**하세요.
-   - 예: 한 부모의 인스턴스 1번에는 보충 설명 variant, 인스턴스 2번에는 각주 variant, 인스턴스 3번에는 세부 단계 variant 등 — 소스 내용이 그렇게 갈리면 그대로 다양하게 사용.
+5. **형제 배타 규칙 (default = 배타, white-list만 공존 허용, hard constraint)**:
+   - **기본**: 같은 부모 role의 한 인스턴스 안에 자식 role 두 개 이상은 **동시에 등장 금지**.
+   - **예외 (white-list)**: prompt의 "형제 배타 규칙" 섹션에 각 부모별로 "공존 가능 쌍" 명시. 그 쌍에 해당하는 자식들만 한 인스턴스 안에 같이 등장 가능.
+   - 공존 가능 쌍에 없는 sibling은 **한 인스턴스 안에서 절대 같이 박지 마세요**. (양식에서 함께 등장한 적 없음 = 의미 역할 다름)
+   - **다양화는 인스턴스 간만** — 같은 부모의 인스턴스 여러 개 만들 때 각자 다른 자식 조합 가능. 단 한 인스턴스 안에선 white-list만 따름.
+   - 예: parent의 자식이 [A, B, C]이고 white-list가 [(A,B)]만이면 → 한 인스턴스에 A+B는 OK, A+C는 X, B+C는 X.
+   - 양식의 한 instance 안에서 자식이 1개만 등장하면 (white-list 빈 list) → 그 인스턴스도 자식 1개만 박기.
 
 ## ⚠️ 소스와 양식의 주제가 완전히 다를 수 있음
 
@@ -14755,6 +14811,7 @@ def build_section_fill_prompt(
     shallow_mode: bool = False,
     section_plan_seed: dict | None = None,
     template_chapter_context: dict | None = None,
+    cooccurrence_rules: list = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -14831,57 +14888,89 @@ def build_section_fill_prompt(
             )
             format_text = "\n".join(lines_f) + "\n\n"
 
+    # 형제 배타 (default = 배타, white-list만 공존 허용 — hard constraint)
+    # cooccurrence_rules가 있으면 그 기반 white-list 표시. 없으면 빈 텍스트.
+    # 옛 exclusive_rules는 무시 (backward compat 위해 인자 자체는 받지만 사용 X).
     exclusive_text = ""
-    if exclusive_rules:
+    if cooccurrence_rules:
         relevant = []
-        for rule in exclusive_rules:
+        for rule in cooccurrence_rules:
             parent = rule.get("parent", "")
-            variants = rule.get("variants", [])
             if parent not in pattern_roles:
                 continue
-            # variant 내 role도 패턴에 존재하는 것만 유지
-            filtered_variants = [
-                [r for r in v if r in pattern_roles] for v in variants
+            # 자식 cluster 중 pattern_roles에 속한 것만
+            all_children = [
+                r for r in (rule.get("all_children_clusters") or [])
+                if r in pattern_roles
             ]
-            filtered_variants = [v for v in filtered_variants if v]
-            if len(filtered_variants) < 2:
+            if len(all_children) < 2:
+                # 자식 1개 이하면 공존 자체 불가능 — 룰 표시 의미 X
                 continue
+            cooccurred = [
+                [a, b] for a, b in (rule.get("cooccurred_pairs") or [])
+                if a in pattern_roles and b in pattern_roles
+            ]
             relevant.append({
                 "parent": parent,
-                "variants": filtered_variants,
-                "reason": rule.get("reason", ""),
+                "all_children": all_children,
+                "cooccurred_pairs": cooccurred,
             })
         if relevant:
-            lines = ["## ⚠️ 형제 배타 규칙 (인스턴스 단위)\n"]
+            lines = ["## ⚠️ 형제 배타 규칙 (default = 배타, white-list만 공존 허용)\n"]
             lines.append(
-                "각 부모 role의 **인스턴스마다** 아래 variant 중 하나를 선택해서 "
-                "자식을 배치하세요. 한 인스턴스 안에서 서로 다른 variant의 role을 섞지 마세요.\n"
+                "**기본 룰 (hard constraint)**: 같은 부모 role의 한 인스턴스 안에 "
+                "자식 role 두 개 이상을 동시에 박지 마세요.\n"
             )
             lines.append(
-                "**인스턴스마다 소스 내용 성격에 맞는 variant를 적극 다양하게 선택하세요.** "
-                "양식이 여러 variant를 제공하는 이유는 인스턴스마다 다른 표현이 가능하다는 뜻입니다. "
-                "모든 인스턴스에 같은 variant만 쓰지 말고, 소스 내용이 갈리면 그대로 다양하게 사용. "
-                "예: 첫 인스턴스는 variant A (예: 보충 설명), 두 번째는 variant B (예: 각주), "
-                "세 번째는 variant C (예: 세부 단계).\n"
+                "**예외 (양식 관찰 기반)**: 아래 각 부모마다 \"공존 가능 쌍\"이 명시돼 있으면, "
+                "그 쌍에 해당하는 자식들만 한 인스턴스 안에 같이 박을 수 있습니다. "
+                "쌍에 없는 sibling 조합은 **금지**.\n"
+            )
+            lines.append(
+                "**다양화 권장은 인스턴스 간만** — 같은 부모의 인스턴스 여러 개를 만들 때 "
+                "각 인스턴스가 다른 자식 cluster 또는 다른 공존 쌍을 사용 가능. "
+                "단 한 인스턴스 안에선 white-list만 따름.\n"
             )
             for rule in relevant:
                 parent = rule["parent"]
                 parent_marker = role_markers.get(parent, "")
-                marker_str = f" (마커: \"{parent_marker}\")" if parent_marker else ""
-                lines.append(f"\n### 부모: `{parent}`{marker_str}")
-                for i, variant in enumerate(rule["variants"]):
-                    marker_strs = []
-                    for r in variant:
-                        m = role_markers.get(r, "")
-                        marker_strs.append(
-                            f"`{r}`" + (f' ("{m}")' if m else "")
-                        )
+                parent_marker_str = f" (마커: \"{parent_marker}\")" if parent_marker else ""
+                lines.append(f"\n### 부모: `{parent}`{parent_marker_str}")
+
+                child_strs = []
+                for r in rule["all_children"]:
+                    m = role_markers.get(r, "")
+                    child_strs.append(f"`{r}`" + (f' ("{m}")' if m else ""))
+                lines.append(f"- 자식 cluster: " + ", ".join(child_strs))
+
+                if not rule["cooccurred_pairs"]:
                     lines.append(
-                        f"- variant {chr(ord('A')+i)}: " + ", ".join(marker_strs)
+                        "- 공존 가능 쌍: **없음** → 한 인스턴스에 자식 cluster 단 **하나만** 박기."
                     )
-                reason = rule.get("reason", "")
-                if reason:
-                    lines.append(f"  이유: {reason}")
+                else:
+                    pair_strs = []
+                    for a, b in rule["cooccurred_pairs"]:
+                        ma = role_markers.get(a, "")
+                        mb = role_markers.get(b, "")
+                        sa = f"`{a}`" + (f' ("{ma}")' if ma else "")
+                        sb = f"`{b}`" + (f' ("{mb}")' if mb else "")
+                        pair_strs.append(f"({sa}, {sb})")
+                    lines.append(f"- 공존 가능 쌍 (한 인스턴스 안 OK): " + ", ".join(pair_strs))
+                    # 명시적 금지 쌍도 추가 표시 (가독성)
+                    cooc_set = {tuple(sorted([a, b])) for a, b in rule["cooccurred_pairs"]}
+                    all_pairs = []
+                    for i in range(len(rule["all_children"])):
+                        for j in range(i + 1, len(rule["all_children"])):
+                            a, b = rule["all_children"][i], rule["all_children"][j]
+                            if tuple(sorted([a, b])) not in cooc_set:
+                                all_pairs.append((a, b))
+                    if all_pairs:
+                        forbid_strs = []
+                        for a, b in all_pairs:
+                            forbid_strs.append(f"(`{a}`, `{b}`)")
+                        lines.append(
+                            f"- 한 인스턴스 안 **금지** 쌍: " + ", ".join(forbid_strs)
+                        )
             exclusive_text = "\n".join(lines) + "\n\n"
 
     # role 카탈로그 텍스트
