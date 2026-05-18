@@ -2655,7 +2655,42 @@ def assemble_hwpx_hybrid(
                     or (next(iter(blank_exemplars.values())) if blank_exemplars else None)
                 )
                 if blank_el is not None:
-                    section_elem.append(deepcopy(blank_el))
+                    # region-aware placement: chapter route는 chapter_anchors[ci] 뒤에 insert.
+                    # body item과 같은 방식. 이전엔 section_elem.append로 chapter 영역 밖
+                    # section 끝에 몰리던 버그 (13.7d region-aware placement 도입 후 비대칭).
+                    _ci_for_blank = (
+                        _chapter_idx_lookup.get(bi_idx, -1)
+                        if _chapter_idx_lookup else -1
+                    )
+                    _blank_copy = deepcopy(blank_el)
+                    # unique id 재할당 (양식 원본 id 중복 방지)
+                    _reassign_unique_ids(_blank_copy, _assembly_id_counter)
+                    _blank_placed = False
+                    if (
+                        _ci_for_blank is not None
+                        and _ci_for_blank >= 0
+                        and _ci_for_blank in chapter_anchors
+                    ):
+                        _anchor_for_blank = chapter_anchors[_ci_for_blank]
+                        _owning_sec_for_blank = _elem_to_section.get(_anchor_for_blank)
+                        if _owning_sec_for_blank is not None:
+                            try:
+                                _children_b = list(_owning_sec_for_blank)
+                                _idx_in_parent_b = _children_b.index(_anchor_for_blank)
+                                _owning_sec_for_blank.insert(_idx_in_parent_b + 1, _blank_copy)
+                                # cursor를 blank로 update → 다음 body item이 blank 뒤에 들어감
+                                chapter_anchors[_ci_for_blank] = _blank_copy
+                                _elem_to_section[_blank_copy] = _owning_sec_for_blank
+                                _blank_placed = True
+                            except (ValueError, AttributeError) as _be_e:
+                                log.warning(
+                                    f"blank line region-aware insert fail "
+                                    f"(ci={_ci_for_blank}, bi_idx={bi_idx}): {_be_e}"
+                                )
+                    if not _blank_placed:
+                        # fallback: chapter context 없음 (shallow route 등) → section_elem 끝
+                        section_elem.append(_blank_copy)
+                        _elem_to_section[_blank_copy] = section_elem
 
         # ── format_rules 적용: AI 앞공백 제거 후 indent_parts로 재구성 ──
         fmt = format_rules.get(role, {})
