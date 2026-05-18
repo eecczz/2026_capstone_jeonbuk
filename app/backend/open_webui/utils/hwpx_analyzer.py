@@ -14502,28 +14502,25 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 **하나의 role에 여러 계층의 내용을 합치지 마세요.**
 소스에서 상위 내용과 하위 내용이 함께 있으면, 상위는 부모 role에, 하위는 children role에 분리하세요.
 
-## ⚠️ chapter title 답습 금지 (root sub-item)
+## ⚠️ chapter title 답습 금지 — 트리 단계 의미 분리
 
-당신이 작성하는 **root sub-item**(트리의 최상위 child, `parent_id=null`인 item)은
-주어진 chapter title을 **그대로 복제하면 안 됩니다**.
+당신이 작성하는 모든 item의 텍스트는 **자기 부모 item의 텍스트와 의미적으로
+구별되는 더 구체적인 sub-내용**이어야 합니다. 부모 텍스트를 그대로 복제하거나
+거의 똑같이 paraphrase 하면 안 됩니다.
 
-- chapter title은 양식 전체의 대제목으로 별도 위치에 이미 박힙니다.
-- 양식의 root role sample은 chapter title보다 **한 단계 더 구체적인 sub-주제** 또는
-  chapter 안의 별도 측면(요약·전략·과제·intro 등)을 다루는 paragraph입니다.
-- root sub-item 텍스트는 chapter title과 의미적으로 다른 sub-주제로 작성하세요.
-  - 예: chapter_title="추진성과 및 평가" → root sample="◈ 공공조달을 통해 글로벌
-    복합위기 극복을 뒷받침..." (구체적 성과 요약체)
-  - 예: chapter_title="2024년 핵심 추진과제" → root sample="[전략1] 활력이 넘치는
-    역동적 조달시장" (구체적 전략 이름)
-  - 예: chapter_title="운영여건 및 보완방향" → root sample은 chapter의 intro
-    또는 첫 sub-단계 (chapter title 그 자체 X)
+특히 **root sub-item**(트리의 최상위 child, `parent_id=null`인 item)은 주어진
+chapter title을 그대로 복제하지 마세요. chapter title은 양식 전체 대제목으로
+별도 위치에 이미 박히고, 당신은 그 아래 트리 자식들만 채웁니다.
 
-양식의 root role sample 텍스트 스타일을 참고해, **chapter title보다 한 단계 좁고
-구체적인 별개 topic**으로 root sub-item을 작성하세요.
+판단 기준 — 양식 role 카탈로그의 sample text를 직접 참고하세요:
+- sample이 chapter title 자체가 아니라 chapter 안의 **별도 측면**(구체적 성과,
+  세부 전략, sub-과제, intro 요약 등)을 보여주면 그 패턴 그대로 따라가세요.
+- chapter title보다 한 단계 좁고 구체적인 sub-주제로 작성하세요.
+- 양식 sample의 스타일·길이·marker는 따르되, 주제는 당신 source의 해당 부분 내용을
+  사용 (스타일 모방, 내용 복제 X).
 
-이 규칙은 트리 모든 단계에 동일하게 적용됩니다: 각 단계는 부모 단계와 의미적으로
-다른 (더 좁고 구체적인) 정보를 담아야 합니다. 같은 정보가 부모와 자식에 중복되면 안
-됩니다.
+이 규칙은 트리 모든 단계에 동일: 부모→자식으로 내려갈수록 더 구체적 정보로
+좁혀져야 하며, 같은 정보가 부모와 자식에 중복되면 안 됩니다.
 
 ## 출력 순서
 
