@@ -3023,6 +3023,25 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 - ❌ **의미 차이만으로 split 금지** — 같은 구조 기능이면 semantic sub-genre 달라도 merge. 단, 마커가 다르면 이 규칙 적용 불가 (마커 분리가 우선)
 - ✓ 이 양식 자체의 paragraph 데이터 + tree 구조 패턴 에서만 추론
 
+## chapter_id 기준 분리 (hard constraint)
+
+각 paragraph entry에 `ch=N`이 표시되어 있습니다.
+- `ch=0, 1, 2, ...`: 양식의 N번째 chapter 안의 paragraph
+- `ch=-1`: chapter 밖 (표지/header/footer/TOC/container/preserve 등)
+
+**같은 marker / 같은 family / 같은 tree 위치라도 chapter_id가 다르면 반드시 다른 cluster로 분리하세요.**
+
+이유: 다른 chapter에 등장하는 paragraph는 양식 안에서 서로 다른 의미 역할입니다.
+- chapter 0의 ◈와 chapter 2의 ◈는 다른 의미 (intro vs strategy 박스 등).
+- chapter 안 paragraph와 ch=-1 paragraph (표지/header)는 같은 marker라도 다른 cluster.
+
+판단 방식:
+- 같은 marker + 같은 chapter_id → 같은 cluster (구조 패턴 같은 경우)
+- 같은 marker + 다른 chapter_id → 다른 cluster (chapter 경계 우선)
+- ch=-1 paragraph끼리는 marker/패턴 같으면 같은 cluster 가능 (표지의 같은 종류 항목 등)
+
+chapter_id를 무시하고 양식 전체 marker만으로 cluster하지 마세요. 같은 chapter 안 paragraph끼리만 cluster.
+
 ## Cluster 개수 — 경제성
 
 - **필요한 만큼만 만들고 singleton 남발 금지**
@@ -3095,12 +3114,16 @@ def build_canonical_clustering_prompt(
 
     table_lines = []
     table_lines.append(
-        "# Paragraph table — idx | L | marker | family | parent | children | siblings | "
+        "# Paragraph table — idx | L | ch | marker | family | parent | children | siblings | "
         "1b_top | 1c_selected | hint | description | paraPr | charPr"
+    )
+    table_lines.append(
+        "# ch = chapter_id (양식의 chapter 번호, 0-based). ch=-1은 chapter 밖 (표지/header/TOC 등)."
     )
     for p in paragraphs:
         idx = p.get("idx")
         level = p.get("level")
+        chapter_id = p.get("chapter_id", -1)
         marker = p.get("marker", "") or ""
         family = p.get("marker_family", "") or ""
         parent = p.get("parent_idx")
@@ -3137,7 +3160,7 @@ def build_canonical_clustering_prompt(
         sibs_str = str(sibs[:6]) if len(sibs) <= 6 else f"{sibs[:6]}+{len(sibs)-6}"
 
         line = (
-            f"{idx} | L{level} | {marker!r} | {family} | "
+            f"{idx} | L{level} | ch={chapter_id} | {marker!r} | {family} | "
             f"parent={parent} | kids={kids_str} | sibs={sibs_str} | "
             f"{top_cands} | sel={selected_role} | hint={hint_idx} | "
             f"{desc!r} | pp={paraPr} | cp={charPr}"
@@ -5144,7 +5167,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 6  # Phase E: phase_e_chapter_planner + chapter_pattern_family cache 통합
+CACHE_SCHEMA_VERSION = 7  # Phase E를 1c 후로 이동 + paragraph에 chapter_id 추가 + 1e chapter-aware
 
 
 def compute_template_hash(template_path: str) -> str:
@@ -17029,6 +17052,86 @@ def parse_chapter_pattern_family_from_llm(llm_response: str) -> dict:
         return {"parse_error": "top-level is not dict", "raw_preview": (llm_response or "")[:200]}
 
     return parsed
+
+
+def assign_chapter_ids_from_phase_e(
+    structure: dict,
+    phase_e_result: dict | None,
+) -> dict:
+    """Phase E의 generation_units idx_range 보고 paragraph에 chapter_id 부여.
+
+    1e canonical clustering 직전에 호출. 1e prompt가 chapter_id를 보고
+    같은 marker라도 다른 chapter면 다른 cluster로 분리.
+
+    chapter_id 의미:
+    - 0-based generation_unit index (양식 chapter 순서: 0, 1, 2, ...)
+    - -1: chapter 밖 (container/TOC/표지/header/footer 등)
+
+    Phase E status가 'ok'/'validation_fallback'이 아니면 모든 paragraph에
+    chapter_id=-1 (1e가 chapter-aware 분리 안 함, 기존 동작과 동일).
+
+    Side effect: structure["paragraphs"][i]["chapter_id"] 부여.
+
+    Args:
+        structure: 1c 결과까지 들고 있는 structure (paragraphs 필요)
+        phase_e_result: Phase E 결과 dict (toc_plan.toc_interpretation.generation_units 사용)
+            또는 None (fallback path)
+
+    Returns:
+        {"assigned": int, "no_chapter": int, "chapter_count": int}
+    """
+    paragraphs = (structure or {}).get("paragraphs") or []
+
+    # Phase E 실패/no_toc/error → 모든 paragraph chapter_id=-1
+    if not phase_e_result or phase_e_result.get("status") not in ("ok", "validation_fallback"):
+        for p in paragraphs:
+            p["chapter_id"] = -1
+        return {"assigned": 0, "no_chapter": len(paragraphs), "chapter_count": 0}
+
+    plan = phase_e_result.get("toc_plan") or {}
+    interp = plan.get("toc_interpretation") or {}
+    gen_units = interp.get("generation_units") or []
+
+    # idx → chapter_id (0-based) 매핑 구성
+    # section 0 only (multi-section은 section 0만 처리 — 사용자 정책 2026-05-17)
+    idx_to_chapter: dict[int, int] = {}
+    for ci, unit in enumerate(gen_units):
+        for span in (unit.get("idx_range") or []):
+            try:
+                sid = int(span.get("section_id", 0))
+                start = int(span.get("start_local_idx"))
+                end = int(span.get("end_local_idx"))
+            except (TypeError, ValueError):
+                continue
+            if sid != 0:
+                continue
+            for idx in range(start, end + 1):
+                idx_to_chapter[idx] = ci
+
+    # paragraph에 chapter_id 부여
+    assigned = 0
+    no_chapter = 0
+    for p in paragraphs:
+        pidx = p.get("idx")
+        if pidx is None:
+            p["chapter_id"] = -1
+            no_chapter += 1
+            continue
+        try:
+            ci = idx_to_chapter.get(int(pidx), -1)
+        except (TypeError, ValueError):
+            ci = -1
+        p["chapter_id"] = ci
+        if ci >= 0:
+            assigned += 1
+        else:
+            no_chapter += 1
+
+    return {
+        "assigned": assigned,
+        "no_chapter": no_chapter,
+        "chapter_count": len(gen_units),
+    }
 
 
 def _phase_e_to_target_unit_plan(phase_e_result: dict, structure: dict) -> dict:
