@@ -1678,19 +1678,58 @@ def assemble_hwpx_hybrid(
             _ad_dec = (ch_obj.get("_debug") or {}).get("adaptation_decision") or {}
             _ad_action = _ad_dec.get("action", "")
             _ad_text = (_ad_dec.get("adapted_title") or "").strip()
+
+            # marker auto-prepend (body items와 동일 path).
+            # AI/code 책임 분리: AI는 의미(title text), code는 양식 marker(형식 일관성).
+            # - AI가 marker 넣었으면 strip → 양식 1f policy로 재부착
+            # - AI가 marker 안 넣었으면 그대로 → 양식 policy로 자동 부착
+            # - sequence marker(Ⅰ/Ⅱ/Ⅲ 등)는 ci를 sibling_index로 사용
+            _ad_text_with_marker = _ad_text  # default (no policy, no_marker, or fallback)
+            _marker_auto_applied = False
+            if _ad_text and _title_role_for_anchor:
+                _title_policy = _marker_policies.get(_title_role_for_anchor) or {}
+                _title_policy_type = (_title_policy.get("policy_type") or "") if _title_policy else ""
+                if _title_policy_type and _title_policy_type != "no_marker":
+                    try:
+                        from open_webui.utils.marker_separator import (
+                            strip_marker as _sm_ct,
+                            generate_expected_marker_normalized as _gem_ct,
+                            reattach_marker as _rm_ct,
+                        )
+                        _stripped = _sm_ct(_ad_text, _title_role_for_anchor, _title_policy)
+                        _ad_text_stripped = (_stripped.get("content") if isinstance(_stripped, dict) else _ad_text) or _ad_text
+                        _expected = _gem_ct(_title_role_for_anchor, _title_policy, ci)
+                        _new_marker = (_expected.get("marker") if isinstance(_expected, dict) else "") or ""
+                        _new_sep = (_expected.get("separator") if isinstance(_expected, dict) else " ") or " "
+                        if _new_marker:
+                            _ad_text_with_marker = _rm_ct(_ad_text_stripped, _new_marker, _new_sep)
+                            _marker_auto_applied = True
+                            log.info(
+                                f"[13.7d marker auto-prepend ci={ci}] "
+                                f"role={_title_role_for_anchor} policy={_title_policy_type} "
+                                f"marker='{_new_marker}' sep='{_new_sep}' "
+                                f"'{_ad_text[:40]}' → '{_ad_text_with_marker[:50]}'"
+                            )
+                    except Exception as _mp_e:
+                        log.warning(
+                            f"[13.7d marker auto-prepend ci={ci}] 실패 — AI text 그대로 사용: {_mp_e}"
+                        )
+                        _ad_text_with_marker = _ad_text
+
             _anchor_norm = " ".join(_anchor_text_preview.split())
-            _title_norm = " ".join(_ad_text.split())
+            _title_norm = " ".join(_ad_text_with_marker.split())
             if not _ad_text:
                 _adapted_title_skip_reason = "empty_adapted_title"
             elif _title_norm == _anchor_norm:
                 _adapted_title_skip_reason = "adapted_matches_anchor"
             else:
                 try:
-                    _replace_text_in_paragraph_elem(_anchor_el, _ad_text, NS)
+                    _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
                     _adapted_title_applied = True
                     log.info(
-                        f"[13.7d ci={ci}] adapted_title applied (action={_ad_action}): "
-                        f"'{_anchor_text_preview[:50]}' → '{_ad_text[:50]}'"
+                        f"[13.7d ci={ci}] adapted_title applied (action={_ad_action}, "
+                        f"marker_auto={_marker_auto_applied}): "
+                        f"'{_anchor_text_preview[:50]}' → '{_ad_text_with_marker[:50]}'"
                     )
                 except Exception as _adapt_e:
                     _adapted_title_skip_reason = f"replace_failed:{_adapt_e}"
