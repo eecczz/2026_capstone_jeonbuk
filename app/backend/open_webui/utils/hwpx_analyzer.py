@@ -10118,10 +10118,23 @@ def extract_chapter_template_plan_seed(
             "region_id": region.get("region_id"),
             "first_paragraph_idx": first_idx,
         }
+
+        # local_title_role을 항상 chapter 첫 paragraph의 role로 기본 채움.
+        # extract_per_chapter_pattern이 _empty_chapter_pattern으로 fallback할 때
+        # (sub-tree 비어있는 chapter 등) local_title_role가 비어버려서, 호출부가
+        # _seed_title_role 등 다른 fallback을 쓰며 잘못된 라벨(예: "section_header")이
+        # downstream으로 흘러가는 문제 방지. 첫 paragraph가 chapter title이라는
+        # invariant은 sub-tree 유무와 무관하게 성립.
+        ch_entry["local_title_role"] = (
+            para_by_idx.get(first_idx, {}).get("role", "") or ""
+        )
+
         if use_local:
             ch_entry["local_pattern"] = ch_pattern_result["local_pattern"]
             ch_entry["local_catalog"] = ch_pattern_result["local_catalog"]
-            ch_entry["local_title_role"] = ch_pattern_result["local_title_role"]
+            # ch_pattern_result에 유효한 local_title_role이 있으면 덮어쓰기 (보통 동일 값)
+            if ch_pattern_result.get("local_title_role"):
+                ch_entry["local_title_role"] = ch_pattern_result["local_title_role"]
             ch_entry["pattern_source"] = "per_chapter_subtree"
         else:
             ch_entry["pattern_source"] = "dominant_type_fallback"
