@@ -10029,6 +10029,50 @@ def extract_chapter_template_plan_seed(
     }
 
 
+def strip_chapter_title_marker(
+    text: str,
+    title_role: str,
+    marker_policy_1f: dict | None,
+) -> str:
+    """chapter title text에서 1f marker_policy의 marker prefix를 제거.
+
+    13.7c AI input 정제용. AI가 marker 답습/형식 변형 위험 없이 chapter
+    의미만 판단하도록 marker 떼고 보냄. 양식 marker는 assembly 단계에서
+    code가 다시 자동 부착 (책임 분리).
+
+    감지 기준: 양식 1f가 그 role에 대해 evidence로 기록한 detected_marker
+    중 하나가 text의 prefix (lstrip 후)면 그 marker + 그 뒤 separator 문자
+    (' ', '.', '\\t', '·') 떼기. 양식 1f가 marker 없다고 보면 (or role 매칭
+    안 되면) text 원본 반환 (graceful).
+    """
+    if not text or not title_role:
+        return text
+    role_entry = next(
+        (
+            r for r in (marker_policy_1f or {}).get("roles", [])
+            if r.get("role") == title_role
+        ),
+        None,
+    )
+    if not role_entry:
+        return text
+    detected = {
+        e.get("detected_marker") for e in role_entry.get("evidence", []) or []
+        if e.get("detected_marker")
+    }
+    if not detected:
+        return text
+    # 긴 marker 우선 (prefix 중복 방지)
+    sorted_markers = sorted(detected, key=len, reverse=True)
+    stripped = text.lstrip()
+    for m in sorted_markers:
+        if stripped.startswith(m):
+            rest = stripped[len(m):]
+            # 양식 separator 문자 (공백/마침표/탭/중점 등) 제거 — marker 직후 일관 형식
+            return rest.lstrip(" \t.·:|)　")
+    return text
+
+
 def _find_dominant_chapter_type(
     chapter_regions: list[dict],
     structure: dict,

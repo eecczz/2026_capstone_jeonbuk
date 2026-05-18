@@ -1536,6 +1536,12 @@ def assemble_hwpx_hybrid(
                 return p_elem, "text_prefix_same_section"
         return None, "no_text_match_in_section"
 
+    # marker_policies 빌드 (chapter_anchors loop의 marker auto-prepend에서 사용).
+    # body items 처리에서도 사용 (line ~2056) — 같은 dict 재사용.
+    from open_webui.utils.hwpx_analyzer import extract_marker_policies
+    _marker_policy_1f = structure.get("marker_policy_1f")
+    _marker_policies = extract_marker_policies(paragraphs_info, marker_policy_1f=_marker_policy_1f)
+
     chapter_anchors: dict = {}  # ci → anchor element
     chapter_anchor_failures: list[dict] = []  # placement_failure list
     _chapter_anchor_debug = []
@@ -2050,9 +2056,7 @@ def assemble_hwpx_hybrid(
     prev_level = None
 
     # marker rewrite: marker_policy 기반으로 AI text의 marker를 교체
-    from open_webui.utils.hwpx_analyzer import extract_marker_policies
-    _marker_policy_1f = structure.get("marker_policy_1f")
-    _marker_policies = extract_marker_policies(paragraphs_info, marker_policy_1f=_marker_policy_1f)
+    # (_marker_policies는 chapter_anchors loop 직전에서 이미 빌드됨 — 같은 dict 재사용)
     _marker_rewrite_log = []
     REWRITE_ALLOWED_POLICIES = {"arabic_sequence", "circled_sequence", "fixed_char"}
 
