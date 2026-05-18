@@ -3154,9 +3154,13 @@ def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
         new_t.text = text
 
     # 13.7d: ctrl 없는 redundant run 제거는 보존 logic. 단 table 포함 run은 보존 (table 자체 keep).
+    # cover table cell처럼 첫 run이 ctrl이고 second run에 first_t가 들어있는 경우,
+    # has_t 체크 없이는 first_t를 set한 run이 통째로 제거되어 결과 텍스트가 사라진다.
+    # 따라서 t element를 가진 run도 보존 (text는 위에서 적절히 set/clear됨).
     runs = p_elem.findall(f"{NS}run")
     for run in runs[1:]:
         has_ctrl = run.find(f"{NS}ctrl") is not None
         has_tbl = any(el.tag == f"{NS}tbl" for el in run.iter())
-        if not has_ctrl and not has_tbl:
+        has_t = any(el.tag == f"{NS}t" for el in run.iter())
+        if not has_ctrl and not has_tbl and not has_t:
             p_elem.remove(run)
