@@ -2985,8 +2985,8 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 
 다음 신호를 종합해서 판단:
 
-- **부모 패턴**: 같은 부모 종류를 가지는 paragraph 는 같은 cluster 후보
-- **자식 패턴**: 같은 자식 구성을 가지는 paragraph 는 같은 cluster 후보
+- **부모 패턴** (강한 신호): 같은 부모 role을 가지는 paragraph 는 같은 cluster 후보. **부모 role이 다르면 hard constraint로 다른 cluster** (자식이 다른 cluster의 부모로 등장하는 일 자체가 불가).
+- **자식 패턴** (약한 hint, 단독 split 금지): 자식 구성이 비슷하면 같은 cluster 후보 가능성 ↑. **단 자식 구성 차이만으로 cluster 분리 X**. optional/repeatable child 때문에 인스턴스마다 자식 수·종류 다른 게 정상. 부모/마커/위계가 같으면 자식 차이 무시하고 통합.
 - **반복 위치 패턴**: 같은 부모 아래에서 **반복적으로 같은 위치/순서/기능**으로 나타나는 paragraph 는 같은 cluster 후보
   - ⚠️ 단순히 같은 부모를 공유한다는 이유만으로 같은 cluster X
   - 같은 부모 아래에서도 서로 다른 구조 슬롯이 있을 수 있음 (예: 시퀀스 본체 vs trailing summary)
@@ -2998,11 +2998,13 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 - **마커 없음 + level 0 + 자식 없음 + 그룹 내 paraPrIDRef가 서로 모두 다름** → 각각 고유 서식의 고정 슬롯이므로 **반드시 별도 클러스터로 분리** (예: 표지의 제목/날짜/기관명은 각각 다른 서식·역할)
 - 그 외: paraPrIDRef가 다르더라도 마커가 같거나 반복 패턴이 보이면 같은 클러스터 가능.
 
-### 자식 유무 — 단독 split 금지
+### 자식 유무·구성 — 단독 split 절대 금지 (hard constraint)
 
-- ❌ "자식 보유한 인스턴스 vs 자식 없는 인스턴스" 만 보고 다른 cluster 로 split 금지
+- ❌ "자식 보유한 인스턴스 vs 자식 없는 인스턴스" 만 보고 다른 cluster 로 split **절대 금지**
+- ❌ "자식 종류·개수가 다르다"만 보고 다른 cluster 로 split **절대 금지** — 같은 역할의 paragraph도 양식 인스턴스마다 자식 다양성 자연스러움 (optional, repeatable, content variability)
 - ✅ optional child 누락으로 인스턴스마다 자식 수 다를 수 있음 — 정상
-- 자식 유무는 **다른 신호 (부모/형제/위치/반복 패턴)와 종합**해서만 split 판단
+- ✅ 자식 종류가 다른 sub-tree 양상이라도 부모 role / marker family / 위계가 같으면 같은 cluster 통합
+- 자식 신호는 **부모/마커/위계가 같은데도 명백히 다른 구조 슬롯**임이 다른 hard 신호(부모 다름 등)로 증명될 때만 split 보조 신호로 쓰임. 단독 X.
 
 ## 마커 정규화 규칙 (마커 비교 시 반드시 적용)
 
@@ -3023,24 +3025,36 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 - ❌ **의미 차이만으로 split 금지** — 같은 구조 기능이면 semantic sub-genre 달라도 merge. 단, 마커가 다르면 이 규칙 적용 불가 (마커 분리가 우선)
 - ✓ 이 양식 자체의 paragraph 데이터 + tree 구조 패턴 에서만 추론
 
-## chapter_id 기준 분리 (hard constraint)
+## chapter_id 기준 분리 (chapter 내부 paragraph에만 적용)
 
 각 paragraph entry에 `ch=N`이 표시되어 있습니다.
 - `ch=0, 1, 2, ...`: 양식의 N번째 chapter 안의 paragraph
 - `ch=-1`: chapter 밖 (표지/header/footer/TOC/container/preserve 등)
 
-**같은 marker / 같은 family / 같은 tree 위치라도 chapter_id가 다르면 반드시 다른 cluster로 분리하세요.**
+### 기본 룰 (chapter **내부** body paragraph)
 
-이유: 다른 chapter에 등장하는 paragraph는 양식 안에서 서로 다른 의미 역할입니다.
+**chapter 내부 body paragraph는 같은 marker / 같은 family / 같은 tree 위치라도 chapter_id가 다르면 다른 cluster로 분리하세요.**
+
+이유: 다른 chapter에 등장하는 body paragraph는 양식 안에서 서로 다른 의미 역할일 수 있습니다.
 - chapter 0의 ◈와 chapter 2의 ◈는 다른 의미 (intro vs strategy 박스 등).
-- chapter 안 paragraph와 ch=-1 paragraph (표지/header)는 같은 marker라도 다른 cluster.
+- chapter 안 body paragraph와 ch=-1 paragraph (표지/header)는 같은 marker라도 다른 cluster.
+
+### 예외 — chapter root (장 제목 paragraph)
+
+각 chapter의 root paragraph (= 그 chapter_id의 첫 paragraph, level 0, 부모가 ch=-1 container 또는 root)는 chapter 경계를 **정의**하는 paragraph입니다. 이런 chapter root끼리는 다음 조건을 모두 만족하면 **chapter_id 다르더라도 한 cluster로 통합**:
+
+- 같은 marker family (정규화 후)
+- 같은 부모 role (예: TOC/표지 container)
+- 같은 위계 (level 0)
+
+이유: chapter root는 의미상 같은 역할(장 제목). chapter_id로 분리하면 N개 chapter에 대해 N개 singleton cluster가 생기고, 1f marker policy / chapter_types / chapter title marker 부착이 N개 cluster로 파편화되어 chapter title 처리가 깨짐 (예: 4번째 chapter의 마커 부착 실패).
 
 판단 방식:
-- 같은 marker + 같은 chapter_id → 같은 cluster (구조 패턴 같은 경우)
-- 같은 marker + 다른 chapter_id → 다른 cluster (chapter 경계 우선)
-- ch=-1 paragraph끼리는 marker/패턴 같으면 같은 cluster 가능 (표지의 같은 종류 항목 등)
+- **chapter root끼리** (각 chapter 첫 paragraph, level 0, 같은 부모 role): chapter_id 무관 통합 가능 (marker family + 부모 role 같으면)
+- **chapter 내부 body paragraph**: 같은 marker + 같은 chapter_id → 같은 cluster, 같은 marker + 다른 chapter_id → 다른 cluster
+- ch=-1 paragraph끼리: marker/패턴 같으면 같은 cluster 가능
 
-chapter_id를 무시하고 양식 전체 marker만으로 cluster하지 마세요. 같은 chapter 안 paragraph끼리만 cluster.
+chapter root 예외는 **chapter 경계를 정의하는 paragraph에만 적용**. 일반 body paragraph는 위 기본 룰 유지.
 
 ## Cluster 개수 — 경제성
 
@@ -5167,7 +5181,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 10  # cooccurrence_rules instance-aware (variants w/ sample) + pattern_tree multi-variant 경고
+CACHE_SCHEMA_VERSION = 11  # 1e prompt — 자식 약화 + chapter root 예외 (chapter title cross-chapter 통합)
 
 
 def compute_template_hash(template_path: str) -> str:
