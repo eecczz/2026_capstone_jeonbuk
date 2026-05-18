@@ -1704,7 +1704,9 @@ def assemble_hwpx_hybrid(
                         )
                         _stripped = _sm_ct(_ad_text, _title_role_for_anchor, _title_policy)
                         _ad_text_stripped = (_stripped.get("content") if isinstance(_stripped, dict) else _ad_text) or _ad_text
-                        _expected = _gem_ct(_title_role_for_anchor, _title_policy, ci)
+                        # generate_expected_marker_normalized는 1-based sibling_index 기대
+                        # (ci는 0-based enumerate). chapter 순서대로 markers[0..n-1] 매핑.
+                        _expected = _gem_ct(_title_role_for_anchor, _title_policy, ci + 1)
                         _new_marker = (_expected.get("marker") if isinstance(_expected, dict) else "") or ""
                         _new_sep = (_expected.get("separator") if isinstance(_expected, dict) else " ") or " "
                         if _new_marker:
