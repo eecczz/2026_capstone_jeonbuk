@@ -1803,6 +1803,32 @@ def assemble_hwpx_hybrid(
             f"placement_failures={len(chapter_anchor_failures)}"
         )
 
+    # 표지(cover) preserve: chapter title 첫 등장 전의 모든 doc.paragraphs를 통째 preserve.
+    # truncate_xml이 token budget 위해 빈 paragraph(paraPr 296/28 등) 제거 →
+    # 1a paragraphs(224)와 doc.paragraphs(418) 매핑 깨짐 → _is_skip이 1a 기반이라
+    # 양식 doc.paragraphs의 빈 paragraph 못 잡음 → body remove에서 사라지는 버그.
+    # chapter title 첫 anchor 등장 전까지 doc.paragraphs 통째 preserve로 우회.
+    if chapter_anchors:
+        _first_chapter_doc_idx = None
+        for _ci_cover, _anchor_cover in chapter_anchors.items():
+            if _anchor_cover is None:
+                continue
+            _aidx_cover = _doc_para_to_idx.get(id(_anchor_cover), -1)
+            if _aidx_cover < 0:
+                continue
+            if _first_chapter_doc_idx is None or _aidx_cover < _first_chapter_doc_idx:
+                _first_chapter_doc_idx = _aidx_cover
+        if _first_chapter_doc_idx is not None and _first_chapter_doc_idx > 0:
+            _cover_added = 0
+            for _di_cover in range(_first_chapter_doc_idx):
+                if _di_cover not in header_indices:
+                    header_indices.add(_di_cover)
+                    _cover_added += 1
+            log.info(
+                f"[cover preserve] chapter 전 doc paragraph {_cover_added}개 추가 preserve "
+                f"(first_chapter_doc_idx={_first_chapter_doc_idx})"
+            )
+
     # 13.7b: placement_failure ci set — body items 처리 시 skip 위해
     _placement_failed_chapter_indices: set = {
         f["chapter_idx"] for f in chapter_anchor_failures
