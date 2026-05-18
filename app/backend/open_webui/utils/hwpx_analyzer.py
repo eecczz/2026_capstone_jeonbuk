@@ -14502,6 +14502,29 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 **하나의 role에 여러 계층의 내용을 합치지 마세요.**
 소스에서 상위 내용과 하위 내용이 함께 있으면, 상위는 부모 role에, 하위는 children role에 분리하세요.
 
+## ⚠️ chapter title 답습 금지 (root sub-item)
+
+당신이 작성하는 **root sub-item**(트리의 최상위 child, `parent_id=null`인 item)은
+주어진 chapter title을 **그대로 복제하면 안 됩니다**.
+
+- chapter title은 양식 전체의 대제목으로 별도 위치에 이미 박힙니다.
+- 양식의 root role sample은 chapter title보다 **한 단계 더 구체적인 sub-주제** 또는
+  chapter 안의 별도 측면(요약·전략·과제·intro 등)을 다루는 paragraph입니다.
+- root sub-item 텍스트는 chapter title과 의미적으로 다른 sub-주제로 작성하세요.
+  - 예: chapter_title="추진성과 및 평가" → root sample="◈ 공공조달을 통해 글로벌
+    복합위기 극복을 뒷받침..." (구체적 성과 요약체)
+  - 예: chapter_title="2024년 핵심 추진과제" → root sample="[전략1] 활력이 넘치는
+    역동적 조달시장" (구체적 전략 이름)
+  - 예: chapter_title="운영여건 및 보완방향" → root sample은 chapter의 intro
+    또는 첫 sub-단계 (chapter title 그 자체 X)
+
+양식의 root role sample 텍스트 스타일을 참고해, **chapter title보다 한 단계 좁고
+구체적인 별개 topic**으로 root sub-item을 작성하세요.
+
+이 규칙은 트리 모든 단계에 동일하게 적용됩니다: 각 단계는 부모 단계와 의미적으로
+다른 (더 좁고 구체적인) 정보를 담아야 합니다. 같은 정보가 부모와 자식에 중복되면 안
+됩니다.
+
 ## 출력 순서
 
 패턴의 계층 구조를 flat하게 펼친 순서로 출력하세요.
