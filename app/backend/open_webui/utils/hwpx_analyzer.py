@@ -12290,8 +12290,8 @@ def compute_reference_metrics(
 
 def should_split_adaptation_batch(
     prompt_text: str,
-    model_context_char_budget: int = 100000,
-    safety_ratio: float = 0.6,
+    model_context_char_budget: int = 128000,
+    safety_ratio: float = 0.95,
 ) -> bool:
     """13.7c: batch split 동적 기준.
 
@@ -12300,6 +12300,13 @@ def should_split_adaptation_batch(
 
     model_context_char_budget의 safety_ratio 넘으면 split 권고.
     안전 마진은 운영 기준 (의미 하드코딩 아님).
+
+    임계값: 128000 × 0.95 = 121,600자. gpt-5.4 128k context 거의 다 활용
+    (response token ~6000자 여유). 큰 양식 (챕터 수십~수백)에서만 split 발동.
+
+    이전 (100000 × 0.6 = 60000자): 어제 1차 fix로 소스 50000자 입력 후
+    자주 발동 → split path가 overall_source_focus 누락 → 챕터 작전 일관성
+    위험. 임계값 완화로 single batch 유지하면 root 관점 살림.
     """
     if not prompt_text:
         return False
