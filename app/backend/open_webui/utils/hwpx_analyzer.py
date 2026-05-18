@@ -14715,12 +14715,19 @@ text 구성: marker (해당 role의 markers_sample 참고) + separator + 본문 
 
 - **id**: 0부터 시작하는 순서 번호. 빠짐없이 순차 증가 (0, 1, 2, …)
 - **parent_id**: 이 항목의 부모 항목 id
-  - 패턴 트리의 최상위 role (root role)은 `parent_id: null`
-  - root role item이 여러 개 있을 수 있음 — 각각 `parent_id: null`
+  - **`parent_id: null`로 둘 수 있는 role은 패턴 트리의 최상위 role(들) 뿐** (hard constraint).
+  - 패턴 트리에서 자식 role로 분류된 role은 **절대 `parent_id: null`로 두지 마세요**.
+    그 role의 양식 부모 role 인스턴스 id를 parent_id로 명시해야 합니다.
+  - root role이 여러 개 있을 수 있음 — 각각 `parent_id: null` (단 위 hard 룰 충족 시)
   - root가 아닌 항목은 반드시 부모 item의 id를 parent_id로 지정
 - **패턴 트리의 계층 관계를 parent_id로 정확히 표현하세요**
   - root role의 자식은 parent_id = 해당 root의 id
   - 같은 부모 아래 형제 항목은 parent_id가 같음
+  - **자식 role을 root로 박지 마세요** — 양식 트리 구조 위반. 양식 cluster_X가 cluster_Y의
+    자식이면 출력에서도 cluster_X.parent_id는 cluster_Y 인스턴스 id (절대 null X).
+  - 양식 parent의 인스턴스가 N개 필요하면 (양식 instance 갯수 hint 참조) **N개를 모두
+    생성**하세요. 그 자식들을 root에 박아 합치지 마세요. 한 instance에 다 못 박으면
+    parent instance 더 만들어서 분리.
 - role과 text는 양식의 role 카탈로그·format_rules에 따라 결정. role 이름은 양식 카탈로그에 있는 그대로 사용.
 
 ## 중요
@@ -14914,6 +14921,7 @@ def build_section_fill_prompt(
                 "parent": parent,
                 "all_children": all_children,
                 "cooccurred_pairs": cooccurred,
+                "instance_count": rule.get("instance_count", 0),
             })
         if relevant:
             lines = ["## ⚠️ 형제 배타 규칙 (default = 배타, white-list만 공존 허용)\n"]
@@ -14935,7 +14943,13 @@ def build_section_fill_prompt(
                 parent = rule["parent"]
                 parent_marker = role_markers.get(parent, "")
                 parent_marker_str = f" (마커: \"{parent_marker}\")" if parent_marker else ""
+                instance_count = rule.get("instance_count", 0)
                 lines.append(f"\n### 부모: `{parent}`{parent_marker_str}")
+                if instance_count:
+                    lines.append(
+                        f"- 양식 instance 수: **{instance_count}개** "
+                        f"(이 부모 role의 인스턴스를 {instance_count}개 생성 권장)"
+                    )
 
                 child_strs = []
                 for r in rule["all_children"]:
@@ -14979,10 +14993,17 @@ def build_section_fill_prompt(
         marker = info.get("marker", "")
         desc = info.get("description", "")
         sample = info.get("sample", "")
+        count = info.get("count", 0)  # 양식 전체 등장 횟수 (instance 갯수 hint)
         marker_str = f', 마커: "{marker}"' if marker else ""
+        count_str = f', 양식 instance: {count}개' if count else ""
         sample_str = f'\n  예시: "{sample}"' if sample else ""
-        catalog_lines.append(f"- **{role_name}**{marker_str}: {desc}{sample_str}")
-    catalog_text = "\n".join(catalog_lines)
+        catalog_lines.append(f"- **{role_name}**{marker_str}{count_str}: {desc}{sample_str}")
+    catalog_text = (
+        "\n".join(catalog_lines)
+        + "\n\n(`양식 instance: N개`는 양식에서 이 role이 N번 등장했다는 뜻. "
+        "출력 트리에도 가능하면 N개 인스턴스를 만드세요. 한 인스턴스에 다 못 박으면 "
+        "더 만들어서 분리. 인스턴스 부족 시 자식 role을 root로 박는 거 금지.)"
+    )
 
     user_parts = []
     text_block = (
