@@ -947,7 +947,7 @@ def _process_chapter_objects(
 
         # 13.7d: chapter title item을 chapter_anchor_items에 별도 저장
         # body_items 평탄화에서 제외 — assembly가 양식 chapter title element를 anchor로 보존
-        # adapted_title text 교체는 별도 stage (marker/run 보존 위해 보류)
+        # adapted_title text 교체는 별도 stage (13.7d _replace_text)
         if title_item:
             chapter_anchor_items[ci] = title_item
 
@@ -974,20 +974,14 @@ def _process_chapter_objects(
             node_lookup[bi] = nd
             chapter_idx_lookup[bi] = ci
 
-        # 13.7d: adapted_title detection — title_item.text vs 양식 chapter title text
-        # 현재는 양식 chapter title element를 그대로 사용 (text 교체 보류).
-        # adapted_title이 양식과 다르면 _debug.adapted_title_deferred에 기록.
+        # 13.7d: adapted_title은 adaptation_decision에서 가져옴 (assemble path에서 _replace_text로 적용).
+        # 양식 chapter title element는 anchor로 보존 + chapter_anchors loop가 text 교체.
         _adapted_text = title_item.get("text", "") if title_item else ""
         if _adapted_text:
             adapted_title_deferred.append({
                 "chapter_idx": ci,
                 "source_chapter_idx": chapter_obj.get("source_chapter_idx"),
-                "adapted_title": _adapted_text,
-                "note": (
-                    "title text replacement deferred (marker/run 보존 위해 별도 stage). "
-                    "양식 chapter title element 그대로 보존됨. "
-                    "13.7c adaptation_decision.action == 'adapted_title_generate' 시 의미 손실."
-                ),
+                "adapted_title_in_title_item": _adapted_text,
             })
 
         per_chapter.append({
@@ -1139,6 +1133,26 @@ def assemble_hwpx_hybrid(
     from lxml import etree
 
     NS = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+
+    # 13.7d-DIAG: assemble_hwpx_hybrid 진입 mark
+    try:
+        import os as _osd0, json as _jsond0
+        from datetime import datetime as _dtd0
+        _osd0.makedirs("/tmp/hwpx_debug", exist_ok=True)
+        with open("/tmp/hwpx_debug/_d00_assemble_entry.json", "w", encoding="utf-8") as _fd0:
+            _jsond0.dump({
+                "timestamp": _dtd0.now().isoformat(),
+                "content_keys": list(content.keys()),
+                "has_chapters": "chapters" in content,
+                "has_body": "body" in content,
+                "chapters_count": len(content.get("chapters") or []),
+                "body_count": len(content.get("body") or []),
+                "preserve_indices_count": len(preserve_indices) if preserve_indices else 0,
+                "analyzed_sections": list(analyzed_sections) if analyzed_sections else None,
+                "content_only_mode": content_only_mode,
+            }, _fd0, ensure_ascii=False, indent=2, default=str)
+    except Exception as _ed0:
+        pass  # diagnostic only
 
     if isinstance(template_source, str):
         doc = HwpxDocument.open(template_source)
@@ -1526,6 +1540,29 @@ def assemble_hwpx_hybrid(
     chapter_anchor_failures: list[dict] = []  # placement_failure list
     _chapter_anchor_debug = []
 
+    # 13.7d-DIAG: chapter_anchors loop 진입 직전 mark
+    try:
+        import os as _osd1, json as _jsond1
+        from datetime import datetime as _dtd1
+        with open("/tmp/hwpx_debug/_d01_anchor_loop_pre.json", "w", encoding="utf-8") as _fd1:
+            _jsond1.dump({
+                "timestamp": _dtd1.now().isoformat(),
+                "_chapter_proc_truthy": bool(_chapter_proc),
+                "_chapter_proc_keys": list(_chapter_proc.keys()) if isinstance(_chapter_proc, dict) else None,
+                "_chapter_objects_truthy": bool(_chapter_objects),
+                "_chapter_objects_count": len(_chapter_objects) if _chapter_objects else 0,
+                "will_enter_loop": bool(_chapter_proc and _chapter_objects),
+                "_section_top_level_paragraphs_keys": list(_section_top_level_paragraphs.keys()) if isinstance(_section_top_level_paragraphs, dict) else None,
+                "_top_level_paragraphs_count": len(_top_level_paragraphs) if _top_level_paragraphs is not None else None,
+            }, _fd1, ensure_ascii=False, indent=2, default=str)
+    except Exception as _ed1:
+        try:
+            with open("/tmp/hwpx_debug/_d01_anchor_loop_pre_ERROR.txt", "w") as _ef1:
+                import traceback as _tbd1
+                _tbd1.print_exc(file=_ef1)
+        except Exception:
+            pass
+
     if _chapter_proc and _chapter_objects:
         for ci, ch_obj in enumerate(_chapter_objects):
             _pi = ch_obj.get("paragraph_indices") or []
@@ -1632,6 +1669,35 @@ def assemble_hwpx_hybrid(
             if _anchor_doc_idx >= 0 and _anchor_doc_idx not in header_indices:
                 header_indices.add(_anchor_doc_idx)
             _anchor_text_preview = _get_para_text(_anchor_el)[:60]
+
+            # 13.7d-2phase: adapted_title을 chapter title element에 반영 (action 무관).
+            # 사용자 정책: preserve도 chapter title은 결정됨. action_action 검사 제거.
+            # adapted_title이 양식 원본과 다르면 무조건 교체.
+            _adapted_title_applied = False
+            _adapted_title_skip_reason = None
+            _ad_dec = (ch_obj.get("_debug") or {}).get("adaptation_decision") or {}
+            _ad_action = _ad_dec.get("action", "")
+            _ad_text = (_ad_dec.get("adapted_title") or "").strip()
+            _anchor_norm = " ".join(_anchor_text_preview.split())
+            _title_norm = " ".join(_ad_text.split())
+            if not _ad_text:
+                _adapted_title_skip_reason = "empty_adapted_title"
+            elif _title_norm == _anchor_norm:
+                _adapted_title_skip_reason = "adapted_matches_anchor"
+            else:
+                try:
+                    _replace_text_in_paragraph_elem(_anchor_el, _ad_text, NS)
+                    _adapted_title_applied = True
+                    log.info(
+                        f"[13.7d ci={ci}] adapted_title applied (action={_ad_action}): "
+                        f"'{_anchor_text_preview[:50]}' → '{_ad_text[:50]}'"
+                    )
+                except Exception as _adapt_e:
+                    _adapted_title_skip_reason = f"replace_failed:{_adapt_e}"
+                    log.warning(
+                        f"[13.7d ci={ci}] adapted_title 교체 실패 — 양식 원본 유지: {_adapt_e}"
+                    )
+
             _chapter_anchor_debug.append({
                 "chapter_idx": ci,
                 "section_id": _sec_id_of_ch,
@@ -1639,14 +1705,51 @@ def assemble_hwpx_hybrid(
                 "match_method": _anchor_match_method,
                 "section_local_first_idx": _section_local_first_idx,
                 "doc_idx": _anchor_doc_idx,
-                "anchor_text_preview": _anchor_text_preview,
+                "anchor_text_preview": _anchor_text_preview,        # 교체 전 (양식 원본)
                 "title_text_preview": _title_text_for_anchor[:60],
+                "adapted_title_applied": _adapted_title_applied,    # 13.7d
+                "adapted_title_skip_reason": _adapted_title_skip_reason,
                 "status": ch_obj.get("status"),
             })
             log.info(
                 f"[13.7b anchor OK ci={ci}] section={_sec_id_of_ch} method={_anchor_match_method} "
-                f"anchor_text='{_anchor_text_preview}'"
+                f"anchor_text='{_anchor_text_preview}' adapted_title_applied={_adapted_title_applied}"
             )
+
+            # 13.7d-DIAG: 각 ci 처리 결과를 즉시 별도 file에 append (loop 끝까지 안 가도 추적 가능)
+            try:
+                import os as _osd2, json as _jsond2
+                _per_ci_log_path = "/tmp/hwpx_debug/_d02_anchor_per_ci.jsonl"
+                with open(_per_ci_log_path, "a", encoding="utf-8") as _fd2:
+                    _ci_diag = {
+                        "ci": ci,
+                        "section_id": _sec_id_of_ch,
+                        "ch_obj_status": ch_obj.get("status"),
+                        "title_role": _title_role_for_anchor,
+                        "title_marker": _title_marker_for_anchor,
+                        "title_item_text": _title_text_for_anchor[:120],
+                        "anchor_match_method": _anchor_match_method,
+                        "anchor_doc_idx": _anchor_doc_idx,
+                        "anchor_owning_section": _anchor_owning_sec,
+                        "anchor_text_preview": _anchor_text_preview[:120],
+                        "ad_action": _ad_action,
+                        "ad_text": _ad_text[:120],
+                        "ad_decision_present": bool(_ad_dec),
+                        "ad_decision_keys": list(_ad_dec.keys()) if _ad_dec else [],
+                        "adapted_title_applied": _adapted_title_applied,
+                        "adapted_title_skip_reason": _adapted_title_skip_reason,
+                        "anchor_norm": _anchor_norm[:120],
+                        "title_norm": _title_norm[:120],
+                    }
+                    _fd2.write(_jsond2.dumps(_ci_diag, ensure_ascii=False) + "\n")
+            except Exception as _ed2:
+                try:
+                    with open("/tmp/hwpx_debug/_d02_anchor_per_ci_ERROR.txt", "a") as _ef2:
+                        import traceback as _tbd2
+                        _ef2.write(f"\nci={ci}: ")
+                        _tbd2.print_exc(file=_ef2)
+                except Exception:
+                    pass
     if chapter_anchors:
         log.info(
             f"assemble: chapter_anchors set for {len(chapter_anchors)} chapters, "
@@ -1720,6 +1823,36 @@ def assemble_hwpx_hybrid(
             }, _f, ensure_ascii=False, indent=2, default=str)
     except Exception as _dbg_e:
         log.warning(f"[13.7d] anchor debug dump 실패: {_dbg_e}")
+        # 13.7d-DIAG: exception 자체를 별도 file에 traceback 기록
+        try:
+            with open("/tmp/hwpx_debug/_d03_anchor_dump_ERROR.txt", "w") as _efd:
+                import traceback as _tb_dbg
+                _efd.write(f"exception: {_dbg_e}\n\n")
+                _tb_dbg.print_exc(file=_efd)
+        except Exception:
+            pass
+
+    # 13.7d-DIAG: chapter_anchors loop 완전 종료 후 mark
+    try:
+        import os as _osd3, json as _jsond3
+        from datetime import datetime as _dtd3
+        with open("/tmp/hwpx_debug/_d04_anchor_loop_done.json", "w", encoding="utf-8") as _fd3:
+            _jsond3.dump({
+                "timestamp": _dtd3.now().isoformat(),
+                "chapter_anchors_count": len(chapter_anchors),
+                "chapter_anchors_keys": sorted(chapter_anchors.keys()) if chapter_anchors else [],
+                "chapter_anchor_failures_count": len(chapter_anchor_failures),
+                "chapter_anchor_failures": chapter_anchor_failures,
+                "chapter_anchor_debug_count": len(_chapter_anchor_debug),
+            }, _fd3, ensure_ascii=False, indent=2, default=str)
+    except Exception as _ed3:
+        try:
+            with open("/tmp/hwpx_debug/_d04_anchor_loop_done_ERROR.txt", "w") as _ef3:
+                import traceback as _tbd3
+                _ef3.write(f"exception: {_ed3}\n\n")
+                _tbd3.print_exc(file=_ef3)
+        except Exception:
+            pass
 
     # 13.5 unanalyzed section preserve safety
     _unanalyzed_section_debug = {}
@@ -2356,8 +2489,11 @@ def assemble_hwpx_hybrid(
                 continue
 
         # 13.7b §4 outer fallback safety: 만약 사용할 exemplar가 표(tbl) 포함 element이고
-        # chapter_local이 아닌 outer exemplar라면 → skip (양식 chapter title 표가 body로
-        # 떨어지는 wrong 방지). chapter-local exemplars의 표는 chapter 영역 내 의도된 표.
+        # chapter_local이 아닌 outer exemplar라면 → table_kind 조회 후 real_table만 skip.
+        # 양식 chapter title의 진짜 데이터 표가 body로 떨어지는 wrong 방지가 본래 의도.
+        # 1f AI가 판단한 table_kind를 사용 (decorative_box vs real_table).
+        # cluster_5/13/14/15처럼 "박스 형 paragraph"(자기 안에 강조용 tbl 배너 포함)는 통과
+        # 시키고, _set_cloned_element_text의 tbl 안 text 교체 분기로 정상 처리.
         _final_exemplar = exemplars.get(role)
         if _final_exemplar is not None and "__ci" not in role:
             # outer exemplar (chapter-local 아님). 표 포함 여부 확인
@@ -2368,12 +2504,21 @@ def assemble_hwpx_hybrid(
                     _has_tbl_in_exemplar = True
                     break
             if _has_tbl_in_exemplar and _ci_for_role is not None and _ci_for_role >= 0:
-                # chapter 안에서 호출된 outer-fallback이고 그 exemplar가 표 — skip
-                log.warning(
-                    f"[13.7b §4] outer fallback exemplar는 표 포함 — skip. "
-                    f"role={item.get('role')!r} ci={_ci_for_role}. wrong text 방지."
+                # table_kind 조회 (1f AI 판단 결과). missing/decorative_box/not_applicable → 통과
+                _role_orig = item.get("role", "")
+                _policy_for_tk = _marker_policies.get(_role_orig) or {}
+                _table_kind = _policy_for_tk.get("table_kind", "not_applicable")
+                if _table_kind == "real_table":
+                    log.warning(
+                        f"[13.7b §4] outer fallback exemplar는 real_table — skip. "
+                        f"role={_role_orig!r} ci={_ci_for_role}. wrong text 방지."
+                    )
+                    continue
+                # decorative_box / not_applicable / missing → 통과 (1f 판단 신뢰)
+                log.info(
+                    f"[13.7b §4] outer exemplar has tbl but table_kind={_table_kind} — 통과. "
+                    f"role={_role_orig!r} ci={_ci_for_role}."
                 )
-                continue
 
         if content_only_mode:
             # Phase 2: sibling_index 계산 → reattach → rewrite safety net
@@ -2866,28 +3011,46 @@ def _set_cloned_element_text(elem, text: str, NS: str, is_table_box: bool):
 
 
 def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
-    """XML paragraph 요소 내부의 텍스트를 교체합니다. 첫 run만 남기고 나머지 run 제거."""
+    """XML paragraph 요소 내부의 텍스트를 교체합니다.
+
+    13.7d-fix: paragraph 안 descendant t element 전부 처리 (table cell 안 t 포함).
+    양식이 chapter title을 table box로 표현하는 경우, direct run.t만 보면 table 안 text가
+    안 바뀌고 first_run에 새 t가 추가되어 양식 원본 + adapted 둘 다 출력되는 문제 fix.
+
+    동작:
+    - paragraph 안 모든 descendant t element 수집 (table cell 안 t 포함)
+    - 첫 t에 adapted_title 박고 나머지 t의 text 비움
+    - t element가 하나도 없으면 첫 run에 새 t SubElement 추가
+    - ctrl 요소가 있는 run은 보존 (header, footer, pageNum 등)
+    """
     import xml.etree.ElementTree as _stdlib_ET
 
-    runs = p_elem.findall(f"{NS}run")
-    if not runs:
-        return
+    # descendant t element 전부 수집 (table cell 안 포함)
+    t_elems = [el for el in p_elem.iter() if el.tag == f"{NS}t"]
 
-    # 첫 번째 run의 텍스트 교체
-    first_run = runs[0]
-    t_elem = first_run.find(f"{NS}t")
-    if t_elem is not None:
-        t_elem.text = text
-        # t 하위의 탭/특수문자 요소 제거
-        for child in list(t_elem):
-            t_elem.remove(child)
+    if t_elems:
+        # 첫 t element에 adapted_title 박음
+        first_t = t_elems[0]
+        first_t.text = text
+        for child in list(first_t):
+            first_t.remove(child)
+        # 나머지 t element는 text 비우기 (양식 원본 잔재 제거)
+        for t in t_elems[1:]:
+            t.text = ""
+            for child in list(t):
+                t.remove(child)
     else:
-        # python-hwpx는 stdlib ElementTree 사용 → lxml SubElement 불가
-        t_elem = _stdlib_ET.SubElement(first_run, f"{NS}t")
-        t_elem.text = text
+        # t element 하나도 없으면 첫 run에 새 t SubElement 추가
+        runs = p_elem.findall(f"{NS}run")
+        if not runs:
+            return
+        new_t = _stdlib_ET.SubElement(runs[0], f"{NS}t")
+        new_t.text = text
 
-    # ctrl 요소가 있는 run은 보존 (header, footer, pageNum 등)
+    # 13.7d: ctrl 없는 redundant run 제거는 보존 logic. 단 table 포함 run은 보존 (table 자체 keep).
+    runs = p_elem.findall(f"{NS}run")
     for run in runs[1:]:
         has_ctrl = run.find(f"{NS}ctrl") is not None
-        if not has_ctrl:
+        has_tbl = any(el.tag == f"{NS}tbl" for el in run.iter())
+        if not has_ctrl and not has_tbl:
             p_elem.remove(run)

@@ -3661,13 +3661,11 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
 # 1f: Marker policy induction (role-level, post-clustering)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**을 판별하는 전문가입니다.
+MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**과 **표 종류(table_kind)**를 판별하는 전문가입니다.
 
-## 임무
+## 임무 1: marker_policy 판별
 
 각 role에 대해, 해당 role의 text samples를 보고 **일관된 leading marker가 있는지** 판별하세요.
-
-## 판별 기준
 
 1. **각 sample의 텍스트 앞부분**에서 marker 후보를 찾으세요.
    - marker: 텍스트 시작 부분의 기호·번호 (□, ◈, Ⅰ, ➊, 1., 가., *, (1) 등)
@@ -3681,6 +3679,21 @@ MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**�
    - 일부만 있거나 일관성 없음 → `ambiguous`
 
 3. **separator**: marker와 content 사이의 구분자 (공백, `. `, `) ` 등)
+
+## 임무 2: table_kind 판별
+
+각 role에 대해, 해당 role의 sample 중 `tbl` 필드가 있는 sample을 보고 표가 **장식 박스**인지 **진짜 데이터 표**인지 판별하세요. `tbl` 필드는 해당 paragraph가 자기 안에 `<hp:tbl>` element를 자식으로 포함한다는 뜻입니다.
+
+판별 기준:
+- **`decorative_box`**: 표를 텍스트 강조·박스·배너 목적으로 사용. cell 안 텍스트가 paragraph 본문 텍스트와 일치 또는 부분 분할일 뿐, 데이터 구조 X.
+  - 예: paragraph_text="[전략1] 활력이 넘치는 역동적 조달시장", cell_texts=["[전략1] 활력이 넘치는 역동적 조달시장"] (1×1 박스)
+  - 예: paragraph_text="1 업무추진 여건", cell_texts=["1", "", "업무추진 여건"] (1×3 번호+제목 분할)
+  - 예: paragraph_text="2024년 주요업무 추진계획", cell_texts=["", "2024년 주요업무 추진계획", ""] (3×1 상하 padding)
+  - 공통: cell 텍스트 합치면 paragraph 본문과 (공백 제외) 거의 동일. 표가 paragraph의 외피 역할만 함.
+- **`real_table`**: 행/열에 독립적 데이터 (매출표, 일정표, 비교표 등). cell 데이터가 paragraph 본문에 종속 X. 표 구조 자체가 정보의 본질.
+- **`not_applicable`**: 해당 role의 어떤 sample에도 tbl 없음 (`tbl` 필드 자체가 없음). table_kind 판단 불필요.
+
+판별 시 cell 수가 1, 3, 또는 그 이상인 것은 단독 기준 아님 — **cell 안 내용이 paragraph 본문과 의미적으로 일치하는지** 가 핵심.
 
 ## 출력 형식 (JSON만)
 
@@ -3698,7 +3711,9 @@ MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**�
       "evidence": [
         {"sample_idx": 4, "detected_marker": "Ⅰ", "remaining_text": "추진성과 및 평가"},
         {"sample_idx": 21, "detected_marker": "Ⅱ", "remaining_text": "2024년 업무추진 여건 및 방향"}
-      ]
+      ],
+      "table_kind": "decorative_box",
+      "table_kind_reason": "cell 텍스트가 paragraph 본문과 일치 — 박스 강조용"
     }
   ]
 }
@@ -3718,25 +3733,99 @@ MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**�
 - `unknown_sequence`: 위에 해당 안 되는 순차 패턴
 - `no_marker`: marker 없음
 
+## table_kind 목록 (이 중에서만 선택)
+
+- `decorative_box`
+- `real_table`
+- `not_applicable`
+
 ## 규칙
 
-- **모든 role에 대해 빠짐없이 출력**
+- **모든 role에 대해 빠짐없이 출력** (marker_policy + table_kind 둘 다 필수)
 - marker가 확실하지 않으면 `ambiguous`로 표시하세요. 억지로 분류하지 마세요.
 - confidence는 0~1. sample 수가 적으면 낮게 (1개: 0.5 이하, 2개: 0.6~0.7, 3개+: 0.7~0.95)
 - evidence에 각 sample별로 detected_marker를 남기세요 (없으면 null)
+- table_kind가 `not_applicable`이면 table_kind_reason은 null 또는 생략 가능
 - 반드시 JSON만 출력
 """
+
+
+def _extract_paragraph_tbl_info_from_xml(xml_str: str) -> dict:
+    """light_xml에서 각 top-level paragraph(`_idx` 속성 있는 것)의 자식 tbl 정보 추출.
+
+    1f table_kind 판별용. paragraph가 자기 안에 tbl element를 자식으로 가질 때
+    그 tbl이 장식 박스인지 진짜 표인지 AI가 판단할 근거 데이터 제공.
+
+    Returns:
+        {idx (int): {"tbl_count": int, "paragraph_text_preview": str,
+                     "tbl_summaries": [{"row_count", "col_count_max",
+                                        "cell_count", "cell_texts": [str]}]}}
+        tbl 없는 paragraph는 dict에 포함 X.
+    """
+    if not xml_str:
+        return {}
+    try:
+        root = etree.fromstring(xml_str.encode("utf-8")) if isinstance(xml_str, str) else etree.fromstring(xml_str)
+    except Exception as e:
+        log.warning(f"_extract_paragraph_tbl_info_from_xml parse fail: {e}")
+        return {}
+
+    info: dict = {}
+    for p in root.iter(f"{NS_HP}p"):
+        idx_attr = p.get("_idx")
+        if idx_attr is None:
+            continue
+        try:
+            idx = int(idx_attr)
+        except (TypeError, ValueError):
+            continue
+        # 자식 tbl 수집 (paragraph 본인 안의 tbl만; section 다른 paragraph 자식 X)
+        tbls = [c for c in p.iter() if c.tag == f"{NS_HP}tbl"]
+        if not tbls:
+            continue
+        # paragraph 전체 텍스트 (자기 + 자식 tbl 안 t 모두 포함)
+        para_text = "".join(t.text or "" for t in p.iter(f"{NS_HP}t")).strip()
+        tbl_summaries = []
+        for tbl in tbls:
+            rows = list(tbl.iter(f"{NS_HP}tr"))
+            cells = list(tbl.iter(f"{NS_HP}tc"))
+            cell_texts = []
+            for c in cells:
+                ct = "".join(t.text or "" for t in c.iter(f"{NS_HP}t")).strip()
+                cell_texts.append(ct[:80])
+            tbl_summaries.append({
+                "row_count": len(rows),
+                "col_count_max": max(
+                    (len(list(r.iter(f"{NS_HP}tc"))) for r in rows),
+                    default=0,
+                ),
+                "cell_count": len(cells),
+                "cell_texts": cell_texts,
+            })
+        info[idx] = {
+            "tbl_count": len(tbls),
+            "paragraph_text_preview": para_text[:120],
+            "tbl_summaries": tbl_summaries,
+        }
+    return info
 
 
 def build_marker_policy_prompt(
     paragraphs: list[dict],
     idx_texts: dict,
+    light_xml: str = "",
     max_samples_per_role: int = 5,
 ) -> list[dict]:
     """
-    1f: role별 sample text preview → marker policy induction prompt 생성.
+    1f: role별 sample text preview → marker policy + table_kind induction prompt 생성.
+
+    light_xml이 제공되면 각 sample의 tbl 자식 정보를 prompt에 첨부 → AI가
+    table_kind 판별 (decorative_box vs real_table). light_xml 없으면 marker policy만.
     """
     from collections import defaultdict
+
+    # light_xml 있으면 idx별 tbl 정보 추출 (없으면 빈 dict — 모든 sample tbl 없음 처리)
+    paragraph_tbl_info = _extract_paragraph_tbl_info_from_xml(light_xml) if light_xml else {}
 
     # role → sample indices 수집
     role_samples = defaultdict(list)
@@ -3745,16 +3834,23 @@ def build_marker_policy_prompt(
         if role:
             role_samples[role].append(p.get("idx"))
 
-    # role별 text preview 구성
+    # role별 text preview + tbl 정보 구성
     role_entries = []
     for role, idxs in sorted(role_samples.items()):
         samples = []
         for idx in idxs[:max_samples_per_role]:
             text = idx_texts.get(str(idx), idx_texts.get(idx, ""))
-            samples.append({
+            sample_entry: dict = {
                 "idx": idx,
                 "text_preview": text[:80] if text else "(빈 문단)",
-            })
+            }
+            # tbl 정보가 있으면 첨부 (없으면 필드 자체 생략 → AI가 not_applicable로 판단)
+            tbl_info = paragraph_tbl_info.get(idx)
+            if tbl_info is None and isinstance(idx, int):
+                tbl_info = paragraph_tbl_info.get(str(idx))
+            if tbl_info:
+                sample_entry["tbl"] = tbl_info
+            samples.append(sample_entry)
         role_entries.append({
             "role": role,
             "sample_count": len(idxs),
@@ -3763,8 +3859,10 @@ def build_marker_policy_prompt(
 
     user_msg = (
         "## role별 text samples\n\n"
+        "(`tbl` 필드가 있는 sample은 해당 paragraph가 자기 안에 `<hp:tbl>` element를 자식으로 포함.\n"
+        " cell_texts와 paragraph_text_preview를 비교해서 table_kind 판별.)\n\n"
         + json.dumps(role_entries, ensure_ascii=False, indent=2)
-        + "\n\n위 role들의 marker policy를 판별하세요. 반드시 JSON만 출력."
+        + "\n\n위 role들의 marker_policy + table_kind를 판별하세요. 반드시 JSON만 출력."
     )
 
     return [
@@ -7559,12 +7657,19 @@ def extract_marker_policies(
             "style": style,
             "separator": role_separators.get(role, " "),
             "source": "1a",
+            "table_kind": "not_applicable",  # 1a fallback 기본값 — 1f 결과 있으면 아래서 override
         }
 
-    # 1f 결과 병합: verified + explicit인 것만 우선 사용
+    # 1f 결과 병합: verified + explicit인 것만 우선 사용 + table_kind는 항상 보존
     if marker_policy_1f:
         for role_entry in marker_policy_1f.get("roles", []):
             role = role_entry.get("role", "")
+
+            # table_kind는 1f가 판단한 것 항상 우선 (verification 무관 — tbl 구조 사실 기반)
+            _tk_1f = role_entry.get("table_kind") or "not_applicable"
+            if role in result:
+                result[role]["table_kind"] = _tk_1f
+
             status = role_entry.get("marker_policy_status", "")
             verification = role_entry.get("verification", "")
 
@@ -7607,6 +7712,7 @@ def extract_marker_policies(
                     "style": style_1f,
                     "separator": separator_1f,
                     "source": "1f",
+                    "table_kind": _tk_1f,  # 1f가 결정한 table_kind 보존
                 }
 
             elif status == "no_marker" and verification == "not_applicable":
@@ -11278,13 +11384,44 @@ def assert_chapter_object_invariants(chapter_obj: dict) -> list[str]:
 
 
 # action enum
+# 13.7e: title/content 분리 + preserve 제거 schema
+TITLE_ACTIONS = (
+    "adapt_topic_terms",
+    "adapt_role_equivalent_title",
+    "adapt_from_source_block",
+)
+CONTENT_ACTIONS = (
+    "generate_from_source",
+    "generate_with_template_scaffold",
+)
+ROLE_HINTS = ("intro", "status", "issue", "action", "schedule", "summary", "other")
+DEPTH_HINTS = ("shallow", "medium", "deep")
+MATCH_STRENGTHS = ("exact", "close", "partial", "none")
+# 13.7e v2: template-flow / source-surface 분리
+TITLE_SOURCE_FITS = (
+    "supported_as_is",
+    "needs_marker_fill",
+    "needs_topic_adaptation",
+    "needs_role_equivalent_rewrite",
+)
+CHAPTER_TITLE_MODES = (
+    "role_stage_title",
+    "measure_topic_title",
+    "schedule_title",
+    "mixed_title",
+)
+TEMPLATE_TITLE_NATURES = ("generic_role_title", "topic_specific_title")
+SOURCE_GENRE_MATCHES = ("same_genre", "different_genre", "unclear")
+# 13.7c legacy (호환): generate/adapted_title_generate/preserve — 호환 처리만, 새 출력 X
 ADAPTATION_ACTIONS = ("generate", "adapted_title_generate", "preserve")
 PRESERVE_REASONS = (
     "source_gap", "low_confidence", "validation_failed",
     "adaptation_risk", "plan_unavailable", "other",
 )
 CONFIDENCE_LEVELS = ("high", "medium", "low")
-ADAPTATION_DEGREES = ("none", "small", "medium", "large")
+# 13.7e: adaptation_degree에서 'none' 제거 (preserve 없음)
+ADAPTATION_DEGREES = ("small", "medium", "large")
+ADAPTATION_DEGREES_LEGACY = ("none", "small", "medium", "large")  # 호환
 
 
 def build_source_inventory_prompt(
@@ -11437,23 +11574,12 @@ def build_adaptation_plan_prompt(
     broad_source_preview: str = "",
     max_source_preview_chars: int = 10000,
 ) -> list[dict]:
-    """13.7c: chapter mapping batch prompt 생성.
+    """13.7e: chapter mapping batch prompt (template-flow / source-surface 원칙).
 
-    Template-first 흐름:
-    - chapter intent (need)가 frame
-    - source는 chapter need를 채울 evidence inventory (도구)
-    - source의 다른 내용으로 chapter 방향을 바꾸지 않음
-    - source가 chapter need와 안 맞으면 preserve
-
-    Args:
-        source_inventory: parse_source_inventory_from_llm 결과
-                          (summary, available_topics, main_headings, evidence_samples)
-                          — chapter mapping의 frame이 아니라 도구로만 사용
-        chapter_inputs: [{idx, original_title, description, local_pattern_summary,
-                          local_catalog_summary}, ...]
-        broad_source_preview: 참조용 source 일부 (optional, evidence retrieval용)
-
-    Returns: messages list
+    - chapter의 역할/순서/깊이는 template이 결정 (Roman numeral 위치로 고정 X)
+    - 제목 변경 여부는 title_source_fit으로 판단 (topic_specific = 무조건 변경 X)
+    - source는 main_headings / available_topics / evidence_samples / preview에서 선택
+    - chapter set은 동일한 overall_source_focus 공유 (multi-agenda source 대응)
     """
     import json as _json
 
@@ -11476,73 +11602,394 @@ def build_adaptation_plan_prompt(
     _src_preview = (broad_source_preview or "")[:max_source_preview_chars]
 
     system_msg = (
-        "당신은 template chapter 구조 안에 source 내용을 배치하는 도구입니다. "
-        "**Template-first 원칙**: 각 chapter가 요구하는 내용(chapter need)을 먼저 보고, "
-        "source에서 그 need에 맞는 evidence만 골라 사용합니다. "
-        "source가 다른 풍부한 내용을 갖고 있어도 chapter need와 안 맞으면 사용하지 않습니다. "
-        "source가 chapter 방향을 결정하지 못합니다 (chapter need가 frame). "
-        "JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
+        "당신은 template chapter 구조에 source 내용을 배치하고, "
+        "각 chapter의 제목과 본문 생성 계획을 결정하는 도구입니다.\n\n"
+        "**가장 중요한 한 줄:**\n"
+        "제목은 source를 반영하되, chapter의 역할어와 문서 흐름은 template을 따릅니다.\n\n"
+        "Template-flow 우선 원칙:\n"
+        "- chapter의 **역할(role), 순서, 깊이**는 template이 결정합니다. source가 이걸 바꾸지 않습니다.\n"
+        "- chapter role은 **Roman numeral 위치로 고정되지 않습니다.** Ⅱ장이라고 status가 아니고, Ⅲ장이라고 action이 아닙니다.\n"
+        "  original_title과 local_pattern_summary, local_catalog_summary를 우선 봐서 role을 판단합니다.\n"
+        "- source의 heading/제목/표현이 좋아 보여도, template chapter role과 맞지 않으면 그대로 가져오지 않습니다.\n"
+        "- chapter 제목의 **변경 여부**는 'topic_specific 여부'가 아니라 'source와의 적합성(title_source_fit)'으로 결정합니다.\n"
+        "  → original_title이 이미 source와 chapter role에 잘 맞으면 그대로 둡니다.\n"
+        "  → source와 안 맞는 marker/주제어/phrase만 변경합니다.\n\n"
+        "Source focus 일관성:\n"
+        "- 하나의 chapter set은 특별한 이유가 없는 한 동일한 source topic/thread를 중심으로 구성합니다.\n"
+        "- source에 여러 안건/주제가 있더라도, chapter들을 서로 무관한 안건으로 나누지 마세요.\n"
+        "- 먼저 chapter set 전체에 가장 적합한 overall_source_focus를 정하고,\n"
+        "  각 chapter는 그 focus 안에서 role에 맞는 sub-evidence를 선택합니다.\n\n"
+        "제목 구성 공식 (재구성이 필요한 경우):\n"
+        "  adapted_title ≈ [source 도메인 명사] + [template chapter role 어휘]\n\n"
+        "두 가지 실패 모드를 모두 피해야 합니다:\n"
+        "- 실패 A — 보수 함정: source 도메인이 양식과 달라도 양식 marker/주제어를 그대로 두기.\n"
+        "- 실패 B — 과변경 함정: source와 이미 잘 맞는 제목을 'topic_specific'이라는 이유만으로 강제 변경.\n"
+        "  + source 추종 함정: source의 heading/표현을 chapter role 무시하고 그대로 가져오기.\n\n"
+        "그 외 규칙:\n"
+        "- chapter adaptation 단계에서는 preserve action을 사용하지 않습니다.\n"
+        "- 모든 chapter는 반드시 body를 생성합니다. body 안 만드는 옵션은 없습니다.\n"
+        "- source 부족 시 사실을 지어내지 않고 source_gap_flags / missing_source_requirements에 명시합니다.\n"
+        "- 새 chapter를 만들거나 삭제하지 않습니다. chapter_idx는 input과 정확히 일치해야 합니다.\n"
+        "- JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
     )
 
     user_msg = (
-        "**Step 1 — template chapter need 파악 (frame, 우선)**:\n"
-        "각 chapter의 original_title, description, local_pattern_summary, "
-        "local_catalog_summary를 보고 chapter가 어떤 내용을 요구하는지 파악하세요. "
-        "이게 frame입니다.\n\n"
         "[chapters]\n"
         f"{_json.dumps(_ch_brief, ensure_ascii=False, indent=2)}\n\n"
-        "**Step 2 — source evidence retrieval (도구, chapter need에 종속)**:\n"
-        "다음 source inventory를 chapter need 매칭의 도구로만 사용합니다. "
-        "이 inventory가 chapter 방향을 정하지 않습니다.\n\n"
         "[source_inventory]\n"
         f"{_json.dumps(_inv_brief, ensure_ascii=False, indent=2)}\n\n"
         + (f"[broad_source_preview]\n```\n{_src_preview}\n```\n\n" if _src_preview else "")
-        + "**Step 3 — 각 chapter에 대한 결정**:\n"
-        "chapter need에 매칭되는 source evidence만 사용해서 결정하세요.\n\n"
-        "다음 JSON schema로 응답하세요:\n"
+        + "Step 0 — overall_source_focus 결정 (먼저 결정)\n\n"
+        "chapter별 결정을 시작하기 전에, 이 chapter set 전체가 사용할 source 중심 주제를 정합니다.\n"
+        "- source_inventory의 summary / available_topics / main_headings를 보고 chapter set 흐름과\n"
+        "  가장 잘 맞는 thread를 선택합니다.\n\n"
+        "focus의 granularity (매우 중요):\n"
+        "- overall_source_focus는 반드시 하나의 세부 heading일 필요는 없습니다.\n"
+        "- template chapter set이 여러 세부 대책/항목을 요구하는 경우, **하나의 정책 패키지/상위 주제를 focus로 잡고**\n"
+        "  그 안의 세부 대책들을 chapter별로 배분합니다.\n"
+        "  예: 양식 {Ⅰ. 추진배경, Ⅱ. 광역버스 확대, Ⅲ. 차량증편, Ⅳ. 추진일정}이고\n"
+        "      source가 광역버스 종합대책이면 → focus='광역버스 운행 확대 종합대책' (패키지 전체)이지,\n"
+        "      focus='광역버스 확대 및 전용차로 도입' (Ⅱ장 하나만)이 아닙니다.\n"
+        "- 버릴 대상은 **focus 밖의 무관한 안건**이지, **같은 정책 패키지 안의 세부 대책**이 아닙니다.\n"
+        "  예: source에 정책품질관리/방문취업제/문서관리카드 3개 정책 패키지가 있고 양식이 하나의 흐름이면,\n"
+        "      한 패키지만 focus로 선택하고 나머지 패키지는 버립니다. (서로 다른 정책이므로.)\n\n"
+        "추가 가이드:\n"
+        "- source에 여러 안건이 동등하게 있으면, template chapter 흐름(intro→status→issue→action 등)을\n"
+        "  가장 자연스럽게 채울 수 있는 단일 패키지를 선택합니다.\n"
+        "- focus를 정할 수 없거나 서로 다른 정책 패키지를 섞어야 하면 ambiguity_flags에\n"
+        "  'multi_topic_source_mixing_risk' 기록.\n"
+        "- 결과를 overall_source_focus.topic과 overall_source_focus.reason에 기록합니다.\n\n"
+        "Step 1 — chapter role + chapter_title_mode 파악\n\n"
+        "각 chapter의 original_title, description, local_pattern_summary, local_catalog_summary를 보고\n"
+        "다음 두 분류를 합니다. **Roman numeral 위치를 무시하고** 제목과 패턴 자체를 봅니다.\n\n"
+        "template_role_hint enum (대표 어휘):\n"
+        "- intro:    배경/도입/개요/목적/추진경과/검토배경\n"
+        "- status:   현황/성과/평가/실태/쟁점/여건/추진경과\n"
+        "- issue:    쟁점/검토/입장/문제점/회고/개선방향/보완방향\n"
+        "- action:   과제/방안/조치/개선/대응/추진계획/추진과제/도입/확대/구축/시행\n"
+        "- schedule: 일정/타임라인/단계별 추진\n"
+        "- summary:  요약/정리/총평/마무리/결론\n"
+        "- other:    위에 맞지 않음. role_hint_evidence에 자유 설명.\n"
+        "  (제목 전체의 dominant role을 봅니다. 끝 단어 하나로만 판단 X.\n"
+        "   '현황 및 개선방향', '운영여건 및 보완방향'처럼 status+방향성 결합형은 status/issue에 자연스럽습니다.)\n\n"
+        "chapter_title_mode enum (제목의 의미적 성격):\n"
+        "- role_stage_title:    문서 단계/역할 중심 제목. 추진배경, 추진성과 및 평가,\n"
+        "                       업무추진 여건 및 방향, 핵심 추진과제, 향후계획 등.\n"
+        "                       → role은 stage 어휘로 결정.\n"
+        "- measure_topic_title: **구체 대책/조치 중심** 제목. 도메인 명사 + **action을 함의하는 verb stem**\n"
+        "                       (도입/확대/증편/구축/시행/추진/도출/마련/정비/강화 등)이 결합된 경우.\n"
+        "                       예: '광역버스 확대 및 전용차로 도입', '차량증편 및 안전인력 확대',\n"
+        "                           '외국국적동포 방문취업제 도입'.\n"
+        "                       **반례 (measure_topic_title이 아님):**\n"
+        "                       · '광역버스 운영 현황' → role_stage_title (with domain marker).\n"
+        "                       · '광역버스 이용 실태 및 문제점' → mixed_title 또는 role_stage_title.\n"
+        "                       (도메인 명사는 있지만 대책 verb stem이 없고 status/issue 역할어가 dominant.)\n"
+        "- schedule_title:      일정 중심 제목. 주요 대책별 추진일정, 추진일정, 단계별 일정 등.\n"
+        "- mixed_title:         위 성격이 둘 이상 결합. role은 dominant 성격으로 판단.\n\n"
+        "**role 판단 원칙 — 제목 구조 분해**:\n"
+        "도메인 명사와 역할어를 분리해서 봅니다. chapter_title_mode는 role 결정의 **단축키가 아닙니다**.\n"
+        "  [도메인 명사 / marker / phrase]  +  [역할어]  =  제목\n"
+        "역할어 → role 매핑:\n"
+        "  · 확대/도입/증편/구축/시행/추진/마련 등 → action\n"
+        "  · 현황/실태/성과/평가/여건 등 → status\n"
+        "  · 문제점/쟁점/검토/입장/회고 등 → issue\n"
+        "  · 일정/타임라인/단계별 등 → schedule\n"
+        "  · 배경/도입경과/개요 등 → intro\n"
+        "  · 요약/정리/마무리/결론 등 → summary\n"
+        "cross-validation: chapter_title_mode와 역할어 분석이 같은 role을 가리키면 강한 신호.\n"
+        "  예: measure_topic_title + action verb stem ('확대/도입') → action 확정.\n"
+        "  예: role_stage_title + status 어휘 ('현황 및 개선방향') → status 확정.\n"
+        "  둘이 어긋나면 역할어 분석을 우선 (chapter_title_mode 재분류 검토).\n\n"
+        "depth_hint enum: shallow / medium / deep.\n\n"
+        "Step 2 — template 제목의 marker/phrase 분해\n\n"
+        "분류 (두 종류):\n"
+        "- generic_role_title: marker도 양식 결합 phrase도 없는 순수 boilerplate.\n"
+        "  예: '추진성과 및 평가', '검토배경', '향후계획', '추진배경', '요약'.\n"
+        "- topic_specific_title: marker가 있거나 양식 결합 phrase가 있음 (둘 중 하나라도).\n"
+        "  marker 예: '2024년', '○○○', '[기관명]', '부동산정책'(도메인 명사 슬롯).\n"
+        "  양식 결합 phrase 예: '업무추진 여건 및 방향', '핵심 추진과제'.\n"
+        "  도메인 콘텐츠 제목도 topic_specific에 포함 (예: '광역버스 확대 및 전용차로 도입').\n\n"
+        "분해 (필드별 기록):\n"
+        "- genre_markers: 슬롯 형태로 깔끔히 제거/치환/채움 가능한 marker. 없으면 빈 배열.\n"
+        "    예: ['2024년'], ['○○○'], ['부동산정책'].\n"
+        "    '광역버스 확대 및 전용차로 도입'은 marker로 분해할 거리가 없으므로 빈 배열.\n"
+        "- template_phrase_signal: 양식 결합 boilerplate phrase 또는 null.\n"
+        "    예: '업무추진 여건 및 방향', '핵심 추진과제'.\n"
+        "    이미 도메인 콘텐츠로 작성된 제목('광역버스 확대 및 전용차로 도입')은 null.\n\n"
+        "흔한 오분류 주의:\n"
+        "- '업무추진'은 단독으로는 행정 보편 흐름어. 슬롯형 토큰으로 1:1 치환 대상이 아닙니다.\n"
+        "  '업무추진 여건 및 방향' 전체가 양식 결합 신호이므로 template_phrase_signal로 잡습니다.\n"
+        "- '광역버스', '외국국적동포'처럼 이미 도메인 콘텐츠가 들어간 제목은 양식 결합 phrase가 아닙니다.\n"
+        "  marker도 phrase도 없는 'pure domain content title' 입니다.\n\n"
+        "Step 3 — source 장르 판정\n\n"
+        "source_genre_match:\n"
+        "- same_genre: source가 양식과 동일한 문서 종류.\n"
+        "- different_genre: source가 다른 종류.\n"
+        "- unclear: 판단 어려움. **source 표지/목차/상위 제목만으로 장르 판단이 불가능할 때만** 사용.\n"
+        "  unclear여도 template_phrase_signal이 없고 markers만 있는 제목은 adapt_topic_terms를 우선합니다.\n"
+        "source_genre_reason에 판단 근거를 자유 서술. 예: '양식은 연간 업무계획형, source는 회의자료'.\n\n"
+        "Step 4 — chapter별 source 조각 선택\n\n"
+        "각 chapter에 대해 overall_source_focus 내에서 chapter role과 맞는 조각을 선택합니다.\n\n"
+        "mixed role heading 처리:\n"
+        "- source의 한 main_heading이 status+action 등 여러 성격을 섞고 있을 수 있습니다.\n"
+        "  parent 전체를 한 role로 단정하지 말고, 그 안의 sub-evidence 중 chapter role에 맞는 조각만 선택.\n"
+        "- 한 source heading의 모든 내용을 한 chapter에 몰아넣지 마세요. 다른 chapter도 사용할 수 있게 분배.\n\n"
+        "선택한 조각은 supporting_evidence에 기록. 부족하면 source_gap_flags에 명시.\n\n"
+        "Step 5 — title_source_fit 판정 + adapted_title 결정 (가장 중요)\n\n"
+        "**제목 변경 여부는 title_source_fit이 결정합니다 (topic_specific 여부가 아님).**\n\n"
+        "title_source_fit enum:\n"
+        "- supported_as_is:\n"
+        "    original_title을 **그대로** 사용합니다. **adapted_title은 original_title과 정확히 같아야 합니다.**\n"
+        "    (보정/약간 수정은 supported_as_is가 아닙니다. needs_topic_adaptation으로 보내세요.)\n"
+        "    조건: original_title의 핵심 주제어가 source(특히 overall_source_focus)와 맞고,\n"
+        "         chapter role도 일치하며, markers/placeholder가 없거나 source 환경과 동일.\n"
+        "    예: source가 광역버스 대책 문서 + 양식 'Ⅱ. 광역버스 확대 및 전용차로 도입'\n"
+        "      → supported_as_is, adapted_title='광역버스 확대 및 전용차로 도입' (정확히 동일).\n"
+        "    예: '추진배경', '추진성과 및 평가', '주요 대책별 추진일정' 같은 generic 또는\n"
+        "      source-compatible 제목 + markers 없음 → supported_as_is.\n"
+        "- needs_marker_fill:\n"
+        "    ○○○, [기관명], <연도> 같은 placeholder만 채우면 됨. base phrase는 손대지 않음.\n"
+        "    예: '○○○ 추진성과 및 평가' → '정책품질관리제도 추진성과 및 평가'.\n"
+        "- needs_topic_adaptation:\n"
+        "    base phrase의 의미는 유지하면서 표면 세부(주제어/연도/기관 또는 공식 명칭/표현)를 보정.\n"
+        "    두 하위 패턴 모두 이 enum에 들어감:\n"
+        "      (a) marker swap: '2024년 → 2025년', '부동산정책 → 정책품질관리'.\n"
+        "          예: '2024년 부동산정책 추진방향' + 2025년 정책품질관리 source\n"
+        "              → '2025년 정책품질관리 추진방향'.\n"
+        "      (b) wording precision fix: 핵심 의미 유지하며 source 공식 명칭/정확 표현으로 보정.\n"
+        "          예: '광역버스 확대 및 전용차로 도입' + source가 '광역버스 운행 확대' 표기 사용\n"
+        "              → '광역버스 운행 확대 및 전용차로 도입'.\n"
+        "          예: '업무추진 여건 및 방향' + same_genre source의 정확 표현\n"
+        "              → '정책품질관리 운영여건 및 방향'.\n"
+        "    공통 패턴: base phrase의 dominant role/의미는 그대로, 표면 token만 source 표준으로 보정.\n"
+        "    **과변경 방지 (매우 중요):**\n"
+        "      needs_topic_adaptation은 제목의 **구조와 dominant role을 유지한 채 source와 불일치하는 token만\n"
+        "      최소 수정**하는 action입니다. **새로운 대책/범위/하위항목을 제목에 추가하지 마세요.**\n"
+        "      OK: '광역버스 확대 및 전용차로 도입' → '광역버스 운행 확대 및 전용차로 도입' (token 정확화).\n"
+        "      금지: '광역버스 확대 및 전용차로 도입' → '광역버스 운행 확대, 차고지 정비 및 전용차로 종합대책'\n"
+        "          (범위 확장 — 차고지 정비는 새 하위항목 추가).\n"
+        "      범위 확장이 필요해 보이면 needs_role_equivalent_rewrite로 넘어가는지 재검토.\n"
+        "      어절 수가 크게 늘거나 새 명사가 들어가면 wording precision fix가 아닐 가능성 큼.\n"
+        "    구분: phrase 자체를 새로 짜야 하면 needs_role_equivalent_rewrite로 가세요.\n"
+        "- needs_role_equivalent_rewrite:\n"
+        "    template_phrase_signal이 있고 source 장르가 다르며 original이 source와 직접 맞지 않음.\n"
+        "    base phrase를 그대로 둘 수 없고 role 동등 제목으로 재구성 필요.\n"
+        "    예: '2024년 업무추진 여건 및 방향' + different_genre source (회의자료)\n"
+        "      → '문제정책 관리제도 운영여건 및 개선방향'.\n\n"
+        "title_action enum (title_source_fit에서 derived):\n"
+        "- adapt_topic_terms:\n"
+        "    title_source_fit이 supported_as_is / needs_marker_fill / needs_topic_adaptation일 때.\n"
+        "    base phrase 유지, markers/placeholder/표현 세부만 처리.\n"
+        "    supported_as_is는 adapted_title == original_title 강제.\n"
+        "- adapt_role_equivalent_title:\n"
+        "    title_source_fit이 needs_role_equivalent_rewrite일 때.\n"
+        "    template role 어휘 유지 + source 도메인 명사 흡수.\n"
+        "    공식: adapted_title ≈ [source 도메인 명사] + [template chapter role 어휘].\n"
+        "    source heading을 그대로 복사하지 말고, template role 어휘로 마감.\n\n"
+        "content_action enum:\n"
+        "- generate_from_source: chapter role에 맞는 source evidence가 충분.\n"
+        "- generate_with_template_scaffold: source evidence가 부분적으로 부족.\n"
+        "  source_gap_flags / missing_source_requirements 명시. 사실 날조 금지.\n\n"
+        "제목 갱신 규칙 (반드시 따를 것):\n"
+        "- template_title_nature가 topic_specific이어도 title_source_fit이 supported_as_is이면 adapted_title은\n"
+        "  original_title과 같을 수 있습니다. ('topic_specific = 무조건 변경'은 아닙니다.)\n"
+        "- adapted_title이 original_title과 반드시 달라야 하는 경우는 title_source_fit이\n"
+        "  needs_marker_fill / needs_topic_adaptation / needs_role_equivalent_rewrite일 때.\n"
+        "- needs_marker_fill: placeholder/marker만 정확히 채움. 나머지는 손대지 말 것.\n"
+        "- needs_topic_adaptation: 주제어/연도/기관 교체. base phrase 유지.\n"
+        "- needs_role_equivalent_rewrite: phrase 재구성. source 도메인 + template role 어휘.\n"
+        "- source 장르가 양식과 같은데 markers만 다르면 needs_topic_adaptation (적극 갱신 X, 깔끔 치환).\n"
+        "- generic_role_title + markers 없음 + role 일치면 거의 항상 supported_as_is.\n\n"
+        "anti-pattern (절대 금지):\n"
+        "- source와 이미 잘 맞는 제목을 'topic_specific'이라는 이유만으로 강제 변경.\n"
+        "  예: source가 광역버스 대책 문서인데 '광역버스 확대 및 전용차로 도입'을 '주요 대책 추진방향' 식으로\n"
+        "    오히려 generic하게 바꾸기 → 금지.\n"
+        "- title_source_fit이 supported_as_is인데 adapted_title을 다르게 작성하기 → 금지.\n"
+        "- topic_specific_title을 source와 다른 상태로 그대로 두기 (markers 미처리).\n"
+        "- 양식 phrase 슬롯에 source 도메인 명사를 강제 1:1 치환 ('업무추진' → '정책품질').\n"
+        "- source의 heading/표현을 chapter role 무시하고 그대로 가져오기.\n"
+        "- chapter_title_mode='measure_topic_title'인데 status/issue role로 보인다면, **먼저 chapter_title_mode\n"
+        "  분류가 맞는지 재검토**하세요. 실제로 현황/실태/문제점이 dominant이면 measure_topic_title이 아니라\n"
+        "  role_stage_title 또는 mixed_title일 가능성이 큽니다 (action verb stem이 없으니까).\n"
+        "  반대로 진짜 action verb stem(도입/확대/증편 등)이 있는데 status/issue로 분류한 거라면 role을 action으로 수정.\n"
+        "- Roman numeral 위치만 보고 role을 결정 (Ⅱ=status, Ⅲ=action 같은 위치 의존).\n"
+        "- chapter Ⅰ/Ⅱ/Ⅲ이 서로 다른 source 안건을 다루기 (overall_source_focus 위반).\n"
+        "- 한 source heading의 모든 내용을 한 chapter에 몰아넣기.\n"
+        "- 새 chapter 생성, chapter 삭제.\n\n"
+        "JSON schema:\n"
         "{\n"
+        '  "overall_source_focus": {\n'
+        '    "topic": "이 chapter set이 사용하는 중심 source 주제. 예: 문제정책 관리제도, 광역버스 대책.",\n'
+        '    "reason": "왜 이 topic을 선택했는지. template chapter 흐름과의 적합성 근거."\n'
+        "  },\n"
         '  "chapter_decisions": [\n'
         "    {\n"
         '      "chapter_idx": int,\n'
-        '      "action": "generate" | "adapted_title_generate" | "preserve",\n'
-        '      "adapted_title": "..." | null,\n'
-        '      "preserved_aspects": [\n'
-        '        {"aspect": "chapter need 중 어느 측면이 보존됐는지 자유 텍스트",\n'
-        '         "template_evidence": "template description/local_pattern/original_title에서 인용"}\n'
+        '      "template_role_hint": "intro|status|issue|action|schedule|summary|other",\n'
+        '      "depth_hint": "shallow|medium|deep",\n'
+        '      "role_hint_evidence": "template 근거로 chapter role 설명. Roman numeral 위치가 아닌 제목/패턴 근거.",\n'
+        '      "chapter_title_mode": "role_stage_title|measure_topic_title|schedule_title|mixed_title",\n'
+        '      "template_title_nature": "generic_role_title|topic_specific_title",\n'
+        '      "genre_markers": ["슬롯형 marker. 없으면 빈 배열."],\n'
+        '      "template_phrase_signal": "양식 결합 phrase 또는 null.",\n'
+        '      "source_genre_match": "same_genre|different_genre|unclear",\n'
+        '      "source_genre_reason": "장르 판단 근거.",\n'
+        '      "title_source_fit": "supported_as_is|needs_marker_fill|needs_topic_adaptation|needs_role_equivalent_rewrite",\n'
+        '      "title_fit_reason": "왜 이 source_fit으로 판정했는지. original_title 핵심어와 source의 관계 명시.",\n'
+        '      "title_action": "adapt_topic_terms|adapt_role_equivalent_title",\n'
+        '      "adapted_title": "title_source_fit=supported_as_is면 original_title과 **정확히 같아야** 함 (글자 단위 일치). needs_marker_fill / needs_topic_adaptation / needs_role_equivalent_rewrite이면 original_title과 달라야 함.",\n'
+        '      "title_adaptation_reason": "어떤 처리(유지/marker채움/주제어교체/재구성)를 했는지 명시.",\n'
+        '      "content_action": "generate_from_source|generate_with_template_scaffold",\n'
+        '      "ordering_hint": {\n'
+        '        "template_position": "first|middle|last",\n'
+        '        "debug_merge_hint": [int]\n'
+        "      },\n"
+        '      "preserved_template_aspects": [\n'
+        '        {"aspect": "유지된 role/intent", "template_evidence": "근거"}\n'
         "      ],\n"
         '      "adapted_aspects": [\n'
-        '        {"original": "template 측 표현", "adapted": "source 측 표현",\n'
-        '         "reason": "...", "source_evidence": "source 인용/근거"}\n'
+        '        {"original": "template 표현", "adapted": "source 표현",\n'
+        '         "reason": "변경 이유", "source_evidence": "근거"}\n'
         "      ],\n"
-        '      "supporting_evidence": ["source에서 chapter need에 맞는 evidence 인용"],\n'
-        '      "counter_evidence": ["adaptation 위험 신호 (예: chapter need와 source가 어색하게 결합)"],\n'
-        '      "ambiguity_flags": ["..."],\n'
-        '      "adaptation_degree": "none|small|medium|large",\n'
-        '      "confidence": "high|medium|low",\n'
-        '      "preserve_reason": "source_gap|low_confidence|validation_failed|adaptation_risk|plan_unavailable|other" | null,\n'
-        '      "preserve_reason_detail": "free text" | null\n'
-        "    }, ...\n"
+        '      "supporting_evidence": ["chapter role과 맞는 source 조각. overall_source_focus 내 sub-evidence."],\n'
+        '      "counter_evidence": ["adaptation 위험 신호"],\n'
+        '      "source_gap_flags": ["chapter role에 맞는 source 조각 부족"],\n'
+        '      "missing_source_requirements": ["추가로 필요한 source 정보"],\n'
+        '      "ambiguity_flags": ["불일치/위험 신호. role mismatch, multi_topic_source_mixing_risk, position_role_conflict 등"],\n'
+        '      "adaptation_degree": "small|medium|large",\n'
+        '      "confidence": "high|medium|low"\n'
+        "    }\n"
         "  ]\n"
         "}\n\n"
-        "원칙 (template-first):\n"
-        "- chapter의 역할/흐름은 chapter need로 결정됩니다. source가 결정하지 않음.\n"
-        "- source에서 chapter need에 맞는 evidence만 사용. source의 다른 내용은 무시.\n"
-        "- chapter need와 source가 안 맞으면 action='preserve', preserve_reason='source_gap'.\n"
-        "- title adaptation은 chapter intent를 보존하면서 source의 구체 주제를 incorporate.\n"
-        "  예: chapter '목적' + source '정책품질관리' → adapted_title '정책품질관리 평가 목적' (intent 보존 + source 구체화).\n"
-        "  반례: source 주제 '정책품질관리'를 chapter intent와 무관하게 8개 chapter에 펼침 (template-first 위반).\n"
-        "- action='generate'면 adapted_title은 original_title과 동일.\n"
-        "- action='adapted_title_generate'면 adapted_title 필수, preserved_aspects/adapted_aspects 채움.\n"
-        "- action='preserve'면 preserve_reason과 preserve_reason_detail 필수.\n"
-        "- confidence high를 주려면 supporting_evidence (generate/adapted_title_generate) 또는 counter_evidence/ambiguity_flags (preserve) 명시 필수.\n"
-        "- counter_evidence와 ambiguity_flags는 모든 action에서 필드 존재. 비어있어도 OK이나 key는 있어야 함.\n"
-        "- adaptation_degree는 self-evaluation. 양식 도메인 가정하지 않음.\n"
+        "판단 원칙:\n"
+        "1. **template-flow가 source-fit보다 우선.** chapter role/순서/깊이는 template이 결정.\n"
+        "2. **chapter role은 위치가 아니라 original_title과 패턴으로 결정.**\n"
+        "   Ⅱ장이 항상 status가 아니고 Ⅲ장이 항상 action이 아닙니다.\n"
+        "3. **제목 변경 여부는 title_source_fit이 결정.** topic_specific = 무조건 변경이 아닙니다.\n"
+        "4. **chapter set은 단일 overall_source_focus를 공유.** 안건 흩기 금지.\n"
+        "5. chapter_title_mode + template_role_hint cross-validation. 모순되면 재검토.\n"
+        "6. mixed role source heading은 sub-evidence를 chapter role별로 분배.\n"
+        "7. 모든 chapter는 body 생성. source 부족은 scaffold + gap_flags로 처리.\n"
+        "8. preserve action 사용 금지. 새 chapter 생성/삭제 금지.\n"
+        "9. confidence: source 매칭 + role 명확 = high / partial = medium / 도메인 어휘만 = low.\n"
+        "10. unclear는 표지/목차로 판단 불가능할 때만. unclear여도 markers만 있는 제목은 adapt_topic_terms 우선.\n\n"
+        "구체적 가이드 예시:\n"
+        "\n"
+        "[예시 1] 4-chapter 양식 (Ⅱ·Ⅲ 모두 action) — 위치 의존 role 판단 안 됨\n"
+        "  양식 = {Ⅰ. 추진배경, Ⅱ. 광역버스 확대 및 전용차로 도입, Ⅲ. 차량증편 및 안전인력 확대 등, Ⅳ. 주요 대책별 추진일정}\n"
+        "  source = 광역버스 대책 보고서.\n"
+        "  overall_source_focus: topic='광역버스 운행 확대 대책', reason='양식의 4-chapter 흐름과 직접 일치'.\n"
+        "  \n"
+        "  Ⅰ. 추진배경:\n"
+        "    template_role_hint='intro', chapter_title_mode='role_stage_title'.\n"
+        "    genre_markers=[], template_phrase_signal=null, template_title_nature='generic_role_title'.\n"
+        "    title_source_fit='supported_as_is'.\n"
+        "    title_action='adapt_topic_terms', adapted_title='추진배경' (유지).\n"
+        "  \n"
+        "  Ⅱ. 광역버스 확대 및 전용차로 도입:\n"
+        "    template_role_hint='action' (대표 어휘 '확대/도입'). **위치 Ⅱ이지만 status 아님.**\n"
+        "    chapter_title_mode='measure_topic_title'.\n"
+        "    genre_markers=[], template_phrase_signal=null, template_title_nature='topic_specific_title'\n"
+        "      (도메인 콘텐츠 결합이므로).\n"
+        "    title_source_fit='supported_as_is' (source가 광역버스 대책 문서이므로 잘 맞음).\n"
+        "    title_action='adapt_topic_terms', adapted_title='광역버스 확대 및 전용차로 도입' (original과 정확히 동일).\n"
+        "    \n"
+        "    (변형) source가 '광역버스 운행 확대'라는 정확한 표기를 사용한다면:\n"
+        "      title_source_fit='needs_topic_adaptation' (wording precision fix 패턴).\n"
+        "      adapted_title='광역버스 운행 확대 및 전용차로 도입'.\n"
+        "      이 경우는 supported_as_is가 아님 — original_title과 다르기 때문.\n"
+        "  \n"
+        "  Ⅲ. 차량증편 및 안전인력 확대 등:\n"
+        "    template_role_hint='action', chapter_title_mode='measure_topic_title'.\n"
+        "    title_source_fit='supported_as_is', adapted_title='차량증편 및 안전인력 확대 등' (유지).\n"
+        "  \n"
+        "  Ⅳ. 주요 대책별 추진일정:\n"
+        "    template_role_hint='schedule', chapter_title_mode='schedule_title'.\n"
+        "    template_title_nature='generic_role_title', title_source_fit='supported_as_is'.\n"
+        "    adapted_title='주요 대책별 추진일정' (유지).\n"
+        "\n"
+        "[예시 2] 3-chapter 양식 + cross-genre source — phrase 재구성 필요\n"
+        "  양식 = {Ⅰ. 추진성과 및 평가, Ⅱ. 2024년 업무추진 여건 및 방향, Ⅲ. 2024년 핵심 추진과제}\n"
+        "  source = 2005년 수석·보좌관 회의자료 (정책품질관리/방문취업제/문서관리카드 다중 안건).\n"
+        "  overall_source_focus: topic='문제정책 관리제도', reason='양식의 성과/여건/과제 흐름을 모두 채울 수 있는 단일 thread'.\n"
+        "    (방문취업제와 문서관리카드는 흐름 일관성을 위해 버림. multi_topic_source_mixing_risk 회피.)\n"
+        "  \n"
+        "  Ⅰ. 추진성과 및 평가:\n"
+        "    template_role_hint='status', chapter_title_mode='role_stage_title'.\n"
+        "    genre_markers=[], template_phrase_signal=null, template_title_nature='generic_role_title'.\n"
+        "    title_source_fit='supported_as_is', adapted_title='추진성과 및 평가' (유지).\n"
+        "  \n"
+        "  Ⅱ. 2024년 업무추진 여건 및 방향:\n"
+        "    template_role_hint='status', chapter_title_mode='role_stage_title'.\n"
+        "    genre_markers=['2024년'], template_phrase_signal='업무추진 여건 및 방향'.\n"
+        "    source_genre_match='different_genre' (양식=업무계획, source=회의자료).\n"
+        "    title_source_fit='needs_role_equivalent_rewrite'.\n"
+        "    title_action='adapt_role_equivalent_title'.\n"
+        "    좋은 adapted_title: '문제정책 관리제도 운영여건 및 보완방향',\n"
+        "                       '주요 현황 및 제도운영 쟁점',\n"
+        "                       '정책품질관리제도 운영 현황 및 개선방향'.\n"
+        "    조심: '제도보완 방안 및 향후 조치계획' — Ⅱ가 아니라 Ⅲ에 가까움 (action 표현).\n"
+        "  \n"
+        "  Ⅲ. 2024년 핵심 추진과제:\n"
+        "    template_role_hint='action', chapter_title_mode='role_stage_title'.\n"
+        "    genre_markers=['2024년'], template_phrase_signal='핵심 추진과제'.\n"
+        "    title_source_fit='needs_role_equivalent_rewrite'.\n"
+        "    좋은 adapted_title: '제도보완 방안 및 향후 추진과제',\n"
+        "                       '문제정책 관리제도 보완 과제 및 조치계획'.\n"
+        "    나쁜: '제도 보완 및 향후 조치계획' (source heading 그대로 복사).\n"
+        "\n"
+        "[예시 3] same_genre source + marker만 다름 — 깔끔 치환\n"
+        "  양식 chapter = 'Ⅱ. 2024년 부동산정책 추진방향'.\n"
+        "  source = 2025년 정책품질관리 도메인의 정책 추진 보고 (same_genre).\n"
+        "  template_role_hint='action', chapter_title_mode='measure_topic_title' (도메인+대책방향) or 'role_stage_title'.\n"
+        "  genre_markers=['2024년', '부동산정책'], template_phrase_signal=null.\n"
+        "  title_source_fit='needs_topic_adaptation'.\n"
+        "  title_action='adapt_topic_terms', adapted_title='2025년 정책품질관리 추진방향'.\n"
+        "\n"
+        "[예시 4] placeholder만 있는 generic boilerplate — needs_marker_fill\n"
+        "  양식 chapter = 'Ⅰ. ○○○ 추진성과 및 평가'.\n"
+        "  template_title_nature='topic_specific_title' (○○○ marker 존재).\n"
+        "  genre_markers=['○○○'], template_phrase_signal=null.\n"
+        "  title_source_fit='needs_marker_fill'.\n"
+        "  title_action='adapt_topic_terms', adapted_title='정책품질관리제도 추진성과 및 평가'.\n"
+        "\n"
+        "최종 self-check (모든 chapter_decision 작성 후 통과 필수):\n"
+        "0. **변경 여부는 title_source_fit만 결정합니다.**\n"
+        "   template_title_nature는 진단용 라벨일 뿐 변경 여부를 결정하지 않습니다.\n"
+        "   topic_specific_title이어도 title_source_fit='supported_as_is'이면 제목을 그대로 둡니다.\n"
+        "1. **chapter role 판단이 Roman numeral 위치에 끌려가지 않았는가?**\n"
+        "   measure_topic_title인 chapter가 위치 때문에 status/issue로 잘못 분류되지 않았는가?\n"
+        "   위치-role 충돌 시 역할어 분석을 우선 (chapter_title_mode는 단축키가 아닙니다).\n"
+        "2. **adapted_title의 dominant role이 template chapter role family와 맞는가?**\n"
+        "   끝 단어 하나로만 판단 X. 제목 전체의 dominant role을 봅니다.\n"
+        "   - status인데 dominant 표현이 action ('... 방안/조치계획'으로 시종일관) → mismatch.\n"
+        "   - action인데 dominant 표현이 단순 현황 ('... 현황/실태'로 방향성 없이) → mismatch.\n"
+        "   - 허용: status/issue에 '현황 및 개선방향', '운영여건 및 보완방향' 같은 status+방향성 결합형.\n"
+        "3. **title_source_fit과 adapted_title이 일관되는가?**\n"
+        "   - supported_as_is → **adapted_title은 original_title과 정확히 같아야 함 (글자 단위 일치).**\n"
+        "     약간의 수정/보정이라도 있으면 needs_topic_adaptation으로 재라벨.\n"
+        "   - needs_marker_fill → placeholder만 채워짐, 나머지 그대로.\n"
+        "   - needs_topic_adaptation → 주제어/연도/기관 교체 또는 wording precision fix. base phrase 의미 유지.\n"
+        "   - needs_role_equivalent_rewrite → phrase 재구성, template role 어휘로 마감.\n"
+        "4. **모든 chapter가 overall_source_focus.topic 안에서 구성되었는가?**\n"
+        "   chapter들이 서로 다른 정책 패키지로 흩어졌다면 focus 재선택 후 다시 작성.\n"
+        "   같은 정책 패키지 안의 세부 대책 분배는 정상 (focus granularity 확인).\n"
+        "   불가피하게 다른 정책 패키지를 섞었다면 ambiguity_flags='multi_topic_source_mixing_risk' 기록.\n"
+        "5. **source의 heading/표현을 그대로 복사한 chapter가 있다면 chapter role과 dominant 일치하는가?**\n"
+        "   복사인데 role이 다르면 → template role 어휘로 재가공.\n"
+        "6. mixed role source heading의 sub-evidence를 한 chapter에 몰아넣지 않았는가?\n"
+        "7. source가 양식 도메인과 다른데도 markers/phrase가 그대로 남아있는 chapter는 없는가?\n"
+        "\n"
+        "**한 줄 정리: 제목은 source를 반영해야 하지만, chapter의 역할어와 문서 흐름은 template을 따라야 합니다.**\n"
+        "**제목 변경 여부는 'topic_specific 여부'가 아니라 'source와의 적합성(title_source_fit)'으로 결정합니다.**\n"
+        "**supported_as_is는 글자 단위로 original_title과 같아야 합니다. 약간의 보정도 needs_topic_adaptation입니다.**\n"
     )
 
     return [
         {"role": "system", "content": system_msg},
         {"role": "user", "content": user_msg},
     ]
+
 
 
 def parse_adaptation_plan_from_llm(
@@ -11565,6 +12012,7 @@ def parse_adaptation_plan_from_llm(
     _raw = (llm_raw_response or "").strip()
     _result = {
         "chapter_decisions": [],
+        "overall_source_focus": None,  # 13.7e v2: top-level focus
         "_validation": {
             "ok": False,
             "errors": [],
@@ -11596,6 +12044,19 @@ def parse_adaptation_plan_from_llm(
         _result["_validation"]["errors"].append("response_not_object")
         return _result
 
+    # 13.7e v2: top-level overall_source_focus 추출
+    _osf = _parsed.get("overall_source_focus")
+    if isinstance(_osf, dict):
+        _result["overall_source_focus"] = {
+            "topic": _osf.get("topic"),
+            "reason": _osf.get("reason"),
+        }
+    else:
+        _result["overall_source_focus"] = {
+            "topic": None,
+            "reason": "missing_from_llm_output",
+        }
+
     _decisions = _parsed.get("chapter_decisions")
     if not isinstance(_decisions, list):
         _result["_validation"]["errors"].append("chapter_decisions_not_list")
@@ -11626,30 +12087,26 @@ def parse_adaptation_plan_from_llm(
 
 
 def validate_adaptation_decision(decision: dict) -> dict:
-    """13.7c: per-chapter adaptation_decision validation.
+    """13.7e: title/content 분리 + preserve 제거 schema의 validation.
 
-    원칙 (docs/13_7c_plan.md §5.1):
-    - 명백한 case만 hard fail.
-    - heuristic (token overlap, length, substring)은 사용 X.
-    - action별로 다른 요구사항.
-
-    Returns:
-        {
-          "valid": bool,
-          "should_demote": bool,           # preserve로 강등할지
-          "demote_reason": str | None,     # preserve_reason 값 (강등 시)
-          "violations": list[str],
-        }
-
-    decision은 mutate하지 않음. 호출자가 should_demote=True면 별도로
-    decision["action"] = "preserve" + preserve_reason 설정.
+    원칙:
+    - title_action / content_action 둘 다 enum 안.
+    - adapted_title 필수 (non-empty string, 모든 chapter).
+    - title-content 일관성 규칙 enforcement.
+    - validation 실패 → should_demote=True. 호출자가 make_validation_failed_decision으로 변환.
     """
     violations: list[str] = []
 
-    # 1. action enum 확인
-    action = decision.get("action")
-    if action not in ADAPTATION_ACTIONS:
-        violations.append(f"action_invalid: {action!r}")
+    # 1. title_action / content_action enum
+    title_action = decision.get("title_action")
+    content_action = decision.get("content_action")
+    if title_action not in TITLE_ACTIONS:
+        violations.append(f"title_action_invalid: {title_action!r}")
+    if content_action not in CONTENT_ACTIONS:
+        violations.append(f"content_action_invalid: {content_action!r}")
+
+    # action enum 자체가 깨지면 전체 강등
+    if violations:
         return {
             "valid": False,
             "should_demote": True,
@@ -11657,105 +12114,105 @@ def validate_adaptation_decision(decision: dict) -> dict:
             "violations": violations,
         }
 
-    # 2. 공통 필수 필드 (key 존재)
+    # 2. adapted_title 필수 (모든 chapter)
+    adapted_title = decision.get("adapted_title")
+    if not isinstance(adapted_title, str) or not adapted_title.strip():
+        violations.append("adapted_title_required")
+
+    # 3. 공통 필수 키
     for required_key in (
-        "chapter_idx", "confidence", "counter_evidence",
-        "ambiguity_flags", "adaptation_degree",
+        "chapter_idx", "template_role_hint", "depth_hint", "confidence",
+        "counter_evidence", "ambiguity_flags", "adaptation_degree",
     ):
         if required_key not in decision:
             violations.append(f"missing_key:{required_key}")
 
-    # confidence enum
+    # 4. enum 검증
     confidence = decision.get("confidence")
     if confidence not in CONFIDENCE_LEVELS:
         violations.append(f"confidence_invalid: {confidence!r}")
 
-    # adaptation_degree enum (debug-only이지만 enum 검증은 함)
+    trh = decision.get("template_role_hint")
+    if trh is not None and trh not in ROLE_HINTS:
+        violations.append(f"template_role_hint_invalid: {trh!r}")
+
+    dh = decision.get("depth_hint")
+    if dh is not None and dh not in DEPTH_HINTS:
+        violations.append(f"depth_hint_invalid: {dh!r}")
+
     ad = decision.get("adaptation_degree")
     if ad is not None and ad not in ADAPTATION_DEGREES:
         violations.append(f"adaptation_degree_invalid: {ad!r}")
 
-    # counter_evidence와 ambiguity_flags: 필드 존재 + list 타입
-    ce = decision.get("counter_evidence")
-    if not isinstance(ce, list):
-        violations.append("counter_evidence_not_list")
-    af = decision.get("ambiguity_flags")
-    if not isinstance(af, list):
-        violations.append("ambiguity_flags_not_list")
+    # 5. list-type 필드
+    for lk in ("counter_evidence", "ambiguity_flags", "supporting_evidence",
+               "source_gap_flags", "missing_source_requirements",
+               "preserved_template_aspects", "adapted_aspects",
+               "genre_markers"):
+        v = decision.get(lk)
+        if v is not None and not isinstance(v, list):
+            violations.append(f"{lk}_not_list")
 
-    adapted_title = decision.get("adapted_title")
+    # 6. v2: title_source_fit / chapter_title_mode / template_title_nature / source_genre_match 검증
+    tsf = decision.get("title_source_fit")
+    if tsf is not None and tsf not in TITLE_SOURCE_FITS:
+        violations.append(f"title_source_fit_invalid: {tsf!r}")
+
+    ctm = decision.get("chapter_title_mode")
+    if ctm is not None and ctm not in CHAPTER_TITLE_MODES:
+        violations.append(f"chapter_title_mode_invalid: {ctm!r}")
+
+    ttn = decision.get("template_title_nature")
+    if ttn is not None and ttn not in TEMPLATE_TITLE_NATURES:
+        violations.append(f"template_title_nature_invalid: {ttn!r}")
+
+    sgm = decision.get("source_genre_match")
+    if sgm is not None and sgm not in SOURCE_GENRE_MATCHES:
+        violations.append(f"source_genre_match_invalid: {sgm!r}")
+
+    # 7. v2 hard check: title_source_fit=supported_as_is면 adapted_title == original_title (글자 단위)
     original_title = decision.get("original_title", "")
+    if (tsf == "supported_as_is"
+            and isinstance(adapted_title, str)
+            and isinstance(original_title, str)
+            and adapted_title.strip() != original_title.strip()):
+        violations.append(
+            f"supported_as_is_requires_exact_match: "
+            f"adapted={adapted_title!r} original={original_title!r}"
+        )
 
-    # 3. action별 요구사항
-    if action == "generate":
-        # adapted_title is null or equals original_title
-        if adapted_title not in (None, "", original_title):
-            violations.append(
-                f"generate_adapted_title_must_equal_original: "
-                f"adapted={adapted_title!r} original={original_title!r}"
-            )
-        # supporting_evidence non-empty if confidence=high
-        se = decision.get("supporting_evidence")
-        if confidence == "high" and not (isinstance(se, list) and len(se) > 0):
-            violations.append("generate_high_confidence_requires_supporting_evidence")
+    # 8. v2: title_action ↔ title_source_fit 일관성
+    if (tsf == "needs_role_equivalent_rewrite"
+            and title_action not in ("adapt_role_equivalent_title",)):
+        violations.append(
+            f"needs_role_equivalent_rewrite_requires_adapt_role_equivalent_title: "
+            f"got title_action={title_action!r}"
+        )
+    if (tsf in ("supported_as_is", "needs_marker_fill", "needs_topic_adaptation")
+            and title_action != "adapt_topic_terms"):
+        violations.append(
+            f"{tsf}_requires_adapt_topic_terms: got title_action={title_action!r}"
+        )
 
-    elif action == "adapted_title_generate":
-        # adapted_title 필수
-        if not isinstance(adapted_title, str) or not adapted_title.strip():
-            violations.append("adapted_title_required")
-        # preserved_aspects, adapted_aspects 필수 non-empty
-        pa = decision.get("preserved_aspects")
-        if not isinstance(pa, list) or len(pa) == 0:
-            violations.append("preserved_aspects_required_non_empty")
-        aa = decision.get("adapted_aspects")
-        if not isinstance(aa, list) or len(aa) == 0:
-            violations.append("adapted_aspects_required_non_empty")
-        # supporting_evidence non-empty if confidence=high
-        se = decision.get("supporting_evidence")
-        if confidence == "high" and not (isinstance(se, list) and len(se) > 0):
-            violations.append(
-                "adapted_title_generate_high_confidence_requires_supporting_evidence"
-            )
+    # 9. content_action=generate_with_template_scaffold면 confidence high 금지 (source 부족 상태)
+    if content_action == "generate_with_template_scaffold" and confidence == "high":
+        violations.append("scaffold_forbids_confidence_high")
 
-    elif action == "preserve":
-        # preserve_reason / preserve_reason_detail 필수
-        pr = decision.get("preserve_reason")
-        if pr not in PRESERVE_REASONS:
-            violations.append(f"preserve_reason_invalid: {pr!r}")
-        prd = decision.get("preserve_reason_detail")
-        if not isinstance(prd, str) or not prd.strip():
-            violations.append("preserve_reason_detail_required")
-        # counter_evidence 또는 ambiguity_flags 중 하나는 non-empty
-        ce_empty = not (isinstance(ce, list) and len(ce) > 0)
-        af_empty = not (isinstance(af, list) and len(af) > 0)
-        # plan_unavailable은 AI 호출 실패 fallback이므로 둘 다 empty 허용
-        if pr != "plan_unavailable" and ce_empty and af_empty:
-            violations.append(
-                "preserve_requires_counter_evidence_or_ambiguity_flags"
-            )
+    # 10. confidence=high면 supporting_evidence 필수
+    se = decision.get("supporting_evidence")
+    if confidence == "high" and not (isinstance(se, list) and len(se) > 0):
+        violations.append("confidence_high_requires_supporting_evidence")
 
-    # 4. 강등 판단
-    # preserve 자체는 정당 — preserve_reason_detail이 비어도 자동 채움 (강등 X)
-    # 그 외 violations 있으면 강등
+    # 11. adaptation_degree ↔ title_action 약한 일관성 (warn, hard fail X)
+    # supported_as_is + small이 자연. needs_role_equivalent_rewrite + medium/large가 자연.
+    # 단 — strict하게 강제하지 않음 (AI 자유).
+
     if not violations:
         return {
             "valid": True,
             "should_demote": False,
             "demote_reason": None,
             "violations": [],
-        }
-
-    # preserve action에서 preserve_reason_detail만 누락된 경우는 강등 안 함
-    if (
-        action == "preserve"
-        and len(violations) == 1
-        and violations[0] == "preserve_reason_detail_required"
-    ):
-        return {
-            "valid": False,
-            "should_demote": False,
-            "demote_reason": None,
-            "violations": violations,
         }
 
     return {
@@ -11853,28 +12310,78 @@ def normalize_adaptation_decision(
     decision: dict,
     original_title: str,
 ) -> dict:
-    """13.7c: AI 출력 decision을 chapter object._debug.adaptation_decision
-    schema에 맞추도록 normalize. validation 전 호출.
+    """13.7e: AI 출력 decision을 새 title/content 분리 schema에 normalize.
 
-    - missing optional 필드는 default 값으로 채움
-    - original_title 주입
-    - AI가 안 채운 field는 None / [] 로
+    - 옛 schema (action enum) 호환 처리: action='preserve' → title_action='adapt_topic_terms' + content_action='source_gap'
+    - missing optional 필드 default 채움
     """
+    # 옛 action enum 호환 변환
+    legacy_action = decision.get("action")
+    title_action = decision.get("title_action")
+    content_action = decision.get("content_action")
+    if title_action is None or content_action is None:
+        if legacy_action == "preserve":
+            title_action = title_action or "adapt_topic_terms"
+            content_action = content_action or "generate_with_template_scaffold"
+        elif legacy_action == "adapted_title_generate":
+            title_action = title_action or "adapt_role_equivalent_title"
+            content_action = content_action or "generate_from_source"
+        elif legacy_action == "generate":
+            title_action = title_action or "adapt_topic_terms"
+            content_action = content_action or "generate_from_source"
+    # 옛 source_gap → scaffold (소스 부족 시에도 body 생성)
+    if content_action == "source_gap":
+        content_action = "generate_with_template_scaffold"
+
+    # adaptation_degree 'none' → 'small' 변환 (옛 호환)
+    ad = decision.get("adaptation_degree")
+    if ad == "none":
+        ad = "small"
+
     return {
         "chapter_idx": decision.get("chapter_idx"),
         "source_chapter_idx": decision.get("source_chapter_idx", decision.get("chapter_idx")),
         "original_title": original_title,
-        "action": decision.get("action"),
+        # 13.7e 새 schema
+        "title_action": title_action,
+        "content_action": content_action,
+        "template_role_hint": decision.get("template_role_hint"),
+        "depth_hint": decision.get("depth_hint"),
+        "role_hint_evidence": decision.get("role_hint_evidence", ""),
+        "title_adaptation_reason": decision.get("title_adaptation_reason", ""),
         "adapted_title": decision.get("adapted_title"),
-        "preserved_aspects": decision.get("preserved_aspects") or [],
+        # 13.7e v2: title_source_fit + chapter_title_mode + template_title_nature + source_genre_match
+        "title_source_fit": decision.get("title_source_fit"),
+        "title_fit_reason": decision.get("title_fit_reason", ""),
+        "chapter_title_mode": decision.get("chapter_title_mode"),
+        "template_title_nature": decision.get("template_title_nature"),
+        "genre_markers": decision.get("genre_markers") or [],
+        "template_phrase_signal": decision.get("template_phrase_signal"),
+        "source_genre_match": decision.get("source_genre_match"),
+        "source_genre_reason": decision.get("source_genre_reason", ""),
+        # legacy (블록 매칭) 옛 호환 — 보존만, 새 prompt에서는 사용 X
+        "matched_source_block_label": decision.get("matched_source_block_label"),
+        "matched_source_block_role_hint": decision.get("matched_source_block_role_hint"),
+        "matched_source_block_order": decision.get("matched_source_block_order"),
+        "source_block_match_strength": decision.get("source_block_match_strength"),
+        "ordering_hint": decision.get("ordering_hint") or {},
+        "preserved_template_aspects": (
+            decision.get("preserved_template_aspects")
+            or decision.get("preserved_aspects")  # 옛 호환
+            or []
+        ),
         "adapted_aspects": decision.get("adapted_aspects") or [],
         "supporting_evidence": decision.get("supporting_evidence") or [],
         "counter_evidence": decision.get("counter_evidence") or [],
+        "source_gap_flags": decision.get("source_gap_flags") or [],
+        "missing_source_requirements": decision.get("missing_source_requirements") or [],
         "ambiguity_flags": decision.get("ambiguity_flags") or [],
-        "adaptation_degree": decision.get("adaptation_degree"),
+        "adaptation_degree": ad,
         "confidence": decision.get("confidence"),
-        "preserve_reason": decision.get("preserve_reason"),
-        "preserve_reason_detail": decision.get("preserve_reason_detail"),
+        # 옛 호환 필드 (DB tool / debug에서 참조 가능)
+        "action": title_action,  # 옛 코드 호환: action을 title_action로 mirror
+        "preserve_reason": None,
+        "preserve_reason_detail": decision.get("preserve_reason_detail", ""),
     }
 
 
@@ -11883,23 +12390,43 @@ def make_unavailable_decision(
     original_title: str,
     reason_detail: str,
 ) -> dict:
-    """13.7c: AI 호출 실패 시 fallback adaptation_decision.
-
-    전체 chapter를 preserve로 강등할 때 사용.
-    """
+    """13.7e v2: AI 호출 실패 시 fallback. supported_as_is + adapted_title=original_title (글자 일치)."""
     return {
         "chapter_idx": chapter_idx,
         "source_chapter_idx": chapter_idx,
         "original_title": original_title,
-        "action": "preserve",
-        "adapted_title": None,
-        "preserved_aspects": [],
+        "title_action": "adapt_topic_terms",
+        "content_action": "generate_with_template_scaffold",
+        "template_role_hint": "other",
+        "depth_hint": "medium",
+        "role_hint_evidence": "fallback_unavailable",
+        "title_adaptation_reason": "AI 호출 실패 fallback — 양식 원본 유지",
+        "adapted_title": original_title,
+        # v2: title_source_fit + 메타 (supported_as_is — original 그대로)
+        "title_source_fit": "supported_as_is",
+        "title_fit_reason": "fallback — AI 호출 실패로 안전한 supported_as_is로 강등",
+        "chapter_title_mode": "mixed_title",
+        "template_title_nature": "generic_role_title",
+        "genre_markers": [],
+        "template_phrase_signal": None,
+        "source_genre_match": "unclear",
+        "source_genre_reason": "fallback_unavailable",
+        # legacy 호환
+        "matched_source_block_label": None,
+        "matched_source_block_role_hint": None,
+        "matched_source_block_order": None,
+        "source_block_match_strength": "none",
+        "ordering_hint": {"template_position": "middle", "source_block_order": None, "debug_merge_hint": []},
+        "preserved_template_aspects": [],
         "adapted_aspects": [],
         "supporting_evidence": [],
         "counter_evidence": [],
-        "ambiguity_flags": [],
-        "adaptation_degree": None,
+        "source_gap_flags": ["plan_unavailable"],
+        "missing_source_requirements": [reason_detail[:200]],
+        "ambiguity_flags": ["fallback_unavailable"],
+        "adaptation_degree": "small",
         "confidence": "low",
+        "action": "adapt_topic_terms",
         "preserve_reason": "plan_unavailable",
         "preserve_reason_detail": reason_detail,
     }
@@ -11910,22 +12437,46 @@ def make_validation_failed_decision(
     original_title: str,
     violations: list[str],
 ) -> dict:
-    """13.7c: schema validation 실패 시 preserve 강등 decision."""
+    """13.7e v2: schema validation 실패 fallback. supported_as_is + 양식 원본 유지."""
+    detail = "schema_validation_failures: " + "; ".join(violations[:5])
     return {
         "chapter_idx": chapter_idx,
         "source_chapter_idx": chapter_idx,
         "original_title": original_title,
-        "action": "preserve",
-        "adapted_title": None,
-        "preserved_aspects": [],
+        "title_action": "adapt_topic_terms",
+        "content_action": "generate_with_template_scaffold",
+        "template_role_hint": "other",
+        "depth_hint": "medium",
+        "role_hint_evidence": "fallback_validation_failed",
+        "title_adaptation_reason": "validation 실패 fallback — 양식 원본 유지",
+        "adapted_title": original_title,
+        # v2 메타
+        "title_source_fit": "supported_as_is",
+        "title_fit_reason": "fallback — validation 실패로 supported_as_is로 강등",
+        "chapter_title_mode": "mixed_title",
+        "template_title_nature": "generic_role_title",
+        "genre_markers": [],
+        "template_phrase_signal": None,
+        "source_genre_match": "unclear",
+        "source_genre_reason": "fallback_validation_failed",
+        # legacy 호환
+        "matched_source_block_label": None,
+        "matched_source_block_role_hint": None,
+        "matched_source_block_order": None,
+        "source_block_match_strength": "none",
+        "ordering_hint": {"template_position": "middle", "source_block_order": None, "debug_merge_hint": []},
+        "preserved_template_aspects": [],
         "adapted_aspects": [],
         "supporting_evidence": [],
         "counter_evidence": [],
-        "ambiguity_flags": [],
-        "adaptation_degree": None,
+        "source_gap_flags": ["validation_failed"],
+        "missing_source_requirements": [],
+        "ambiguity_flags": ["fallback_validation_failed"],
+        "adaptation_degree": "small",
         "confidence": "low",
+        "action": "adapt_topic_terms",
         "preserve_reason": "validation_failed",
-        "preserve_reason_detail": "schema_validation_failures: " + "; ".join(violations[:5]),
+        "preserve_reason_detail": detail,
     }
 
 
@@ -11935,28 +12486,54 @@ def summarize_adaptation_plan(
     ai_call_info: dict | None = None,
     batch_strategy: str = "single",
     batch_split_reason: str | None = None,
+    overall_source_focus: dict | None = None,
 ) -> dict:
-    """13.7c: _debug_payload["adaptation_plan"] summary 구성."""
-    action_dist = {a: 0 for a in ADAPTATION_ACTIONS}
-    preserve_reason_dist = {r: 0 for r in PRESERVE_REASONS}
+    """13.7e v2: _debug_payload["adaptation_plan"] summary 구성."""
+    title_action_dist = {a: 0 for a in TITLE_ACTIONS}
+    content_action_dist = {a: 0 for a in CONTENT_ACTIONS}
     validation_failure_count = 0
     confidence_counts = {c: 0 for c in CONFIDENCE_LEVELS}
+    role_hint_dist = {r: 0 for r in ROLE_HINTS}
+    depth_hint_dist = {d: 0 for d in DEPTH_HINTS}
+    # v2 새 enum 분포
+    title_source_fit_dist = {f: 0 for f in TITLE_SOURCE_FITS}
+    chapter_title_mode_dist = {m: 0 for m in CHAPTER_TITLE_MODES}
+    template_title_nature_dist = {n: 0 for n in TEMPLATE_TITLE_NATURES}
+    source_genre_match_dist = {g: 0 for g in SOURCE_GENRE_MATCHES}
 
     for d in decisions:
-        a = d.get("action")
-        if a in action_dist:
-            action_dist[a] += 1
-        if a == "preserve":
-            pr = d.get("preserve_reason")
-            if pr in preserve_reason_dist:
-                preserve_reason_dist[pr] += 1
-            if pr == "validation_failed":
-                validation_failure_count += 1
+        ta = d.get("title_action")
+        if ta in title_action_dist:
+            title_action_dist[ta] += 1
+        ca = d.get("content_action")
+        if ca in content_action_dist:
+            content_action_dist[ca] += 1
+        if d.get("preserve_reason") == "validation_failed":
+            validation_failure_count += 1
         c = d.get("confidence")
         if c in confidence_counts:
             confidence_counts[c] += 1
+        rh = d.get("template_role_hint")
+        if rh in role_hint_dist:
+            role_hint_dist[rh] += 1
+        dh = d.get("depth_hint")
+        if dh in depth_hint_dist:
+            depth_hint_dist[dh] += 1
+        # v2 메타 분포
+        tsf = d.get("title_source_fit")
+        if tsf in title_source_fit_dist:
+            title_source_fit_dist[tsf] += 1
+        ctm = d.get("chapter_title_mode")
+        if ctm in chapter_title_mode_dist:
+            chapter_title_mode_dist[ctm] += 1
+        ttn = d.get("template_title_nature")
+        if ttn in template_title_nature_dist:
+            template_title_nature_dist[ttn] += 1
+        sgm = d.get("source_genre_match")
+        if sgm in source_genre_match_dist:
+            source_genre_match_dist[sgm] += 1
 
-    # average confidence는 mode (가장 흔한 등급) 또는 None
+    # average confidence는 mode
     _max_c = max(confidence_counts.values(), default=0)
     _avg = None
     if _max_c > 0:
@@ -11967,12 +12544,21 @@ def summarize_adaptation_plan(
 
     return {
         "source_topic": source_topic,
+        "overall_source_focus": overall_source_focus,  # 13.7e v2: top-level focus
         "chapter_count": len(decisions),
-        "action_distribution": action_dist,
-        "preserve_reason_distribution": preserve_reason_dist,
+        "title_action_distribution": title_action_dist,
+        "content_action_distribution": content_action_dist,
+        # legacy alias (action_distribution = title_action_distribution)
+        "action_distribution": title_action_dist,
+        "title_source_fit_distribution": title_source_fit_dist,
+        "chapter_title_mode_distribution": chapter_title_mode_dist,
+        "template_title_nature_distribution": template_title_nature_dist,
+        "source_genre_match_distribution": source_genre_match_dist,
         "validation_failure_count": validation_failure_count,
         "confidence_distribution": confidence_counts,
         "average_confidence": _avg,
+        "template_role_hint_distribution": role_hint_dist,
+        "depth_hint_distribution": depth_hint_dist,
         "ai_calls": ai_call_info or {},
         "batch_strategy": batch_strategy,
         "batch_split_reason": batch_split_reason,
