@@ -5167,7 +5167,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 9  # cooccurrence_rules에 child_set_variants 추가 — variant 단위 표현
+CACHE_SCHEMA_VERSION = 10  # cooccurrence_rules instance-aware (variants w/ sample) + pattern_tree multi-variant 경고
 
 
 def compute_template_hash(template_path: str) -> str:
@@ -7863,64 +7863,128 @@ def _normalize_marker_type(marker: str) -> str:
     return f"char_{first}"
 
 
-def compute_sibling_cooccurrence_rules(parent_instances: dict) -> list[dict]:
-    """양식 paragraph 전수 분석 — parent별 한 instance 안에 함께 등장한 sibling
-    cluster 쌍 추출 (white-list 데이터).
+def compute_sibling_cooccurrence_rules(
+    paragraphs: list[dict],
+    idx_texts: dict | None = None,
+) -> list[dict]:
+    """양식 paragraph 전수 분석 — parent별 instance-aware variant + sample 추출.
 
-    2b prompt가 "기본 배타 + 양식 관찰 공존만 허용" 룰을 적용하기 위한 데이터.
-    같은 parent의 각 instance마다 자식 cluster set 보고, set 안의 모든 cluster
-    쌍을 cooccurred_pairs에 추가 (instance 간 합집합).
-
-    Args:
-        parent_instances: {parent_role: [{children_set}, ...]}
-                          compute_parent_instance_children 또는
-                          compute_parent_instance_children_by_parent_idx 결과
+    2b prompt가 "기본 배타 + 양식 관찰 variant만 허용" 룰 적용하기 위한 데이터.
+    variant 단위로 분리해서 각 variant에 representative instance sample (marker + text)
+    명시 — AI가 양식 instance와 variant 매핑 직관적으로 보도록.
 
     Returns:
         [{
-          "parent": str,                          # parent role
-          "all_children_clusters": [str, ...],    # 양식에서 관찰된 자식 cluster union
-          "cooccurred_pairs": [[a, b], ...],      # 같은 instance에 함께 등장한 쌍 (정렬됨)
-          "instance_count": int,                  # parent instance 수
+          "parent": str,
+          "all_children_clusters": [str, ...],
+          "cooccurred_pairs": [[a, b], ...],
+          "instance_count": int,
+          "variants": [
+            {
+              "variant_id": "v1",
+              "child_set": [str, ...],     # 정렬된 cluster list
+              "samples": [
+                {"marker": str, "text_preview": str, "first_idx": int},
+                ...                          # variant 안 instance들의 sample (최대 3개)
+              ],
+              "instance_count": int,
+            },
+            ...
+          ],
         }, ...]
 
-    cooccurred_pairs가 빈 list = 완전 배타 (양식에서 어떤 자식 쌍도 함께 등장 X).
-    parent.all_children_clusters 단일 원소 = sibling 1개라 쌍 자체 불가능 → 빈 list.
+    variant 단위 분리 기준: 같은 child set (frozenset) 가진 instance끼리 같은 variant.
     """
-    rules = []
-    for parent_role, child_sets in (parent_instances or {}).items():
-        if not parent_role or not child_sets:
+    from collections import defaultdict
+
+    paragraphs = paragraphs or []
+    idx_texts = idx_texts or {}
+
+    # 각 paragraph idx → paragraph dict 매핑 (parent 조회용)
+    idx_to_p = {p.get("idx"): p for p in paragraphs if p.get("idx") is not None}
+
+    # parent paragraph idx → list of child cluster ids (child_set per parent instance)
+    # parent paragraph idx == instance id (양식의 한 paragraph가 한 instance)
+    parent_to_children: dict = defaultdict(set)
+    parent_to_role: dict = {}
+    for p in paragraphs:
+        role = p.get("role", "")
+        parent_idx = p.get("parent_idx")
+        if not role or parent_idx is None:
             continue
+        parent_to_children[parent_idx].add(role)
+        # parent role도 기록 (parent paragraph로부터)
+        parent_p = idx_to_p.get(parent_idx)
+        if parent_p:
+            parent_to_role[parent_idx] = parent_p.get("role", "")
+
+    # parent role → list of (parent paragraph idx, child_set)
+    role_instances: dict = defaultdict(list)
+    for parent_idx, children in parent_to_children.items():
+        parent_role = parent_to_role.get(parent_idx, "")
+        if not parent_role:
+            continue
+        role_instances[parent_role].append((parent_idx, frozenset(children)))
+
+    rules = []
+    for parent_role, instances in role_instances.items():
+        if not parent_role or not instances:
+            continue
+
         # 자식 cluster union
-        all_children = set()
-        for cs in child_sets:
+        all_children: set = set()
+        for _, cs in instances:
             all_children.update(cs)
         all_children_list = sorted(all_children)
 
-        # cooccurred pairs — 같은 instance 안에 함께 등장한 쌍
-        cooccurred = set()
-        for cs in child_sets:
+        # cooccurred pairs (legacy, debug)
+        cooccurred: set = set()
+        for _, cs in instances:
             cs_sorted = sorted(cs)
             for i in range(len(cs_sorted)):
                 for j in range(i + 1, len(cs_sorted)):
                     cooccurred.add((cs_sorted[i], cs_sorted[j]))
         cooccurred_pairs = [list(p) for p in sorted(cooccurred)]
 
-        # child_set_variants — 양식 instance child set의 distinct set들 (frozenset
-        # dedup). 각 instance는 자기 child_set과 같은 variant 선택.
-        # 빈 set (자식 없는 instance)도 포함 가능.
-        distinct_sets: set = set()
-        for cs in child_sets:
-            distinct_sets.add(frozenset(cs))
-        child_set_variants = [sorted(s) for s in distinct_sets if s]
-        child_set_variants.sort()
+        # variant 단위 instance grouping (같은 child_set frozenset)
+        variant_groups: dict = defaultdict(list)  # child_set frozenset → list of parent_idx
+        for parent_idx, cs in instances:
+            if cs:  # 빈 set은 variant 안 만듦
+                variant_groups[cs].append(parent_idx)
+
+        variants = []
+        for vi, (child_set_fs, parent_idxs) in enumerate(
+            sorted(variant_groups.items(), key=lambda x: sorted(x[0]))
+        ):
+            # 각 variant 안 instance의 sample (parent paragraph의 marker + text)
+            samples = []
+            for pidx in parent_idxs[:3]:  # 최대 3개 sample
+                parent_p = idx_to_p.get(pidx) or {}
+                marker = parent_p.get("marker", "")
+                # text는 idx_texts에서. lookup string + int 둘 다 시도
+                text = (
+                    idx_texts.get(str(pidx))
+                    or idx_texts.get(pidx, "")
+                    or ""
+                )
+                samples.append({
+                    "marker": marker,
+                    "text_preview": text[:80] if text else "",
+                    "first_idx": pidx,
+                })
+            variants.append({
+                "variant_id": f"v{vi + 1}",
+                "child_set": sorted(child_set_fs),
+                "samples": samples,
+                "instance_count": len(parent_idxs),
+            })
 
         rules.append({
             "parent": parent_role,
             "all_children_clusters": all_children_list,
             "cooccurred_pairs": cooccurred_pairs,
-            "child_set_variants": child_set_variants,
-            "instance_count": len(child_sets),
+            "instance_count": len(instances),
+            "variants": variants,
         })
     return rules
 
@@ -14758,12 +14822,17 @@ def _format_pattern_tree(
     role_text_types: dict | None = None,
     per_type_semantics: dict | None = None,
     chapter_type_name: str = "",
+    multi_variant_parents: set | None = None,
 ) -> str:
     """패턴 트리를 사람이 읽기 좋은 텍스트로 변환.
 
     per_type semantics가 있으면 해당 type context의 description과 text_type 사용.
     없으면 role_text_types(global) fallback.
+
+    multi_variant_parents: 양식 instance 단위 child variant 가진 parent role set.
+    이 role의 자식은 union 표현이라는 경고 표시 (변경/추가 가능).
     """
+    multi_variant_parents = multi_variant_parents or set()
     lines = []
     prefix = "  " * indent
     for role_name, info in pattern.items():
@@ -14804,12 +14873,17 @@ def _format_pattern_tree(
             text_type = tt.get("text_type", "heading" if children else "body")
             length_hint = tt.get("length_hint", "짧은 한 줄" if children else "한 문장")
             flags.append(f"text_type={text_type}, {length_hint}")
+        # multi-variant parent role 경고
+        variant_warn = ""
+        if role_name in multi_variant_parents:
+            variant_warn = "  ⚠️ 이 role은 양식 instance마다 다른 child variant를 가짐 — children은 union 표현. 실제 출력 시 \"형제 자식 variant\" 섹션 참조 (한 instance에 variant 중 하나만)."
         flags_str = f" [{', '.join(flags)}]" if flags else ""
-        lines.append(f"{prefix}- {role_name}{marker_str}{flags_str}")
+        lines.append(f"{prefix}- {role_name}{marker_str}{flags_str}{variant_warn}")
         if children:
             lines.append(_format_pattern_tree(
                 children, role_markers, indent + 1,
                 role_text_types, per_type_semantics, chapter_type_name,
+                multi_variant_parents=multi_variant_parents,
             ))
     return "\n".join(lines)
 
@@ -14856,12 +14930,22 @@ def build_section_fill_prompt(
     for role_name, info in role_catalog.items():
         role_markers[role_name] = info.get("marker", "")
 
+    # multi-variant parent role set — cooccurrence_rules 기준 (variant 2개 이상)
+    _multi_variant_parents: set = set()
+    if cooccurrence_rules:
+        for _r in cooccurrence_rules:
+            _p = _r.get("parent")
+            _vs = _r.get("variants") or []
+            if _p and len(_vs) >= 2:
+                _multi_variant_parents.add(_p)
+
     # 패턴 트리 텍스트
     pattern_text = _format_pattern_tree(
         pattern, role_markers,
         role_text_types=role_text_types,
         per_type_semantics=per_type_role_semantics,
         chapter_type_name=chapter_type_name,
+        multi_variant_parents=_multi_variant_parents,
     )
 
     # 이번 패턴에 등장하는 role들만 수집 → 관련된 배타 규칙만 추림
@@ -14907,9 +14991,8 @@ def build_section_fill_prompt(
             )
             format_text = "\n".join(lines_f) + "\n\n"
 
-    # 형제 배타 (default = 배타, white-list만 공존 허용 — hard constraint)
-    # cooccurrence_rules가 있으면 그 기반 white-list 표시. 없으면 빈 텍스트.
-    # 옛 exclusive_rules는 무시 (backward compat 위해 인자 자체는 받지만 사용 X).
+    # 형제 자식 variant (instance-aware white-list — hard constraint)
+    # cooccurrence_rules가 새 variants 형식 (sample 포함) 가져옴. 옛 exclusive_rules는 사용 X.
     exclusive_text = ""
     if cooccurrence_rules:
         relevant = []
@@ -14917,36 +15000,44 @@ def build_section_fill_prompt(
             parent = rule.get("parent", "")
             if parent not in pattern_roles:
                 continue
-            # 자식 cluster 중 pattern_roles에 속한 것만
             all_children = [
                 r for r in (rule.get("all_children_clusters") or [])
                 if r in pattern_roles
             ]
             if len(all_children) < 2:
-                # 자식 1개 이하면 공존 자체 불가능 — 룰 표시 의미 X
                 continue
-            cooccurred = [
-                [a, b] for a, b in (rule.get("cooccurred_pairs") or [])
-                if a in pattern_roles and b in pattern_roles
-            ]
+            # variants filter — pattern_roles 안 cluster만
+            variants_raw = rule.get("variants") or []
+            filtered_variants = []
+            for v in variants_raw:
+                cs = [r for r in (v.get("child_set") or []) if r in pattern_roles]
+                if cs:
+                    filtered_variants.append({
+                        "variant_id": v.get("variant_id", ""),
+                        "child_set": cs,
+                        "samples": v.get("samples") or [],
+                        "instance_count": v.get("instance_count", 0),
+                    })
             relevant.append({
                 "parent": parent,
                 "all_children": all_children,
-                "cooccurred_pairs": cooccurred,
                 "instance_count": rule.get("instance_count", 0),
-                "child_set_variants": rule.get("child_set_variants", []),
+                "variants": filtered_variants,
             })
         if relevant:
-            lines = ["## ⚠️ 형제 자식 variant (양식 관찰 기반 — hard constraint)\n"]
+            lines = ["## ⚠️ 형제 자식 variant (instance-aware — hard constraint)\n"]
             lines.append(
-                "**핵심 룰**: 각 부모 role의 한 인스턴스가 가질 수 있는 자식 set은 "
-                "아래 \"자식 variant 목록\"에 명시된 set 중 **하나**입니다.\n"
+                "**핵심 룰 (hard constraint)**: 각 parent role의 한 인스턴스가 가질 수 있는 자식 set은\n"
+                "아래 \"자식 variant\" 중 **단 하나**입니다. 양식의 instance마다 양식 sample\n"
+                "(marker + text)이 같이 명시되니, 새 출력 instance도 자기 의미 역할에 맞는 variant를\n"
+                "1개 선택해서 그 variant의 자식만 박으세요.\n"
             )
             lines.append(
-                "- 한 인스턴스 안에는 단 한 variant 자식 set만 사용 (두 variant 섞기 금지).\n"
-                "- 새 인스턴스 만들 때마다 variant 중 하나 선택 (source 내용 성격에 맞게).\n"
-                "- **인스턴스 갯수는 유동적** — 양식 관찰 갯수에 매이지 X. source 분량에 따라 "
-                "더/덜 가능 (단 양식 갯수 가까이가 자연스러움).\n"
+                "- 한 instance에 두 variant 섞기 금지 (양식에서 함께 등장한 적 없음).\n"
+                "- 새 instance마다 source 내용 성격에 맞는 variant 선택 (양식 sample 참고).\n"
+                "- **instance 갯수는 유동적** — 양식 관찰 갯수에 매이지 X. source 분량에 따라.\n"
+                "- ⚠️ 아래 'role 패턴'의 children 목록은 양식의 여러 instance variant의 union 표현입니다.\n"
+                "   pattern_tree만 보고 children 다 박지 마세요. 반드시 variant별 자식 set만 박기.\n"
             )
             for rule in relevant:
                 parent = rule["parent"]
@@ -14955,30 +15046,34 @@ def build_section_fill_prompt(
                 instance_count = rule.get("instance_count", 0)
                 lines.append(f"\n### 부모: `{parent}`{parent_marker_str}")
                 if instance_count:
-                    lines.append(
-                        f"- 양식 관찰: {instance_count} instance"
-                    )
+                    lines.append(f"- 양식 관찰: {instance_count} instance, {len(rule['variants'])} variant")
 
-                # child_set_variants 표시
-                variants = rule.get("child_set_variants") or []
-                # filter — variant 안의 cluster도 pattern_roles에 속하는 것만
-                filtered_variants = []
-                for v in variants:
-                    f = [r for r in v if r in pattern_roles]
-                    if f:
-                        filtered_variants.append(f)
-                if not filtered_variants:
-                    lines.append("- 자식 variant: 없음 (자식 없는 부모)")
+                if not rule["variants"]:
+                    lines.append("- 자식 variant: 없음")
                 else:
-                    lines.append("- 자식 variant 목록 (각 instance에 한 variant 선택):")
-                    for vi, v in enumerate(filtered_variants):
+                    for v in rule["variants"]:
+                        vid = v.get("variant_id", "")
+                        cs = v.get("child_set", [])
+                        samples = v.get("samples", [])
+                        vic = v.get("instance_count", 0)
+
                         marker_strs = []
-                        for r in v:
+                        for r in cs:
                             m = role_markers.get(r, "")
                             marker_strs.append(f"`{r}`" + (f' ("{m}")' if m else ""))
-                        label = chr(ord('A') + vi)
+
+                        lines.append(f"\n  **[variant {vid}]** (양식 관찰: {vic} instance)")
+                        # 양식 instance sample 표시
+                        for s in samples[:3]:
+                            sm = s.get("marker", "")
+                            stx = s.get("text_preview", "")
+                            sm_str = f"marker=\"{sm}\"" if sm else "marker=없음"
+                            stx_str = f", text=\"{stx[:60]}\"" if stx else ""
+                            lines.append(f"    - 양식 instance: {sm_str}{stx_str}")
+                        # variant 자식 set
+                        lines.append(f"    - 이 variant의 자식 set: {{ " + ", ".join(marker_strs) + " }}")
                         lines.append(
-                            f"  - variant {label}: {{ " + ", ".join(marker_strs) + " }"
+                            f"    → 이 양식 sample과 같은 의미/위치의 새 instance는 위 자식 set만 박기."
                         )
             exclusive_text = "\n".join(lines) + "\n\n"
 
