@@ -260,7 +260,7 @@
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed)); } catch (e) {}
   }
 
-  // ─────────── 전송 ───────────
+  // ─────────── 전송 (SSE 스트리밍) ───────────
   async function sendMessage(text) {
     if (!text || !text.trim()) return;
     text = text.trim();
@@ -272,30 +272,69 @@
     sendBtn.disabled = true;
     statusEl.textContent = "응답 생성 중...";
 
+    // 빈 봇 버블 미리 만들고 토큰 도착할 때마다 누적
+    const botMsg = document.createElement("div");
+    botMsg.className = "msg bot";
+    const botBubble = document.createElement("div");
+    botBubble.className = "bubble";
+    botBubble.textContent = "";
+    botMsg.appendChild(botBubble);
+    if (hintEl && hintEl.parentNode) hintEl.remove();
+    chatEl.appendChild(botMsg);
+    scrollBottom();
+
+    let fullReply = "";
     try {
-      const resp = await fetch(`${API_BASE}/chat`, {
+      const resp = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: text,
-          history: history.slice(0, -1),  // 방금 추가한 user 턴 제외
+          history: history.slice(0, -1),
         })
       });
-
-      if (!resp.ok) {
+      if (!resp.ok || !resp.body) {
         const err = await resp.text();
         throw new Error(err || `HTTP ${resp.status}`);
       }
 
-      const data = await resp.json();
-      const reply = data.reply || "(응답이 비어 있습니다)";
-      const sources = data.sources || [];
-      appendBubble("bot", reply, sources);
-      history.push({ role: "assistant", content: reply, sources });
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const event = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const line of event.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = line.slice(6).trim();
+            if (!payload) continue;
+            try {
+              const obj = JSON.parse(payload);
+              if (obj.delta) {
+                fullReply += obj.delta;
+                botBubble.textContent = fullReply;
+                scrollBottom();
+              } else if (obj.error) {
+                botBubble.textContent = `오류: ${obj.error}`;
+              }
+            } catch (e) { /* ignore */ }
+          }
+        }
+      }
+
+      if (!fullReply) {
+        botBubble.textContent = "(응답이 비어 있습니다)";
+      }
+      history.push({ role: "assistant", content: fullReply });
       saveHistory();
-      speak(reply);
+      speak(fullReply);
     } catch (e) {
-      appendBubble("bot", `오류가 발생했습니다: ${e.message}`);
+      botBubble.textContent = `오류가 발생했습니다: ${e.message}`;
     } finally {
       sendBtn.disabled = false;
       statusEl.textContent = "";
