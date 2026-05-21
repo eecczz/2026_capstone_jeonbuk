@@ -83,14 +83,41 @@ def strip_marker(text: str, role: str, policy: dict) -> dict:
     separator = ""
     content = stripped
 
-    # Match against known markers (longest first)
-    for m in sorted(markers, key=len, reverse=True):
-        if stripped.startswith(m):
-            detected_marker = m
-            after = stripped[len(m):]
-            separator = _detect_separator(after)
-            content = after[len(separator):] if separator else after
-            break
+    # leading emphasis markup ([[emN]]<marker>[[/emN]]) wrap 인식 — AI가 marker도
+    # emphasis 글꼴이라 markup으로 감싸는 경우 (예: cluster_19의 "과제 1" 마커).
+    # markup 안쪽 텍스트로 marker 매칭 → 매칭되면 markup 전체를 strip.
+    _em_lead_pat = re.compile(r'^\[\[(em\d+)\]\](.*?)\[\[/\1\]\]', re.DOTALL)
+    _em_match = _em_lead_pat.match(stripped)
+    if _em_match:
+        _em_inner = _em_match.group(2).lstrip()
+        # markup 안쪽으로 marker 매칭
+        for m in sorted(markers, key=len, reverse=True):
+            if _em_inner.startswith(m):
+                detected_marker = m
+                after = stripped[_em_match.end():]
+                separator = _detect_separator(after)
+                content = after[len(separator):] if separator else after
+                break
+        # sequence detection 시도 (markup 안쪽으로)
+        if not detected_marker and policy.get("style") == "sequence":
+            _seq_marker, _seq_sep, _seq_content = _try_sequence_detection(
+                _em_inner, policy_type
+            )
+            if _seq_marker:
+                detected_marker = _seq_marker
+                after = stripped[_em_match.end():]
+                separator = _detect_separator(after)
+                content = after[len(separator):] if separator else after
+
+    # Match against known markers (longest first) — plain marker (markup 없이)
+    if not detected_marker:
+        for m in sorted(markers, key=len, reverse=True):
+            if stripped.startswith(m):
+                detected_marker = m
+                after = stripped[len(m):]
+                separator = _detect_separator(after)
+                content = after[len(separator):] if separator else after
+                break
 
     # If no known marker matched, try broader detection for sequence types
     if not detected_marker and policy.get("style") == "sequence":

@@ -1097,6 +1097,7 @@ def assemble_hwpx_hybrid(
     preserve_indices: set[int] | None = None,
     analyzed_sections: set[int] | None = None,
     chapter_local_exemplars: dict | None = None,
+    emphasis_layers: dict | None = None,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -1691,6 +1692,8 @@ def assemble_hwpx_hybrid(
             # - AI가 marker 안 넣었으면 그대로 → 양식 policy로 자동 부착
             # - sequence marker(Ⅰ/Ⅱ/Ⅲ 등)는 ci를 sibling_index로 사용
             _ad_text_with_marker = _ad_text  # default (no policy, no_marker, or fallback)
+            _ad_marker_text = ""  # Sprint 2B: marker 부분 (글꼴 분리용)
+            _ad_content_text = _ad_text  # Sprint 2B: content 부분
             _marker_auto_applied = False
             if _ad_text and _title_role_for_anchor:
                 _title_policy = _marker_policies.get(_title_role_for_anchor) or {}
@@ -1711,6 +1714,9 @@ def assemble_hwpx_hybrid(
                         _new_sep = (_expected.get("separator") if isinstance(_expected, dict) else " ") or " "
                         if _new_marker:
                             _ad_text_with_marker = _rm_ct(_ad_text_stripped, _new_marker, _new_sep)
+                            # Sprint 2B: marker/content 분리 보존 (양식 첫 t/둘째 t 글꼴 다른 경우)
+                            _ad_marker_text = _new_marker + _new_sep
+                            _ad_content_text = _ad_text_stripped
                             _marker_auto_applied = True
                             log.info(
                                 f"[13.7d marker auto-prepend ci={ci}] "
@@ -1723,6 +1729,8 @@ def assemble_hwpx_hybrid(
                             f"[13.7d marker auto-prepend ci={ci}] 실패 — AI text 그대로 사용: {_mp_e}"
                         )
                         _ad_text_with_marker = _ad_text
+                        _ad_marker_text = ""
+                        _ad_content_text = _ad_text
 
             _anchor_norm = " ".join(_anchor_text_preview.split())
             _title_norm = " ".join(_ad_text_with_marker.split())
@@ -1732,11 +1740,18 @@ def assemble_hwpx_hybrid(
                 _adapted_title_skip_reason = "adapted_matches_anchor"
             else:
                 try:
-                    _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
+                    if _marker_auto_applied and _ad_marker_text:
+                        # Sprint 2B: marker/content 두 t에 분리 박기 (글꼴 보존)
+                        _replace_text_in_paragraph_elem_split(
+                            _anchor_el, _ad_marker_text, _ad_content_text, NS
+                        )
+                    else:
+                        # marker 없이 단일 text (fallback)
+                        _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
                     _adapted_title_applied = True
                     log.info(
                         f"[13.7d ci={ci}] adapted_title applied (action={_ad_action}, "
-                        f"marker_auto={_marker_auto_applied}): "
+                        f"marker_auto={_marker_auto_applied}, split={bool(_ad_marker_text)}): "
                         f"'{_anchor_text_preview[:50]}' → '{_ad_text_with_marker[:50]}'"
                     )
                 except Exception as _adapt_e:
@@ -2591,6 +2606,10 @@ def assemble_hwpx_hybrid(
                     f"role={_role_orig!r} ci={_ci_for_role}."
                 )
 
+        # Sprint 2B: marker/content text 분리 보존 (글꼴 다른 양식 paragraph 처리)
+        _body_marker_text = ""
+        _body_content_text = text  # default fallback (split 불가 시)
+
         if content_only_mode:
             # Phase 2: sibling_index 계산 → reattach → rewrite safety net
             from open_webui.utils.marker_separator import (
@@ -2658,6 +2677,16 @@ def assemble_hwpx_hybrid(
                     })
 
                 text = rewritten
+
+                # Sprint 2B: 최종 rewritten text에서 marker/content 분리
+                # (양식 paragraph 첫 t / 둘째 t 글꼴 다를 때 보존)
+                try:
+                    _post_strip = strip_marker(text, role, policy)
+                    if _post_strip and _post_strip.get("detected_marker"):
+                        _body_marker_text = _post_strip["detected_marker"] + (_post_strip.get("separator") or "")
+                        _body_content_text = _post_strip.get("content", text) or text
+                except Exception:
+                    pass
         else:
             # Phase 1: 기존 marker rewrite만
             text = _rewrite_marker(bi_idx, role, text)
@@ -2750,7 +2779,69 @@ def assemble_hwpx_hybrid(
             if is_tbl_box and preserve_indices:
                 _table_text_skipped += 1
             else:
-                _set_cloned_element_text(new_elem, space_prefix + clean_text, NS, is_tbl_box)
+                # Sprint 3D: emphasis-aware body text 박기
+                # 매핑 정확성: emphasis_layers[role] lookup → cluster의 charpr_map 빌드.
+                # valid_layer_ids는 그 cluster에 정의된 layer만 허용 (AI 환각 markup 무시).
+                _body_cluster_em = (emphasis_layers or {}).get(role) or {}
+                _body_charpr_map: dict = {}
+                _body_valid_layers: set = set()
+                if _body_cluster_em:
+                    _body_charpr_map["base"] = _body_cluster_em.get("base_charpr_id", "") or ""
+                    for _el in (_body_cluster_em.get("emphasis_layers") or []):
+                        _lid = _el.get("layer_id", "") or ""
+                        _cp = _el.get("charpr_id", "") or ""
+                        if _lid and _cp:
+                            _body_charpr_map[_lid] = _cp
+                            _body_valid_layers.add(_lid)
+
+                # tbl_box인 경우 cell paragraph 찾기 (_set_cloned_element_text tbl 분기 로직)
+                _body_target_p = new_elem
+                if is_tbl_box:
+                    _trs = new_elem.findall(f".//{NS}tr")
+                    if _trs:
+                        _tcs = _trs[0].findall(f"{NS}tc")
+                        if _tcs:
+                            _target_tc = _tcs[-1] if len(_tcs) > 1 else _tcs[0]
+                            _sublist = _target_tc.find(f"{NS}subList")
+                            if _sublist is not None:
+                                _cell_paras = _sublist.findall(f"{NS}p")
+                                if _cell_paras:
+                                    _body_target_p = _cell_paras[0]
+                                    for _ep in _cell_paras[1:]:
+                                        _sublist.remove(_ep)
+
+                _body_marker_with_indent = (space_prefix + _body_marker_text) if _body_marker_text else ""
+
+                # AI text의 valid emphasis markup 미리 parse — 0개면 emphasis path 우회.
+                # markup 0개에 emphasis path를 돌면 segments=[(None, 전체)]가 되어
+                # cluster base로 박혀 양식 본래 글꼴 잃음. Sprint 2B path가 양식 글꼴 보존.
+                _content_for_path = _body_content_text.lstrip(" \t") if _body_marker_text else clean_text
+                _pre_segments = _parse_emphasis_markup(_content_for_path, _body_valid_layers) if _body_valid_layers else []
+                _has_valid_em = any(s[0] is not None for s in _pre_segments)
+
+                if _body_valid_layers and _has_valid_em:
+                    # emphasis-aware: markup parse + run split with charpr 매핑
+                    _replace_text_with_emphasis_segments(
+                        _body_target_p,
+                        _body_marker_with_indent,
+                        _pre_segments,
+                        _body_charpr_map,
+                        NS,
+                    )
+                elif _body_marker_text:
+                    # Sprint 2B split (emphasis 없는 cluster 또는 markup 0개)
+                    _replace_text_in_paragraph_elem_split(
+                        _body_target_p,
+                        _body_marker_with_indent,
+                        _content_for_path,
+                        NS,
+                    )
+                else:
+                    # no marker no emphasis — 기존 path
+                    if is_tbl_box:
+                        _set_cloned_element_text(new_elem, space_prefix + clean_text, NS, is_tbl_box)
+                    else:
+                        _replace_text_in_paragraph_elem(_body_target_p, space_prefix + clean_text, NS)
 
             # 탭 삽입 (table_box가 아닐 때만)
             if num_tabs > 0 and not is_tbl_box:
@@ -3164,3 +3255,300 @@ def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
         has_t = any(el.tag == f"{NS}t" for el in run.iter())
         if not has_ctrl and not has_tbl and not has_t:
             p_elem.remove(run)
+
+
+def _replace_text_in_paragraph_elem_split(p_elem, marker_text: str, content_text: str, NS: str):
+    """Sprint 2B: marker text와 content text를 paragraph 안 다른 t element에 박음.
+
+    양식 paragraph의 t element들은 글꼴(charPrIDRef)이 t마다 다를 수 있음.
+    - 첫 t는 보통 마커 글꼴
+    - 본문 글꼴 t는 보통 가장 긴 t
+    - 중간 t는 구두점·공백 등 짧은 segment (글꼴 다양)
+
+    동작:
+    - text-bearing t (원본에 text 있던 것) 2개 이상:
+        marker → 첫 bearing t (마커 글꼴 보존)
+        content → 가장 긴 bearing t (본문 글꼴 보존)
+        그 외 t는 비움
+    - text-bearing t 1개: split 불가 → 합쳐서 단일 t에 박음
+    - t element 없음: 첫 run에 새 t 추가
+    - 중간 구두점/공백 글꼴은 손실 가능 (시각상 큰 영향 X)
+    """
+    import xml.etree.ElementTree as _stdlib_ET
+
+    t_elems = [el for el in p_elem.iter() if el.tag == f"{NS}t"]
+
+    if not t_elems:
+        runs = p_elem.findall(f"{NS}run")
+        if not runs:
+            return
+        new_t = _stdlib_ET.SubElement(runs[0], f"{NS}t")
+        new_t.text = marker_text + content_text
+    else:
+        # text-bearing t만 (원본에 의미 있는 text 있던 것)
+        bearing = [t for t in t_elems if (t.text or "").strip()]
+
+        if len(bearing) >= 2:
+            # marker_text 첫 글자와 양식 t.text 첫 글자가 일치하는 t를 marker 위치로.
+            # 양식 텍스트박스(tbl cell) 안에 정교한 run 구조 (예: " "/"과제 1"/" "/"민생경제..."/...)
+            # 인 경우, first bearing이 공백 t일 수 있어 marker가 잘못된 글꼴에 박힘.
+            # 매칭되는 t 없으면 fallback to first bearing (이전 동작).
+            marker_first = marker_text.strip()[:1] if marker_text.strip() else ""
+            marker_t = None
+            if marker_first:
+                for t in bearing:
+                    t_first = (t.text or "").strip()[:1]
+                    if t_first and t_first == marker_first:
+                        marker_t = t
+                        break
+            if marker_t is None:
+                marker_t = bearing[0]
+
+            # content → 가장 긴 bearing (marker_t 제외)
+            non_marker = [t for t in bearing if t is not marker_t]
+            if non_marker:
+                content_t = max(
+                    non_marker,
+                    key=lambda t: (len(t.text or ""), bearing.index(t)),
+                )
+            else:
+                content_t = marker_t  # bearing 1개뿐인 fallback
+
+            if content_t is marker_t:
+                # 같은 t에 둘 다 박음 (분리 불가 fallback)
+                marker_t.text = marker_text + content_text
+                for child in list(marker_t):
+                    marker_t.remove(child)
+                for t in t_elems:
+                    if t is marker_t:
+                        continue
+                    t.text = ""
+                    for child in list(t):
+                        t.remove(child)
+            else:
+                marker_t.text = marker_text
+                for child in list(marker_t):
+                    marker_t.remove(child)
+                content_t.text = content_text
+                for child in list(content_t):
+                    content_t.remove(child)
+                # 나머지 t 비움 (마커/내용 외 모든 t — 양식 원본 잔재 제거)
+                for t in t_elems:
+                    if t is marker_t or t is content_t:
+                        continue
+                    t.text = ""
+                    for child in list(t):
+                        t.remove(child)
+        else:
+            # bearing 1개 이하 — split 불가, 합쳐서 박음
+            t_elems[0].text = marker_text + content_text
+            for child in list(t_elems[0]):
+                t_elems[0].remove(child)
+            for t in t_elems[1:]:
+                t.text = ""
+                for child in list(t):
+                    t.remove(child)
+
+    # ctrl 없는 빈 run 제거 (기존 _replace_text_in_paragraph_elem과 같은 로직)
+    runs = p_elem.findall(f"{NS}run")
+    for run in runs[1:]:
+        has_ctrl = run.find(f"{NS}ctrl") is not None
+        has_tbl = any(el.tag == f"{NS}tbl" for el in run.iter())
+        has_t = any(el.tag == f"{NS}t" for el in run.iter())
+        if not has_ctrl and not has_tbl and not has_t:
+            p_elem.remove(run)
+
+
+def _parse_emphasis_markup(text: str, valid_layer_ids: set | None = None) -> list:
+    """Sprint 3B: AI 출력 text에서 [[emN]]...[[/emN]] markup 추출.
+
+    Args:
+        text: AI 본문 텍스트 (markup 포함 가능)
+        valid_layer_ids: 허용된 layer_id set (예: {"em1", "em2"}).
+                         None이면 모든 emN 허용. 정의 안 된 layer_id는 markup 무시
+                         (base segment로 처리).
+
+    Returns:
+        [(layer_id|None, segment_text), ...]
+        layer_id is None → base (강조 안 함, default 글꼴)
+    """
+    import re as _re
+
+    pattern = _re.compile(r'\[\[(em\d+)\]\](.*?)\[\[/\1\]\]', _re.DOTALL)
+    segments = []
+    cursor = 0
+    for m in pattern.finditer(text):
+        if m.start() > cursor:
+            segments.append((None, text[cursor:m.start()]))
+        layer_id = m.group(1)
+        seg_text = m.group(2)
+        if valid_layer_ids is not None and layer_id not in valid_layer_ids:
+            # 정의 안 된 layer → markup 자체 무시, base로 처리
+            segments.append((None, seg_text))
+        else:
+            segments.append((layer_id, seg_text))
+        cursor = m.end()
+    if cursor < len(text):
+        segments.append((None, text[cursor:]))
+
+    # 빈 segment 제거 (단 segments 비면 None entry 1개 유지)
+    segments = [s for s in segments if s[1]]
+    if not segments:
+        segments = [(None, "")]
+    return segments
+
+
+def _replace_text_with_emphasis_segments(
+    p_elem,
+    marker_text: str,
+    content_segments: list,
+    charpr_map: dict,
+    NS: str,
+):
+    """Sprint 3C: marker + emphasis segments를 paragraph에 박음.
+
+    매핑 정확성:
+    - marker_text → 첫 bearing t (첫 글자 매칭)
+    - content_segments 단일 (base 1개) → 가장 긴 bearing t에 박음 (Sprint 2B와 동일)
+    - content_segments 다중 → content_t의 run 위치에 새 runs 분할 삽입
+      각 segment의 charPrIDRef = charpr_map[layer_id] (layer is None → charpr_map["base"])
+
+    Args:
+        p_elem: paragraph element (outer or with tbl)
+        marker_text: 마커 부분 (코드가 부착)
+        content_segments: [(layer_id|None, text), ...] (markup parser 결과)
+        charpr_map: {"base": base_cp, "em1": cp, "em2": cp, ...}
+            None layer는 "base" 키로 lookup. 누락된 layer는 base fallback.
+        NS: namespace 문자열
+    """
+    import xml.etree.ElementTree as _stdlib_ET
+
+    t_elems = [el for el in p_elem.iter() if el.tag == f"{NS}t"]
+    base_cp = charpr_map.get("base", "")
+
+    def _lookup_cp(layer):
+        if layer is None:
+            return base_cp
+        return charpr_map.get(layer, base_cp)
+
+    flat_content = "".join(s[1] for s in content_segments)
+
+    if not t_elems:
+        # 새 run 추가 (fallback)
+        runs = p_elem.findall(f"{NS}run")
+        if not runs:
+            return
+        new_t = _stdlib_ET.SubElement(runs[0], f"{NS}t")
+        new_t.text = marker_text + flat_content
+        return
+
+    bearing = [t for t in t_elems if (t.text or "").strip()]
+
+    if len(bearing) < 2:
+        # split 불가 — 합쳐서 박음
+        t_elems[0].text = marker_text + flat_content
+        for child in list(t_elems[0]):
+            t_elems[0].remove(child)
+        for t in t_elems[1:]:
+            t.text = ""
+            for child in list(t):
+                t.remove(child)
+        return
+
+    # marker t 매칭 (첫 글자)
+    marker_first = marker_text.strip()[:1] if marker_text.strip() else ""
+    marker_t = None
+    if marker_first:
+        for t in bearing:
+            t_first = (t.text or "").strip()[:1]
+            if t_first and t_first == marker_first:
+                marker_t = t
+                break
+    if marker_t is None:
+        marker_t = bearing[0]
+
+    # content_t (가장 긴 bearing, marker 제외)
+    non_marker = [t for t in bearing if t is not marker_t]
+    content_t = max(non_marker, key=lambda t: (len(t.text or ""), bearing.index(t)))
+
+    # marker 박기
+    marker_t.text = marker_text
+    for child in list(marker_t):
+        marker_t.remove(child)
+
+    # content 박기
+    if len(content_segments) <= 1:
+        # base only → content_t에 그대로
+        content_t.text = flat_content
+        for child in list(content_t):
+            content_t.remove(child)
+    else:
+        # 다중 segments → content_t의 run 위치에 새 runs 분할
+        # content_t의 부모 run + 그 run의 부모 (cell paragraph 또는 outer paragraph) 찾기
+        content_t_parent_run = None
+        for run in p_elem.iter(f"{NS}run"):
+            if content_t in list(run):
+                content_t_parent_run = run
+                break
+
+        if content_t_parent_run is None:
+            # fallback: 합쳐서 박음
+            content_t.text = flat_content
+            for child in list(content_t):
+                content_t.remove(child)
+        else:
+            # run의 부모 (cell paragraph 또는 outer paragraph)
+            run_parent = None
+            for el in p_elem.iter():
+                if content_t_parent_run in list(el):
+                    run_parent = el
+                    break
+
+            if run_parent is None:
+                content_t.text = flat_content
+                for child in list(content_t):
+                    content_t.remove(child)
+            else:
+                # content_t_parent_run의 charPr를 첫 segment에 맞춤
+                first_layer, first_text = content_segments[0]
+                first_cp = _lookup_cp(first_layer)
+                if first_cp:
+                    content_t_parent_run.set("charPrIDRef", first_cp)
+                content_t.text = first_text
+                for child in list(content_t):
+                    content_t.remove(child)
+
+                # 나머지 segments → 새 run 만들어 순서대로 insert
+                run_idx = list(run_parent).index(content_t_parent_run)
+                insert_idx = run_idx + 1
+                for layer, seg_text in content_segments[1:]:
+                    if not seg_text:
+                        continue
+                    cp = _lookup_cp(layer)
+                    new_run = _stdlib_ET.Element(f"{NS}run")
+                    if cp:
+                        new_run.set("charPrIDRef", cp)
+                    new_t = _stdlib_ET.SubElement(new_run, f"{NS}t")
+                    new_t.text = seg_text
+                    run_parent.insert(insert_idx, new_run)
+                    insert_idx += 1
+
+    # 나머지 bearing t 비움 (marker/content 외 — 양식 원본 잔재 제거)
+    for t in t_elems:
+        if t is marker_t or t is content_t:
+            continue
+        t.text = ""
+        for child in list(t):
+            t.remove(child)
+
+    # ctrl/tbl/t 없는 빈 run 제거 (cleanup)
+    for run in list(p_elem.iter(f"{NS}run")):
+        has_ctrl = run.find(f"{NS}ctrl") is not None
+        has_tbl = any(el.tag == f"{NS}tbl" for el in run.iter())
+        has_t = any(el.tag == f"{NS}t" for el in run.iter())
+        if not has_ctrl and not has_tbl and not has_t:
+            # parent에서 제거
+            for parent in p_elem.iter():
+                if run in list(parent):
+                    parent.remove(run)
+                    break

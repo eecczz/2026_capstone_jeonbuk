@@ -6220,53 +6220,55 @@ def infer_semantic_tag(
 
 STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문가입니다.
 
-아래에 role별 실제 paragraph 샘플이 주어집니다.
-각 role의 문체/서술 스타일 특징을 분석하여 **고정 JSON schema**로 출력하세요.
+아래에 여러 role_cluster의 양식 paragraph sample이 주어집니다.
+각 cluster의 말투/문장 특징 패턴을 분석해 자연어 rule로 추출하세요.
 
-## 핵심 규칙
+## 핵심 원칙
 
-1. **제공된 샘플 텍스트에서 직접 관찰 가능한 패턴만** 기술하세요.
-2. **샘플에 없는 문체 특징을 추측하거나 일반화하지 마세요.**
-3. **일반적인 행정문서 규칙을 추가하지 마세요** — 이 양식의 실제 샘플만 기준.
-4. **이 role만의 고유 특징**에 집중하세요. 모든 role에 해당하는 공통점은 쓰지 마세요.
-5. **format과 content를 분리하세요:**
-   - format_observations: 마커, 번호, 들여쓰기, 물리적 서식 관련 관찰
-   - content_style_do/avoid: 어미, 문체, 문장 구조, 어조 관련 지침
-   - content_style_do/avoid에 마커/번호/서식 관련 내용을 넣지 마세요.
-6. **evidence는 제공된 sample_id만 사용하세요.** 각 샘플에 [s0], [s1] 등의 ID가 붙어 있습니다.
-   evidence_sample_ids에는 주장의 근거가 되는 sample_id 목록만 넣으세요.
-   제공되지 않은 텍스트를 인용하지 마세요.
+1. **제공된 sample 텍스트에서 직접 관찰 가능한 패턴만**. 추측 X, 일반 행정문서 규칙 X.
+2. **각 cluster만의 고유 특징**에 집중. 모든 role 공통점 X.
+3. **마커/번호/서식 자체는 다루지 X** — 별 stage가 처리. 여기는 **말투, 문장 구조, 어휘, 어미, 어조** 등 content 패턴만.
+4. **문장 글자 수·길이 수치는 직접 묘사 X** — 양식 sample 전부 보고 있으므로 굳이 수치 적지 마세요. 단 "짧고 명사구 종결" 같이 길이가 만드는 패턴은 OK.
+5. **rule 문장 안에 반드시 다음 3가지 포함**:
+   - **적용 조건** (언제 적용)
+   - **비적용 조건** (필요 시; 예외 case가 있으면 명시)
+   - **근거 sample id** `[s2, s5, s8]` 형식 inline 인용 (필수)
+6. **각 cluster의 sample_id는 해당 cluster 안에서만 유효**. 다른 cluster sample_id 인용하지 마세요.
 
-## confidence 기준
-- high: 샘플 5개 이상이고 문체가 일관됨
-- medium: 샘플 3~4개이거나 문체에 편차가 있음
-- low: 샘플 부족이거나 문체가 매우 이질적
+## 좋은 rule 예시
+
+> "□ 마커 다음의 문장은 명사구 또는 '~한다'/'~함' 종결로 작성. 서술형 '~다'는 사용 X. 근거: [s0, s2, s5]"
+
+## 나쁜 rule 예시
+
+> "괄호 안 핵심어를 강조한다." ← 적용/비적용 조건 모호 + 근거 없음
+> "공식적이고 간결한 톤." ← 모든 role에 해당하는 무의미 진술
+
+## rule이 너무 길어지거나 case별 분포가 다르면
+
+rule을 split (`case A는 X`, `case B는 Y`) 또는 `additional_observations`에 자연어 단락으로.
 
 ## 출력 형식
 
-반드시 아래 JSON만 출력하세요.
+반드시 아래 JSON만 출력하세요. **profiles 배열에 input cluster 수만큼 entry**.
 
 ```json
 {
   "profiles": [
     {
-      "role": "<role_cluster 이름>",
-      "sample_count": <제공된 샘플 수>,
-      "style_summary": "<1~2문장: 이 role의 content 문체 핵심 특징>",
-      "tone": "<어조 (공식적/간결함/나열형 등)>",
-      "sentence_shape": "<문장 구조 (단문/복문/명사구/괄호 수치 등)>",
-      "ending_patterns": ["<관찰된 어미 패턴>"],
-      "typical_expressions": ["<빈번한 표현/구문>"],
-      "format_observations": ["<마커/번호/서식 관련 관찰>"],
-      "content_style_do": ["<이 role의 content 문체를 재현하려면 해야 할 것>"],
-      "content_style_avoid": ["<이 role의 content 문체에서 피해야 할 것>"],
-      "confidence": "high|medium|low",
-      "notes": "<semantic_tag별 차이, 특이 패턴 등 추가 관찰>",
-      "evidence_sample_ids": ["s0", "s2", "s5"]
-    }
+      "role": "<role_cluster_N>",
+      "content_style_rules_for_generation": [
+        "<rule 1: 적용 조건 + (필요 시 비적용 조건) + [sN, sN] inline>",
+        ...
+      ],
+      "additional_observations": "<rules로 정형화 못 한 특이 패턴 / 분포 / case-by-case 변동 / 양식 고유 표현 / 예외. 자유 자연어. evidence inline [sN]. 없으면 빈 문자열.>"
+    },
+    ...
   ]
 }
 ```
+
+각 cluster의 rules가 비어도(sample 부족 등) JSON 형식 유지하고 additional_observations에 사유 기술.
 """
 
 
@@ -6274,36 +6276,44 @@ def _collect_style_samples(
     paragraphs: list[dict],
     idx_full_texts: dict,
     semantic_tags: list[dict] | None = None,
-    min_samples: int = 3,
-    max_samples: int = 8,
+    sample_text_char_budget: int = 80000,
 ) -> list[dict]:
     """
     role_cluster별 style analysis용 샘플을 수집합니다.
 
-    샘플 선택 기준 (max_samples 이내):
-      shortest 1, longest 1, semantic_tag별 최소 1, 나머지 균등 간격.
+    원칙 (2026-05-20 redesign):
+    - 전수 sample을 default로 보냄 (양식 분석은 cache 전제 — token 비용 적음)
+    - 중복 paragraph는 정규화 후 제거
+    - text 합이 sample_text_char_budget(80K) 초과 시 stratified fallback:
+        forced (shortest + longest + semantic_tag별 1) + 나머지 stratum 중간점
+    - min_samples 없음 — cluster paragraph 1개라도 분석. 0인 경우만 skip.
+
+    raw_measurements는 code 결정적 추출 — AI input 아닌 downstream용.
 
     Returns:
-        [{role, marker, description, level, sample_count,
+        [{role, marker, description, level,
+          raw_count, dedup_count, selected_count, sampling_method,
+          char_budget_used, char_budget_cap,
           samples: [{sample_id, idx, text}],
-          raw_measurements: {char_lengths, char_length_range,
-                             text_endings_raw, semantic_tag_distribution}}, ...]
+          raw_measurements: {...}}, ...]
     """
     import re
-    from collections import defaultdict
+    from collections import defaultdict, Counter
 
-    # role별 (paragraph_idx, text) 수집
-    role_entries = defaultdict(list)  # role → [(para_idx, text)]
+    role_entries = defaultdict(list)
     role_meta = {}
+    _ws_re = re.compile(r"\s+")
+
     for p in paragraphs:
         role = p.get("role", "")
         if not role:
             continue
         pidx = p.get("idx")
-        text = idx_full_texts.get(str(pidx), idx_full_texts.get(pidx, ""))
-        if not text.strip():
+        raw_text = idx_full_texts.get(str(pidx), idx_full_texts.get(pidx, ""))
+        if not raw_text.strip():
             continue
-        role_entries[role].append((pidx, text))
+        normalized = _ws_re.sub(" ", raw_text).strip()
+        role_entries[role].append((pidx, raw_text, normalized))
         if role not in role_meta:
             role_meta[role] = {
                 "marker": p.get("marker", ""),
@@ -6311,9 +6321,8 @@ def _collect_style_samples(
                 "level": p.get("level", 0),
             }
 
-    # semantic_tag: role → {para_idx → tag}
-    idx_to_tag = {}
-    tag_dist = defaultdict(lambda: defaultdict(int))
+    idx_to_tag: dict = {}
+    tag_dist: dict = defaultdict(lambda: defaultdict(int))
     if semantic_tags:
         for entry in semantic_tags:
             r = entry.get("role", "")
@@ -6324,71 +6333,82 @@ def _collect_style_samples(
                 if idx_val is not None:
                     idx_to_tag[idx_val] = tag
 
-    # 어미 패턴 추출
     _ending_re = re.compile(r"([\uAC00-\uD7A3]{1,4})[.!?\s]*$")
+
+    def _percentile(sorted_vals: list, q: float) -> int:
+        if not sorted_vals:
+            return 0
+        pos = max(0, min(len(sorted_vals) - 1, int(round(q * (len(sorted_vals) - 1)))))
+        return sorted_vals[pos]
 
     result = []
     for role in sorted(role_entries.keys()):
         entries = role_entries[role]
-        if len(entries) < min_samples:
+        raw_count = len(entries)
+
+        seen_norm: set = set()
+        uniq: list = []
+        for entry in entries:
+            _, _, norm = entry
+            if norm in seen_norm:
+                continue
+            seen_norm.add(norm)
+            uniq.append(entry)
+        dedup_count = len(uniq)
+
+        if dedup_count == 0:
             continue
 
-        texts = [t for _, t in entries]
-        idxs = [i for i, _ in entries]
-
-        # raw measurements
-        char_lengths = [len(t) for t in texts]
-        endings_raw = []
-        for t in texts:
+        all_texts = [raw for _, raw, _ in uniq]
+        char_lengths = sorted(len(t) for t in all_texts)
+        ending_counter: Counter = Counter()
+        for t in all_texts:
             m = _ending_re.search(t.rstrip())
             if m:
-                endings_raw.append(m.group(1))
-        ending_counts = defaultdict(int)
-        for e in endings_raw:
-            ending_counts[e] += 1
-        frequent_endings = sorted(
-            ending_counts.keys(), key=lambda e: -ending_counts[e]
-        )[:5]
+                ending_counter[m.group(1)] += 1
 
-        # ── 대표 샘플 선택 (semantic_tag diversity 반영) ──
-        if len(entries) <= max_samples:
-            selected_indices = list(range(len(entries)))
+        total_chars = sum(len(raw) for _, raw, _ in uniq)
+        if total_chars <= sample_text_char_budget:
+            selected = list(uniq)
+            sampling_method = "all"
         else:
-            selected = set()
-            by_len = sorted(range(len(entries)), key=lambda i: len(texts[i]))
-            selected.add(by_len[0])   # shortest
-            selected.add(by_len[-1])  # longest
-
-            # semantic_tag별 최소 1개
-            tag_groups = defaultdict(list)
-            for ei, (pidx, _) in enumerate(entries):
+            forced_idxs: set = set()
+            by_len = sorted(range(len(uniq)), key=lambda i: len(uniq[i][1]))
+            forced_idxs.add(by_len[0])
+            forced_idxs.add(by_len[-1])
+            tag_groups: dict = defaultdict(list)
+            for ei, (pidx, _, _) in enumerate(uniq):
                 tag = idx_to_tag.get(pidx, "")
                 if tag:
                     tag_groups[tag].append(ei)
-            for tag, group_indices in tag_groups.items():
-                if not any(gi in selected for gi in group_indices):
-                    selected.add(group_indices[0])
+            for _, group_indices in tag_groups.items():
+                if not any(gi in forced_idxs for gi in group_indices):
+                    forced_idxs.add(group_indices[0])
 
-            # 나머지 균등 간격
-            remaining = max_samples - len(selected)
-            if remaining > 0:
-                step = len(entries) / (remaining + 1)
-                for i in range(1, remaining + 1):
-                    candidate = int(i * step)
-                    if candidate < len(entries):
-                        selected.add(candidate)
+            selected = [uniq[i] for i in forced_idxs]
+            used_chars = sum(len(e[1]) for e in selected)
+            remaining_budget = max(0, sample_text_char_budget - used_chars)
+            avg_len = total_chars / max(1, len(uniq))
+            target_extra = int(remaining_budget / max(1, avg_len))
 
-            selected_indices = sorted(selected)[:max_samples]
+            non_forced = [i for i in range(len(uniq)) if i not in forced_idxs]
+            if target_extra >= len(non_forced):
+                selected.extend(uniq[i] for i in non_forced)
+            elif target_extra > 0:
+                step = len(non_forced) / target_extra
+                for i in range(target_extra):
+                    pos = int(i * step + step / 2)
+                    if pos < len(non_forced):
+                        selected.append(uniq[non_forced[pos]])
+            sampling_method = "stratified"
 
-        # 샘플에 sample_id + idx 부착
-        samples = []
-        for si, ei in enumerate(selected_indices):
-            pidx, text = entries[ei]
-            samples.append({
-                "sample_id": f"s{si}",
-                "idx": pidx,
-                "text": text,
-            })
+        selected.sort(key=lambda e: e[0])
+
+        samples = [
+            {"sample_id": f"s{si}", "idx": pidx, "text": raw}
+            for si, (pidx, raw, _) in enumerate(selected)
+        ]
+        char_budget_used = sum(len(s["text"]) for s in samples)
 
         meta = role_meta.get(role, {})
         result.append({
@@ -6396,12 +6416,22 @@ def _collect_style_samples(
             "marker": meta.get("marker", ""),
             "description": meta.get("description", ""),
             "level": meta.get("level", 0),
-            "sample_count": len(entries),
+            "raw_count": raw_count,
+            "dedup_count": dedup_count,
+            "selected_count": len(samples),
+            "sampling_method": sampling_method,
+            "char_budget_used": char_budget_used,
+            "char_budget_cap": sample_text_char_budget,
             "samples": samples,
             "raw_measurements": {
-                "char_lengths": char_lengths,
-                "char_length_range": [min(char_lengths), max(char_lengths)],
-                "text_endings_raw": frequent_endings,
+                "char_lengths_all": char_lengths,
+                "char_length_min": char_lengths[0] if char_lengths else 0,
+                "char_length_max": char_lengths[-1] if char_lengths else 0,
+                "char_length_mean": (sum(char_lengths) / len(char_lengths)) if char_lengths else 0,
+                "char_length_p25": _percentile(char_lengths, 0.25),
+                "char_length_p50": _percentile(char_lengths, 0.50),
+                "char_length_p75": _percentile(char_lengths, 0.75),
+                "text_endings_counter": dict(ending_counter),
                 "semantic_tag_distribution": dict(tag_dist.get(role, {})),
             },
         })
@@ -6410,53 +6440,56 @@ def _collect_style_samples(
 
 
 def build_style_profile_prompt(
-    role_batch: list[dict],
+    cluster_entries: list[dict],
 ) -> list[dict]:
     """
-    role batch에 대한 style profile AI prompt를 생성합니다.
+    여러 cluster의 style profile AI prompt를 생성 (batch).
 
     Args:
-        role_batch: _collect_style_samples 결과의 subset (8~10 roles)
+        cluster_entries: _collect_style_samples 결과 list의 subset (예: 10개씩 chunk)
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
     """
     user_parts = []
-    for entry in role_batch:
-        role = entry["role"]
+    for entry in cluster_entries:
+        role = entry.get("role", "")
         marker = entry.get("marker", "")
         desc = entry.get("description", "")
         level = entry.get("level", 0)
-        sc = entry["sample_count"]
-        raw = entry.get("raw_measurements", {})
-        endings = raw.get("text_endings_raw", [])
-        lengths = raw.get("char_length_range", [0, 0])
-        tag_dist = raw.get("semantic_tag_distribution", {})
+        raw_count = entry.get("raw_count", 0)
+        dedup_count = entry.get("dedup_count", 0)
+        selected_count = entry.get("selected_count", 0)
+        sampling_method = entry.get("sampling_method", "all")
+        tag_dist = (entry.get("raw_measurements") or {}).get("semantic_tag_distribution", {})
 
-        header = f"### {role}"
+        header = f"## {role}"
         if marker:
-            header += f" (마커: {marker})"
-        header += f" — level {level}, {sc}개 샘플"
+            header += f"  (양식 marker: {marker})"
+        header += f"  — level {level}"
         if desc:
             header += f"\n설명: {desc}"
+        header += (
+            f"\nparagraph 수: {raw_count} (dedup 후 {dedup_count})"
+            f", sample 전달: {selected_count} ({sampling_method})"
+        )
         if tag_dist:
             tag_str = ", ".join(f"{t}:{n}" for t, n in sorted(tag_dist.items()))
             header += f"\nsemantic_tag 분포: {tag_str}"
-        header += f"\n길이 범위: {lengths[0]}~{lengths[1]}자"
-        if endings:
-            header += f"\n빈출 어미: {endings}"
 
-        # sample_id 기반 출력
         samples_text = "\n".join(
             f"  [{s['sample_id']}] {s['text']}"
             for s in entry.get("samples", [])
         )
-        user_parts.append(f"{header}\n샘플:\n{samples_text}")
+        user_parts.append(f"{header}\n\nsample paragraph:\n{samples_text}")
 
     user_content = (
-        f"아래 {len(role_batch)}개 role의 문체를 분석하세요.\n\n"
+        f"아래 {len(cluster_entries)}개 cluster를 batch로 분석. "
+        f"profiles 배열에 cluster 수만큼 entry 출력.\n\n"
         + "\n\n".join(user_parts)
-        + "\n\n반드시 JSON만 출력하세요."
+        + f"\n\n위 {len(cluster_entries)}개 cluster를 각각 분석해서 profiles 배열로 JSON 출력. "
+        "각 rule에 적용 조건 + (필요 시) 비적용 조건 + 근거 [sN, sN] inline 인용 필수. "
+        "sample_id는 해당 cluster 안에서만 유효 — 다른 cluster sample_id 인용 X."
     )
 
     return [
@@ -6465,29 +6498,559 @@ def build_style_profile_prompt(
     ]
 
 
-def parse_style_profile_from_llm(llm_response: str) -> list[dict]:
-    """AI 응답에서 style profile JSON을 파싱합니다."""
-    import re
+def parse_style_profile_from_llm(
+    llm_response: str,
+    cluster_entries: list[dict],
+) -> dict:
+    """
+    batch AI 응답에서 cluster별 style profile 파싱.
+
+    cluster_entries를 base truth로 사용 — AI가 cluster 빠뜨려도 빈 entry 보존.
+
+    Returns:
+        {
+            cluster_id: {
+                "role": str,
+                "content_style_rules_for_generation": list[str],
+                "additional_observations": str,
+                "_parse_status": "ok" | "parse_failed" | "schema_violation",
+                "_evidence_missing_rule_count": int,
+            },
+            ...
+        }
+    """
+    import re as _re
+
+    expected_roles = [e.get("role", "") for e in cluster_entries if e.get("role")]
+
+    def _empty_for_role(role: str, status: str, raw_preview: str = "") -> dict:
+        return {
+            "role": role,
+            "content_style_rules_for_generation": [],
+            "additional_observations": "",
+            "_parse_status": status,
+            "_evidence_missing_rule_count": 0,
+            "_raw_response_preview": raw_preview,
+        }
+
     text = llm_response.strip()
-    # ```json ... ``` 블록 추출
-    m = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    m = _re.search(r"```(?:json)?\s*\n?(.*?)```", text, _re.DOTALL)
     if m:
         text = m.group(1).strip()
+
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
-        # 배열 직접 시도
-        try:
-            data = json.loads(f'{{"profiles": {text}}}')
-        except json.JSONDecodeError:
-            log.warning("[STYLE-PROFILE] JSON 파싱 실패")
-            return []
+    except json.JSONDecodeError as e:
+        log.warning(f"[STYLE-PROFILE batch] JSON 파싱 실패: {e}")
+        return {r: _empty_for_role(r, "parse_failed", llm_response[:1000]) for r in expected_roles}
 
-    if isinstance(data, dict):
-        return data.get("profiles", [])
-    if isinstance(data, list):
-        return data
-    return []
+    if not isinstance(data, dict):
+        return {r: _empty_for_role(r, "schema_violation", llm_response[:1000]) for r in expected_roles}
+
+    ai_profiles = data.get("profiles") or data.get("data") or []
+    if not isinstance(ai_profiles, list):
+        return {r: _empty_for_role(r, "schema_violation", llm_response[:1000]) for r in expected_roles}
+
+    _evidence_re = _re.compile(r"\[s\d+(?:\s*,\s*s\d+)*\]")
+
+    result: dict = {}
+    # AI 출력 우선 매핑
+    for ai_p in ai_profiles:
+        if not isinstance(ai_p, dict):
+            continue
+        role = ai_p.get("role", "") or ""
+        if not role or role not in expected_roles:
+            continue
+        rules_raw = ai_p.get("content_style_rules_for_generation", []) or []
+        rules = [str(r).strip() for r in rules_raw if str(r).strip()]
+        obs = str(ai_p.get("additional_observations", "") or "").strip()
+        missing = sum(1 for r in rules if not _evidence_re.search(r))
+        result[role] = {
+            "role": role,
+            "content_style_rules_for_generation": rules,
+            "additional_observations": obs,
+            "_parse_status": "ok",
+            "_evidence_missing_rule_count": missing,
+        }
+
+    # AI가 빠뜨린 cluster 보전
+    for r in expected_roles:
+        if r not in result:
+            result[r] = _empty_for_role(r, "missing_in_ai_response")
+
+    return result
+
+
+def extract_paragraph_emphasis_map(
+    hwpx_source,
+    paragraphs: list[dict],
+    idx_full_texts: dict | None = None,
+) -> dict:
+    """
+    Stage 11.2b 보조 (code only — AI 호출 X):
+    원본 양식 zipfile을 직접 열어 paragraph별 run segment를 추출 + cluster별 layer 부여.
+
+    원칙:
+    - 코드는 글꼴 ID 차이만 식별 (base vs 강조 단정 X)
+    - paragraph 안 글꼴 ID 종류가 2개 이상이면 그 paragraph는 markup 후보
+    - cluster 안 글꼴 ID 종류에 em1/em2/... 일관 layer 부여 (빈도 내림차순 + ID 안정)
+    - layer/segment 통계를 함께 제공 — AI가 base 판정 시 참고
+
+    1a paragraph.idx ↔ raw zip top-level p index 매핑은 _build_1a_to_xml_p_idx_mapping
+    (13.7b 매핑 함수) 활용. idx_full_texts 미제공 시 sequential fallback (정확도 ↓).
+
+    Args:
+        hwpx_source: 양식 경로 또는 bytes/file-like (HwpxDocument.open 가능한 형태)
+        paragraphs: structure["paragraphs"] (각 paragraph의 cluster_id는 "role" 필드)
+        idx_full_texts: section_results[N].idx_full_texts (1a paragraph idx → text).
+                        제공 시 정확한 idx 매핑 가능.
+
+    Returns:
+        {
+            cluster_id: {
+                "charpr_to_layer": {charpr_id: "emN"},
+                "layer_stats": [
+                    {"layer_id": "em1", "charpr_id": str,
+                     "segment_count": int, "char_count": int,
+                     "paragraph_count": int},
+                    ...
+                ],
+                "total_paragraphs_in_cluster": int,
+                "multi_charpr_paragraph_count": int,
+                "sample_paragraphs": [
+                    {
+                        "paragraph_idx": int,
+                        "segments": [{"charpr_id": str, "layer_id": "emN", "text": str}, ...],
+                        "annotated_text": str,  # "[[em1]]...[[/em1]][[em2]]...[[/em2]]"
+                    },
+                    ...
+                ]
+            }
+        }
+        cluster 안 글꼴 ID가 1종뿐이면 entry 생략 (강조 없음).
+    """
+    from collections import Counter, defaultdict
+    from hwpx.document import HwpxDocument
+    import io as _io
+
+    if isinstance(hwpx_source, str):
+        doc = HwpxDocument.open(hwpx_source)
+    elif isinstance(hwpx_source, (bytes, bytearray)):
+        doc = HwpxDocument.open(_io.BytesIO(hwpx_source))
+    else:
+        doc = HwpxDocument.open(hwpx_source)
+
+    # paragraph idx → cluster_id (structure 기준; 1a paragraph.idx — 재할당된 0~N sequential)
+    idx_to_cluster = {p.get("idx"): p.get("role", "") for p in paragraphs if p.get("role")}
+
+    # 양식 zip top-level p 수집 (raw — charPr 보존)
+    xml_p_elements: list = []
+    xml_p_texts: list = []
+    for section in doc.sections:
+        try:
+            sec_elem = section.element
+        except AttributeError:
+            continue
+        for p_elem in sec_elem.findall(f"{NS_HP}p"):
+            xml_p_elements.append(p_elem)
+            text = "".join(t.text or "" for t in p_elem.iter(f"{NS_HP}t"))
+            xml_p_texts.append(text)
+
+    # 1a paragraph.idx → xml top-level p index 매핑 (13.7b 검증 helper 활용)
+    if idx_full_texts:
+        ai_to_xml = _build_1a_to_xml_p_idx_mapping(idx_full_texts, xml_p_texts)
+    else:
+        # idx_full_texts 미제공 fallback — sequential 가정 (정확도 떨어짐)
+        log.warning("[11.2b] idx_full_texts not provided — using sequential fallback (idx mismatch 위험)")
+        ai_to_xml = {i: i for i in range(min(len(paragraphs), len(xml_p_elements)))}
+    # 역방향 매핑 (xml idx → 1a idx)
+    xml_to_ai = {xml_idx: ai_idx for ai_idx, xml_idx in ai_to_xml.items()}
+
+    # cluster별 통계 + per-paragraph segment list
+    cluster_charpr_seg_count: dict = defaultdict(Counter)   # cluster → cp → seg_count
+    cluster_charpr_char_count: dict = defaultdict(Counter)  # cluster → cp → char_count
+    cluster_charpr_para: dict = defaultdict(lambda: defaultdict(set))  # cluster → cp → 1a idx set
+    cluster_total_para = Counter()
+    cluster_multi_para_count = Counter()
+    cluster_paragraph_segments: dict = defaultdict(list)  # cluster → list of (ai_idx, [(cp, text), ...])
+
+    for xml_idx, p_elem in enumerate(xml_p_elements):
+        ai_idx = xml_to_ai.get(xml_idx)
+        if ai_idx is None:
+            continue  # 1a 분석 제외된 paragraph
+        cluster_id = idx_to_cluster.get(ai_idx, "")
+        if not cluster_id:
+            continue
+        cluster_total_para[cluster_id] += 1
+
+        # run segments — 텍스트 박스(tbl) 안 cell paragraph의 run까지 포함.
+        # p_elem.iter("run")이 모든 descendant run 반환. cell 안 다른 글꼴 인식.
+        # 단 각 run의 direct t만 사용 (recursive iter면 cell run의 t를 outer가
+        # 또 가져오는 중복 발생).
+        segments: list = []
+        for run in p_elem.iter(f"{NS_HP}run"):
+            cp = run.get("charPrIDRef", "0")
+            text_parts = [t.text or "" for t in run.findall(f"{NS_HP}t")]
+            text = "".join(text_parts)
+            if not text:
+                continue
+            segments.append((cp, text))
+
+        if not segments:
+            continue
+
+        distinct_cps = set(cp for cp, _ in segments)
+
+        # 통계 (모든 paragraph 반영 — 단일 cp paragraph도 base 판정 hint)
+        for cp, text in segments:
+            cluster_charpr_seg_count[cluster_id][cp] += 1
+            cluster_charpr_char_count[cluster_id][cp] += len(text)
+            cluster_charpr_para[cluster_id][cp].add(ai_idx)
+
+        if len(distinct_cps) >= 2:
+            cluster_multi_para_count[cluster_id] += 1
+            # multi-charpr paragraph만 sample_paragraphs에 보존
+            cluster_paragraph_segments[cluster_id].append(
+                (ai_idx, segments)
+            )
+
+    # cluster 안 글꼴 종류 1종뿐인 cluster는 entry 생략 (강조 없음)
+    result: dict = {}
+    for cluster_id, seg_counter in cluster_charpr_seg_count.items():
+        if len(seg_counter) < 2:
+            continue
+
+        # layer 부여 (빈도 내림차순, 동률 시 charpr id 사전순 — 결정적)
+        sorted_cps = sorted(
+            seg_counter.keys(),
+            key=lambda cp: (-seg_counter[cp], cp),
+        )
+        charpr_to_layer = {cp: f"em{i + 1}" for i, cp in enumerate(sorted_cps)}
+
+        layer_stats = []
+        for cp in sorted_cps:
+            layer_stats.append({
+                "layer_id": charpr_to_layer[cp],
+                "charpr_id": cp,
+                "segment_count": seg_counter[cp],
+                "char_count": cluster_charpr_char_count[cluster_id][cp],
+                "paragraph_count": len(cluster_charpr_para[cluster_id][cp]),
+            })
+
+        # multi-charpr paragraph → annotated text
+        sample_paragraphs = []
+        for pidx, segs in cluster_paragraph_segments[cluster_id]:
+            seg_list = []
+            annotated_parts = []
+            for cp, text in segs:
+                layer = charpr_to_layer[cp]
+                seg_list.append({
+                    "charpr_id": cp,
+                    "layer_id": layer,
+                    "text": text,
+                })
+                annotated_parts.append(f"[[{layer}]]{text}[[/{layer}]]")
+            sample_paragraphs.append({
+                "paragraph_idx": pidx,
+                "segments": seg_list,
+                "annotated_text": "".join(annotated_parts),
+            })
+
+        result[cluster_id] = {
+            "charpr_to_layer": charpr_to_layer,
+            "layer_stats": layer_stats,
+            "total_paragraphs_in_cluster": cluster_total_para[cluster_id],
+            "multi_charpr_paragraph_count": cluster_multi_para_count[cluster_id],
+            "sample_paragraphs": sample_paragraphs,
+        }
+
+    return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stage 11.2b: Inline Emphasis Layer Analysis (AI)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EMPHASIS_LAYER_PROMPT = """당신은 한국 행정문서의 inline 강조 패턴 분석 전문가입니다.
+
+여러 role_cluster의 양식 paragraph sample이 주어집니다. 각 sample은 글꼴 ID
+종류에 따라 [[em1]]...[[/em1]] / [[em2]]...[[/em2]] 등 markup으로 표시되어 있습니다.
+
+**중요**: 코드는 글꼴 ID 종류만 분리해 layer를 부여했을 뿐, **어느 layer가
+base(일반 텍스트)이고 어느 layer가 강조인지는 판정하지 않았습니다**.
+당신이 cluster마다 sample을 보고 base vs 강조를 결정하세요.
+
+## 결정 원칙
+
+1. **base 판정**: 보통 cluster 안에서 가장 많은 영역을 차지하는 layer가 base.
+   layer 통계(segment 수, char 수, paragraph 수)를 참고하되, sample 양상을
+   우선합니다 — 통계는 hint, 실제 의미는 sample 보고 판단.
+2. **강조 layer**: base 외 모든 layer. 각 강조 layer마다 적용 패턴 분석.
+3. **양식 디자이너의 의도와 무관하게 다른 글꼴이면 강조로 본다** — 미적 이유든
+   의미 강조든 상관 없이, 양식 원본의 시각적 차이를 그대로 재현.
+4. **layer_id / charpr_id는 input과 동일하게 유지**. 합치거나 분리 X.
+
+## 각 강조 layer rule 작성 원칙
+
+1. **양식 sample에서 직접 관찰 가능한 패턴만**. 일반 행정문서 규칙 X.
+2. **rule 문장 안에 반드시 포함**:
+   - **적용 조건** (언제 이 layer 사용)
+   - **비적용 조건** (필요 시; 예외)
+   - **근거 sample id** `[s2, s5, s8]` 형식 inline 인용 (필수)
+3. **의미 기반 패턴 OK** ("paragraph의 핵심 결론 명사구" 등). 결정적 위치 룰
+   아니어도 됨 — 2b가 generation 시점에 의미 판단해서 markup.
+4. **각 cluster의 sample_id는 해당 cluster 안에서만 유효** — 다른 cluster
+   sample_id 인용 X.
+
+## 좋은 rule 예시
+
+> "em2: □ 마커 직후 첫 짧은 괄호 핵심어. 문장 중간의 보충 설명 괄호는 X.
+>  근거: [s2, s5, s8]"
+
+## 출력 형식
+
+반드시 아래 JSON만 출력. **clusters 배열에 input cluster 수만큼 entry**.
+
+```json
+{
+  "clusters": [
+    {
+      "role": "<role_cluster_N>",
+      "base_layer_id": "<input layer_id 중 하나 — base로 판정한 것>",
+      "base_judgement_reason": "<base를 그 layer로 판정한 근거 — sample 패턴 + 통계>",
+      "emphasis_layers": [
+        {
+          "layer_id": "<base 외 layer_id 그대로>",
+          "charpr_id": "<input charpr_id 그대로>",
+          "rules_for_generation": [
+            "<rule 1: 적용 조건 + (필요 시 비적용 조건) + [sN, sN] inline>",
+            ...
+          ]
+        },
+        ...
+      ],
+      "additional_observations": "<rules로 정형화 못 한 패턴 / 분포 / 예외. 자유 자연어. evidence inline [sN]. 없으면 빈 문자열.>"
+    },
+    ...
+  ]
+}
+```
+
+base 외 layer 없으면(sample이 모두 한 layer만) emphasis_layers는 빈 list.
+"""
+
+
+def build_emphasis_layer_prompt(
+    cluster_entries: list[tuple],
+) -> list[dict]:
+    """
+    여러 cluster의 emphasis layer 분석 batch AI prompt 생성.
+
+    Args:
+        cluster_entries: [(cluster_id, cluster_emphasis_entry), ...]
+            cluster_emphasis_entry는 extract_paragraph_emphasis_map의 한 entry
+
+    Returns:
+        [{"role": "system", ...}, {"role": "user", ...}]
+    """
+    user_parts = []
+    for cluster_id, em_entry in cluster_entries:
+        layer_stats = em_entry.get("layer_stats", [])
+        sample_paragraphs = em_entry.get("sample_paragraphs", [])
+        total_para = em_entry.get("total_paragraphs_in_cluster", 0)
+        multi_para = em_entry.get("multi_charpr_paragraph_count", 0)
+
+        layer_stats_lines = []
+        for ls in layer_stats:
+            layer_stats_lines.append(
+                f"  - {ls['layer_id']} (charpr_id={ls['charpr_id']}): "
+                f"segments={ls['segment_count']}, chars={ls['char_count']}, "
+                f"paragraphs={ls['paragraph_count']}"
+            )
+
+        sample_lines = []
+        for si, sp in enumerate(sample_paragraphs):
+            sample_lines.append(f"  [s{si}] {sp.get('annotated_text', '')}")
+
+        header = (
+            f"## {cluster_id}\n"
+            f"총 paragraph: {total_para} (multi-charpr paragraph: {multi_para})\n"
+            f"layer 통계 (input과 동일하게 출력 필수):\n"
+            + "\n".join(layer_stats_lines)
+        )
+        body = (
+            f"{header}\n\n"
+            f"양식 sample paragraph (글꼴 layer markup):\n"
+            + "\n".join(sample_lines)
+        )
+        user_parts.append(body)
+
+    user_content = (
+        f"아래 {len(cluster_entries)}개 cluster를 batch로 분석. "
+        f"clusters 배열에 cluster 수만큼 entry 출력.\n\n"
+        + "\n\n".join(user_parts)
+        + f"\n\n위 {len(cluster_entries)}개 cluster 각각에 대해 base_layer 판정 + "
+        "강조 layer rules를 JSON으로 출력. 각 rule에 적용 조건 + (필요 시) "
+        "비적용 조건 + 근거 [sN] inline 인용 필수. sample_id는 해당 cluster 내에서만 유효."
+    )
+
+    return [
+        {"role": "system", "content": EMPHASIS_LAYER_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def parse_emphasis_layer_from_llm(
+    llm_response: str,
+    cluster_entries: list[tuple],
+) -> dict:
+    """
+    batch AI 응답에서 cluster별 emphasis layer rule 파싱.
+
+    cluster_entries를 base truth로 사용 — AI가 cluster 빠뜨려도 빈 entry 보존.
+
+    Returns:
+        {
+            cluster_id: {
+                "role": str,
+                "base_layer_id": str,
+                "base_charpr_id": str,
+                "base_judgement_reason": str,
+                "emphasis_layers": [{"layer_id", "charpr_id", "segment_count", "rules_for_generation"}, ...],
+                "additional_observations": str,
+                "_parse_status": "ok" | "parse_failed" | ...,
+                "_evidence_missing_rule_count": int,
+            },
+            ...
+        }
+    """
+    import re as _re
+
+    def _fallback_for_cluster(cluster_id: str, em_entry: dict, status: str, raw: str = "") -> dict:
+        stats = em_entry.get("layer_stats", []) or []
+        if stats:
+            base = stats[0]
+            non_base = stats[1:]
+        else:
+            base = {"layer_id": "", "charpr_id": ""}
+            non_base = []
+        return {
+            "role": cluster_id,
+            "base_layer_id": base.get("layer_id", ""),
+            "base_charpr_id": base.get("charpr_id", ""),
+            "base_judgement_reason": f"fallback ({status}) — segment 수 최다 layer를 base로 가정",
+            "emphasis_layers": [
+                {
+                    "layer_id": ls["layer_id"],
+                    "charpr_id": ls["charpr_id"],
+                    "segment_count": ls.get("segment_count", 0),
+                    "rules_for_generation": [],
+                }
+                for ls in non_base
+            ],
+            "additional_observations": "",
+            "_parse_status": status,
+            "_evidence_missing_rule_count": 0,
+            "_raw_response_preview": raw[:1000] if raw else "",
+        }
+
+    entry_by_id = {cid: em for cid, em in cluster_entries}
+    expected_ids = [cid for cid, _ in cluster_entries]
+
+    text = llm_response.strip()
+    m = _re.search(r"```(?:json)?\s*\n?(.*?)```", text, _re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        log.warning(f"[EMPHASIS-LAYER batch] JSON 파싱 실패: {e}")
+        return {cid: _fallback_for_cluster(cid, entry_by_id[cid], "parse_failed", llm_response) for cid in expected_ids}
+
+    if not isinstance(data, dict):
+        return {cid: _fallback_for_cluster(cid, entry_by_id[cid], "schema_violation", llm_response) for cid in expected_ids}
+
+    ai_clusters = data.get("clusters") or data.get("data") or []
+    if not isinstance(ai_clusters, list):
+        return {cid: _fallback_for_cluster(cid, entry_by_id[cid], "schema_violation", llm_response) for cid in expected_ids}
+
+    _evidence_re = _re.compile(r"\[s\d+(?:\s*,\s*s\d+)*\]")
+    result: dict = {}
+
+    for ai_c in ai_clusters:
+        if not isinstance(ai_c, dict):
+            continue
+        cluster_id = ai_c.get("role", "") or ""
+        if cluster_id not in entry_by_id:
+            continue
+        em_entry = entry_by_id[cluster_id]
+        layer_stats = em_entry.get("layer_stats", []) or []
+        layer_lookup = {ls["layer_id"]: ls for ls in layer_stats}
+
+        base_layer_id = ai_c.get("base_layer_id", "") or ""
+        base_entry = layer_lookup.get(base_layer_id)
+        if base_entry is None and layer_stats:
+            base_entry = layer_stats[0]
+            base_layer_id = base_entry["layer_id"]
+            base_reason = "AI base_layer_id invalid → fallback (segment 수 최다)"
+        else:
+            base_reason = str(ai_c.get("base_judgement_reason", "") or "").strip()
+        base_charpr_id = (base_entry or {}).get("charpr_id", "")
+
+        ai_layers = ai_c.get("emphasis_layers", []) or []
+        missing = 0
+        emphasis_out = []
+        seen = set()
+        for al in ai_layers:
+            if not isinstance(al, dict):
+                continue
+            lid = al.get("layer_id", "") or ""
+            if lid == base_layer_id or lid not in layer_lookup:
+                continue
+            base_l = layer_lookup[lid]
+            rules_raw = al.get("rules_for_generation", []) or []
+            rules = [str(r).strip() for r in rules_raw if str(r).strip()]
+            for r in rules:
+                if not _evidence_re.search(r):
+                    missing += 1
+            emphasis_out.append({
+                "layer_id": lid,
+                "charpr_id": base_l["charpr_id"],
+                "segment_count": base_l.get("segment_count", 0),
+                "rules_for_generation": rules,
+            })
+            seen.add(lid)
+
+        # AI가 빠뜨린 non-base layer 보존
+        for ls in layer_stats:
+            if ls["layer_id"] == base_layer_id or ls["layer_id"] in seen:
+                continue
+            emphasis_out.append({
+                "layer_id": ls["layer_id"],
+                "charpr_id": ls["charpr_id"],
+                "segment_count": ls.get("segment_count", 0),
+                "rules_for_generation": [],
+            })
+
+        obs = str(ai_c.get("additional_observations", "") or "").strip()
+        result[cluster_id] = {
+            "role": cluster_id,
+            "base_layer_id": base_layer_id,
+            "base_charpr_id": base_charpr_id,
+            "base_judgement_reason": base_reason,
+            "emphasis_layers": emphasis_out,
+            "additional_observations": obs,
+            "_parse_status": "ok",
+            "_evidence_missing_rule_count": missing,
+        }
+
+    # AI 누락 cluster fallback
+    for cid in expected_ids:
+        if cid not in result:
+            result[cid] = _fallback_for_cluster(cid, entry_by_id[cid], "missing_in_ai_response")
+
+    return result
 
 
 def _build_chapter_types(paragraphs: list[dict]) -> dict:
@@ -9327,13 +9890,28 @@ def write_stage_debug_files(
         _skip("12_structural_intent.json")
 
     # ═══════════════════════════════════════════════════════════════
-    # 12b. Style profile observation (Stage 11.2)
+    # 12b. Style profile (Stage 11.2) — v2 key "style_profile" (singular)
     # ═══════════════════════════════════════════════════════════════
-    _sp_data = debug_payload.get("style_profiles")
+    _sp_data = debug_payload.get("style_profile") or debug_payload.get("style_profiles")
     if _sp_data:
         _write("12b_style_profile.json", _sp_data)
     else:
         _skip("12b_style_profile.json")
+
+    # ═══════════════════════════════════════════════════════════════
+    # 12d. Emphasis layers (Stage 11.2b — markup 기반)
+    # ═══════════════════════════════════════════════════════════════
+    _em_data = debug_payload.get("emphasis_layer") or {}
+    _el_data = _em_data.get("emphasis_layers")
+    if _el_data:
+        _write("12d_emphasis_layers.json", {
+            "from_cache": _em_data.get("from_cache", False),
+            "emphasis_cluster_count": _em_data.get("emphasis_cluster_count", 0),
+            "emphasis_layers": _el_data,
+            "paragraph_emphasis_map_summary": _em_data.get("paragraph_emphasis_map_summary", {}),
+        })
+    else:
+        _skip("12d_emphasis_layers.json")
 
     # ═══════════════════════════════════════════════════════════════
     # 13. Template unit observation (12.0)
@@ -14713,7 +15291,7 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 - **role의 description은 구조적·관계적 역할만 기술**합니다. 주제는 무관.
 - **role의 sample text는 스타일(문장 길이/포맷) 참고용**입니다. **주제는 완전히 무시**하세요.
 - sample이 "딸기 가격이 15% 상승"이라도 당신 소스가 야구라면 "관중 수가 15% 증가"처럼 **해당 소스 주제로 작성**
-- sample의 **길이/문체/마커/숫자 포함 여부** 같은 형식만 따르세요
+- sample의 **길이/문체/숫자 포함 여부** 같은 형식만 따르세요 (marker는 코드가 처리)
 
 ## role의 성격: 제목 vs 본문
 
@@ -14742,8 +15320,8 @@ chapter title을 그대로 복제하지 마세요. chapter title은 양식 전�
 - sample이 chapter title 자체가 아니라 chapter 안의 **별도 측면**(구체적 성과,
   세부 전략, sub-과제, intro 요약 등)을 보여주면 그 패턴 그대로 따라가세요.
 - chapter title보다 한 단계 좁고 구체적인 sub-주제로 작성하세요.
-- 양식 sample의 스타일·길이·marker는 따르되, 주제는 당신 source의 해당 부분 내용을
-  사용 (스타일 모방, 내용 복제 X).
+- 양식 sample의 스타일·길이는 따르되, 주제는 당신 source의 해당 부분 내용을
+  사용 (스타일 모방, 내용 복제 X). **marker는 본문에 넣지 마세요 — 코드가 자동 부착합니다**.
 
 이 규칙은 트리 모든 단계에 동일: 부모→자식으로 내려갈수록 더 구체적 정보로
 좁혀져야 하며, 같은 정보가 부모와 자식에 중복되면 안 됩니다.
@@ -14779,28 +15357,41 @@ section_header
 소스에서 ※로 시작하더라도 내용이 주제 설명이면 detail_item일 수 있고,
 소스에서 ㅇ로 시작하더라도 내용이 보충 설명이면 note일 수 있습니다.
 
-## 마커 규칙 (format_rules 참조)
+## 강조 표시 — 양식 글꼴 분리 보존 (있을 경우)
 
-프롬프트에 주어진 **"포맷 규칙"** 섹션을 확인하고 role별 marker_style에 따라:
+prompt에 **"role별 강조 layer 가이드"** 섹션이 있으면 양식이 이 role에서 inline 강조
+(색·굵기·배경)을 사용한다는 뜻입니다. 그 cluster의 강조 패턴을 다음 markup으로 출력
+text에 표시하세요:
 
-- `marker_style: fixed` — markers_sample의 **첫 마커**를 매번 사용
-- `marker_style: enumerate` — markers_sample의 **순서**를 유지하고, 샘플 길이를 넘어가면 **자연스럽게 확장**:
-  - 마커 시퀀스 패턴 (유니코드 +1, 반복 확장, 번호 증가 등) 보고 일관 유지
-  - 예: 첫 3개 sample 보면 4번째가 어떻게 와야 할지 추론 가능
-  - **절대 다시 sample의 첫 마커로 돌아가지 마세요** (단조 증가)
+```
+[[em2]]강조할 부분[[/em2]]
+```
+
+- base layer (가이드의 base_layer_id)는 markup 안 함. 일반 텍스트로 작성.
+- 그 외 강조 layer (em2/em3/...)는 해당 rule 적용 조건에 맞는 segment만 감쌈.
+- 한 paragraph 안에 여러 강조 layer 가능: `일반 [[em2]]강조1[[/em2]] 일반 [[em3]]강조2[[/em3]] 일반`
+- 강조 rule이 모호하거나 적용 안 해야 하면 markup 없이 그대로 (base).
+- cluster에 정의되지 않은 layer 사용 금지.
+- 가이드 없는 role은 markup 안 함 (전체 base).
+
+조립 단계가 markup parse해서 양식의 정확한 글꼴 ID(charPrIDRef)를 각 segment에 적용합니다.
+
+## 마커 — 코드가 자동 처리
+
+**marker (➊, ➋, ◈, 과제 N, [전략N], □ 등)는 본문에 넣지 마세요.**
+조립 단계에서 role에 맞는 marker를 sibling_index 기반으로 자동 부착합니다.
+AI는 marker 없이 **본문 내용만** 출력하세요.
 
 ## 들여쓰기 — 신경 쓰지 마세요
 
 출력 text에 **앞 공백/탭 넣지 마세요**. 조립 단계에서 자동 부착됩니다.
 
-text 구성: marker (해당 role의 markers_sample 참고) + separator + 본문 내용
-- 마커 있는 role: 마커 + 공백 + 본문
-- 마커 없는 role: 본문만
+text 구성: **본문 내용만** (marker, 공백, 들여쓰기 모두 코드가 자동 처리)
 
 ## 텍스트 작성 규칙
-- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요** — description은 role 선택의 참고용이며 출력 텍스트에 포함하면 안 됩니다
+- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요**
+- **marker(➊, ◈, □, ※, ⇒, *, - 등)도 텍스트에 넣지 마세요** — 코드가 자동 부착
 - 소스의 실제 내용만 작성하세요
-- 소스의 원래 마커는 제거하고 양식 role의 markers_sample을 사용하세요
 
 ## 출력 형식
 
@@ -14863,8 +15454,8 @@ def _format_pattern_tree(
     lines = []
     prefix = "  " * indent
     for role_name, info in pattern.items():
-        marker = role_markers.get(role_name, "")
-        marker_str = f' (마커: "{marker}")' if marker else ""
+        # marker 정보 제거 — 코드가 자동 부착하므로 AI prompt에 노출 X
+        marker_str = ""
         per_parent = info.get("per_parent", "single")
         optional = info.get("optional", False)
         suggested = info.get("suggested_count", 1)
@@ -14932,6 +15523,9 @@ def build_section_fill_prompt(
     section_plan_seed: dict | None = None,
     template_chapter_context: dict | None = None,
     cooccurrence_rules: list = None,
+    style_profiles: dict | None = None,
+    emphasis_layers: dict | None = None,
+    paragraph_emphasis_map: dict | None = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -14986,37 +15580,8 @@ def build_section_fill_prompt(
     pattern_roles = set()
     _collect_roles(pattern, pattern_roles)
 
-    # format_rules 섹션 — 현재 chapter 패턴에 등장하는 role만
+    # format_rules 섹션 제거 — marker 정보를 AI에 노출하지 않음 (코드가 자동 부착).
     format_text = ""
-    if format_rules:
-        lines_f = ["## 포맷 규칙 (marker 사용법)\n"]
-        for role in pattern_roles:
-            rule = format_rules.get(role)
-            if not rule:
-                continue
-            style = rule.get("marker_style", "fixed")
-            samples = rule.get("markers_sample", [])
-            sep = rule.get("separator", "")
-            if style == "enumerate" and samples:
-                lines_f.append(
-                    f"- `{role}`: marker_style=**enumerate**. "
-                    f"샘플 순서 `{samples}`. 샘플을 넘어가면 이어서 확장."
-                )
-            elif samples and any(s for s in samples):
-                mk = samples[0] if samples else ""
-                lines_f.append(
-                    f"- `{role}`: marker_style=**fixed**, 마커 `{mk}` 고정."
-                )
-            else:
-                lines_f.append(f"- `{role}`: 마커 없음.")
-            if sep:
-                lines_f.append(f"  (마커 뒤 구분자: `{repr(sep)}`)")
-        if len(lines_f) > 1:
-            lines_f.append(
-                "\n**출력 규칙**: text는 `마커 + separator + 내용`으로 시작. "
-                "앞 공백/탭 절대 넣지 마세요 (조립에서 자동 부착)."
-            )
-            format_text = "\n".join(lines_f) + "\n\n"
 
     # 형제 자식 variant (instance-aware white-list — hard constraint)
     # cooccurrence_rules가 새 variants 형식 (sample 포함) 가져옴. 옛 exclusive_rules는 사용 X.
@@ -15055,9 +15620,8 @@ def build_section_fill_prompt(
             lines = ["## ⚠️ 형제 자식 variant (instance-aware — hard constraint)\n"]
             lines.append(
                 "**핵심 룰 (hard constraint)**: 각 parent role의 한 인스턴스가 가질 수 있는 자식 set은\n"
-                "아래 \"자식 variant\" 중 **단 하나**입니다. 양식의 instance마다 양식 sample\n"
-                "(marker + text)이 같이 명시되니, 새 출력 instance도 자기 의미 역할에 맞는 variant를\n"
-                "1개 선택해서 그 variant의 자식만 박으세요.\n"
+                "아래 \"자식 variant\" 중 **단 하나**입니다. 양식 instance마다 sample text가 명시되니,\n"
+                "새 출력 instance도 자기 의미 역할에 맞는 variant를 1개 선택해서 그 자식만 박으세요.\n"
             )
             lines.append(
                 "- 한 instance에 두 variant 섞기 금지 (양식에서 함께 등장한 적 없음).\n"
@@ -15068,10 +15632,9 @@ def build_section_fill_prompt(
             )
             for rule in relevant:
                 parent = rule["parent"]
-                parent_marker = role_markers.get(parent, "")
-                parent_marker_str = f" (마커: \"{parent_marker}\")" if parent_marker else ""
+                # parent marker 정보 제거 — 코드가 자동 부착
                 instance_count = rule.get("instance_count", 0)
-                lines.append(f"\n### 부모: `{parent}`{parent_marker_str}")
+                lines.append(f"\n### 부모: `{parent}`")
                 if instance_count:
                     lines.append(f"- 양식 관찰: {instance_count} instance, {len(rule['variants'])} variant")
 
@@ -15084,43 +15647,130 @@ def build_section_fill_prompt(
                         samples = v.get("samples", [])
                         vic = v.get("instance_count", 0)
 
-                        marker_strs = []
-                        for r in cs:
-                            m = role_markers.get(r, "")
-                            marker_strs.append(f"`{r}`" + (f' ("{m}")' if m else ""))
+                        # child marker 정보 제거 — role name만
+                        child_strs = [f"`{r}`" for r in cs]
 
                         lines.append(f"\n  **[variant {vid}]** (양식 관찰: {vic} instance)")
-                        # 양식 instance sample 표시
+                        # 양식 instance sample — text만 표시 (marker는 제외)
                         for s in samples[:3]:
-                            sm = s.get("marker", "")
                             stx = s.get("text_preview", "")
-                            sm_str = f"marker=\"{sm}\"" if sm else "marker=없음"
-                            stx_str = f", text=\"{stx[:60]}\"" if stx else ""
-                            lines.append(f"    - 양식 instance: {sm_str}{stx_str}")
+                            if stx:
+                                lines.append(f"    - 양식 instance text: \"{stx[:80]}\"")
                         # variant 자식 set
-                        lines.append(f"    - 이 variant의 자식 set: {{ " + ", ".join(marker_strs) + " }}")
+                        lines.append(f"    - 이 variant의 자식 set: {{ " + ", ".join(child_strs) + " }}")
                         lines.append(
                             f"    → 이 양식 sample과 같은 의미/위치의 새 instance는 위 자식 set만 박기."
                         )
             exclusive_text = "\n".join(lines) + "\n\n"
 
-    # role 카탈로그 텍스트
+    # role 카탈로그 텍스트 — marker 정보 제거 (코드가 자동 부착)
     catalog_lines = []
     for role_name, info in role_catalog.items():
-        marker = info.get("marker", "")
         desc = info.get("description", "")
         sample = info.get("sample", "")
         count = info.get("count", 0)  # 양식 전체 등장 횟수 (instance 갯수 hint)
-        marker_str = f', 마커: "{marker}"' if marker else ""
         count_str = f', 양식 instance: {count}개' if count else ""
         sample_str = f'\n  예시: "{sample}"' if sample else ""
-        catalog_lines.append(f"- **{role_name}**{marker_str}{count_str}: {desc}{sample_str}")
+        catalog_lines.append(f"- **{role_name}**{count_str}: {desc}{sample_str}")
     catalog_text = (
         "\n".join(catalog_lines)
         + "\n\n(`양식 instance: N개`는 양식에서 이 role이 N번 등장했다는 뜻. "
         "출력 트리에도 가능하면 N개 인스턴스를 만드세요. 한 인스턴스에 다 못 박으면 "
         "더 만들어서 분리. 인스턴스 부족 시 자식 role을 root로 박는 거 금지.)"
     )
+
+    # 11.2 style_profiles — 패턴에 등장하는 role의 말투 rule
+    style_text = ""
+    if style_profiles:
+        _style_lines = []
+        for role in sorted(pattern_roles):
+            sp = style_profiles.get(role) or {}
+            rules = sp.get("content_style_rules_for_generation") or []
+            obs = (sp.get("additional_observations") or "").strip()
+            if not rules and not obs:
+                continue
+            _style_lines.append(f"\n### {role}")
+            for r in rules:
+                _style_lines.append(f"- {r}")
+            if obs:
+                _style_lines.append(f"- (추가 관찰): {obs}")
+        if _style_lines:
+            style_text = (
+                "## role별 말투 가이드 (양식 sample 분석 결과 — 그대로 따르세요)\n"
+                + "각 rule의 [sN]은 양식 분석 시점의 sample 번호 (참고용, 출력에 인용 X).\n"
+                + "\n".join(_style_lines)
+                + "\n\n"
+            )
+
+    # 11.2b emphasis_layers — 패턴에 등장하는 role의 강조 layer rule
+    # AI는 base 외 layer 적용 시 [[emN]]...[[/emN]] markup 사용.
+    emphasis_text = ""
+    if emphasis_layers:
+        _em_lines = []
+        for role in sorted(pattern_roles):
+            em = emphasis_layers.get(role) or {}
+            ems_list = em.get("emphasis_layers") or []
+            if not ems_list:
+                continue
+            base_lid = em.get("base_layer_id", "")
+            base_cp = em.get("base_charpr_id", "")
+            base_reason = (em.get("base_judgement_reason") or "").strip()
+            _em_lines.append(f"\n### {role}")
+            _em_lines.append(f"- base: `{base_lid}` (cp={base_cp}) — markup 안 함, 일반 텍스트로 작성")
+            if base_reason:
+                _em_lines.append(f"- base 판정 근거: {base_reason}")
+            for layer in ems_list:
+                lid = layer.get("layer_id", "")
+                cp = layer.get("charpr_id", "")
+                rules = layer.get("rules_for_generation") or []
+                if not lid:
+                    continue
+                _em_lines.append(f"- `[[{lid}]]...[[/{lid}]]` (cp={cp}):")
+                for r in rules:
+                    _em_lines.append(f"    - {r}")
+            obs = (em.get("additional_observations") or "").strip()
+            if obs:
+                _em_lines.append(f"- (추가 관찰): {obs}")
+            # 양식 본래 sample annotated_text — AI가 구체 분할 패턴 따라가도록
+            # marker는 코드가 자동 부착 → sample에서 leading marker 제거 (AI가 본문에 marker 안 넣게)
+            if paragraph_emphasis_map:
+                pem_data = paragraph_emphasis_map.get(role) or {}
+                samples = pem_data.get("sample_paragraphs") or []
+                if samples:
+                    # leading marker emphasis 제거 — code가 자동 부착하니 AI가 본문에 넣지 않게.
+                    # 글머리표 (➊➋ ◈ □ ▪ * 등), PUA 영역 (󰊱󰊲 같은 한글체 글머리표), 빈 공백·숫자 wrap만 매칭.
+                    _marker_chars = '➊➋➌➍➎➏➐➑➒➓➀➁➂➃➄➅➆➇➈➉◈◇□■▪◆▶•○●♦◀-✀-➿'
+                    _lead_marker_pat = re.compile(
+                        rf'^(\s*\[\[em\d+\]\]\s*[{_marker_chars}\s\d\.\)\(\*]+\s*\[\[/em\d+\]\]\s*)+'
+                    )
+                    # "과제 N", "전략 N" 같은 marker word
+                    _marker_word_pat = re.compile(
+                        r'^(\s*\[\[em\d+\]\]\s*(?:과제|전략|단계|목표|방향|추진과제)\s*\d*\s*\[\[/em\d+\]\]\s*)+'
+                    )
+                    _em_lines.append("- ⚡ 양식 본래 sample — **이 분할 패턴을 반드시 따라 본문 생성** (marker 제거된 본문만):")
+                    for sp in samples[:3]:
+                        ann = (sp.get("annotated_text") or "").strip()
+                        if ann:
+                            ann = _lead_marker_pat.sub('', ann).strip()
+                            ann = _marker_word_pat.sub('', ann).strip()
+                            ann = _lead_marker_pat.sub('', ann).strip()
+                            if ann:
+                                _em_lines.append(f"    - {ann}")
+                    _em_lines.append("    ↑ **위 sample과 같은 단편 수, 같은 길이, 같은 base/강조 분포**로 본문 작성하세요.")
+                    _em_lines.append("    ↑ 본문 전체를 한 `[[em]]...[[/em]]` 묶음으로 감싸지 마세요. **base 영역(조사·연결어·일반 표현)을 사이사이 둬야** sample 패턴과 일치합니다.")
+        if _em_lines:
+            emphasis_text = (
+                "## role별 강조 layer 가이드 (양식 글꼴 분리 — 강조 layer만 markup)\n"
+                + "**⚠️ 핵심 원칙**: 각 role에 표시된 '양식 본래 sample' 분할 패턴을 **반드시 따라** 본문 생성하세요.\n"
+                + "- sample이 `[[em1]]X[[/em1]][[em2]]Y[[/em2]][[em1]]Z[[/em1]][[em2]]W[[/em2]]` 식 다중 분할이면 → 본문도 같은 단편 수로 분할\n"
+                + "- sample의 base 영역(em1, markup 안 함, 조사·연결어·일반 표현)과 강조 영역이 번갈아 나오면 → 본문도 base/강조 번갈아 작성\n"
+                + "- 본문 전체를 한 `[[em]]...[[/em]]` 묶음으로 감싸는 것 **금지** (sample이 단일 묶음일 때만 허용)\n"
+                + "- 본문 길이도 sample 길이와 비슷하게 (너무 짧게 만들지 말 것)\n"
+                + "각 layer rule에 적용 조건이 명시되어 있음. 조건에 맞는 segment를 `[[layer_id]]...[[/layer_id]]`로 감싸세요.\n"
+                + "rule이 모호하거나 적용 안 해야 하면 markup 안 함 (안전).\n"
+                + "\n".join(_em_lines)
+                + "\n\n"
+            )
 
     user_parts = []
     text_block = (
@@ -15132,6 +15782,8 @@ def build_section_fill_prompt(
         f"{exclusive_text}"
         f"## 사용 가능한 role 상세\n"
         f"{catalog_text}\n\n"
+        f"{style_text}"
+        f"{emphasis_text}"
         f"## 소스 자료\n"
         f"아래 소스에서 **\"{chapter_title}\"** 섹션에 해당하는 내용을 찾아 배치하세요.\n\n"
     )
@@ -15174,28 +15826,22 @@ def build_section_fill_prompt(
     system_prompt = SECTION_FILL_PROMPT
     if content_only_mode:
         # Phase 2: 마커 규칙 교체 — AI에게 content만 출력하도록 지시
-        _old_marker_block = """## 마커 규칙 (format_rules 참조)
+        _old_marker_block = """## 마커 — 코드가 자동 처리
 
-프롬프트에 주어진 **"포맷 규칙"** 섹션을 확인하고 role별 marker_style에 따라:
-
-- `marker_style: fixed` — markers_sample의 **첫 마커**를 매번 사용
-- `marker_style: enumerate` — markers_sample의 **순서**를 유지하고, 샘플 길이를 넘어가면 **자연스럽게 확장**:
-  - 마커 시퀀스 패턴 (유니코드 +1, 반복 확장, 번호 증가 등) 보고 일관 유지
-  - 예: 첫 3개 sample 보면 4번째가 어떻게 와야 할지 추론 가능
-  - **절대 다시 sample의 첫 마커로 돌아가지 마세요** (단조 증가)
+**marker (➊, ➋, ◈, 과제 N, [전략N], □ 등)는 본문에 넣지 마세요.**
+조립 단계에서 role에 맞는 marker를 sibling_index 기반으로 자동 부착합니다.
+AI는 marker 없이 **본문 내용만** 출력하세요.
 
 ## 들여쓰기 — 신경 쓰지 마세요
 
 출력 text에 **앞 공백/탭 넣지 마세요**. 조립 단계에서 자동 부착됩니다.
 
-text 구성: marker (해당 role의 markers_sample 참고) + separator + 본문 내용
-- 마커 있는 role: 마커 + 공백 + 본문
-- 마커 없는 role: 본문만
+text 구성: **본문 내용만** (marker, 공백, 들여쓰기 모두 코드가 자동 처리)
 
 ## 텍스트 작성 규칙
-- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요** — description은 role 선택의 참고용이며 출력 텍스트에 포함하면 안 됩니다
-- 소스의 실제 내용만 작성하세요
-- 소스의 원래 마커는 제거하고 양식 role의 markers_sample을 사용하세요"""
+- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요**
+- **marker(➊, ◈, □, ※, ⇒, *, - 등)도 텍스트에 넣지 마세요** — 코드가 자동 부착
+- 소스의 실제 내용만 작성하세요"""
 
         _new_marker_block = """## 마커 규칙
 
