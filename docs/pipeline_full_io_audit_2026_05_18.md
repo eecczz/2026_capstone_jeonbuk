@@ -1,4 +1,4 @@
-# HWPX Pipeline — Full I/O Audit (2026-05-18)
+# HWPX Pipeline — Full I/O Audit (2026-05-18, refresh 2026-05-21)
 
 ## 목적
 
@@ -10,7 +10,89 @@
 - 같은 정보를 여러 단계가 set/override (drift 위험)
 - 코드는 살아있지만 호출 0인 dead-code / legacy / disabled
 
-기준 commit: `f5f49d0` (2026-05-18). 변경 시점에 따라 line number는 drift 가능.
+기준 상태: 마지막 git commit `8d1e909` (2026-05-20 refresh) **+ 워크트리 dirty (Sprint 1+2+3 미커밋, 2026-05-20 cp+DB+SIGHUP으로 배포된 상태)**. 변경 시점에 따라 line number는 drift 가능.
+
+## 2026-05-21 Refresh 요약 (Sprint 1+2+3 — 양식 분석 phase에 말투/마커-내용 글꼴/inline 강조 layer 추가)
+
+이전 5-20 refresh 후 워크트리 dirty 상태로 누적된 Sprint 1+2+3 변경 반영. 미커밋이지만 production(`/app`)에는 cp+SIGHUP으로 이미 배포됨 (handoff_2026_05_20). 영향 받은 섹션은 본문 내 `[2026-05-21 update]` 마커로 표시.
+
+| 분류 | 변경 | 영향 섹션 |
+|---|---|---|
+| **Sprint 1 — 11.2 본체 (style profile)** | cluster별 말투 rule AI 추출. STYLE_PROFILE_PROMPT + `_collect_style_samples` (80K budget stratified) + 10개 cluster batch | **NEW A5b.1** / B6 (dead → active) / A19.3 (옛 자리 dead pass block 잔존) |
+| **Sprint 1 — 11.2b emphasis** | cluster별 inline 강조 layer (charPr 다양성) AI 분석. `extract_paragraph_emphasis_map` (raw zip + tbl cell 안 run 포함) + EMPHASIS_LAYER_PROMPT + base/layer 판정 | **NEW A5b.2** |
+| **Sprint 1 — style namespace cache + ANALYSIS_ONLY_MODE valve** | main cache 와 분리된 `<hash>_style.json` (STYLE_CACHE_SCHEMA_VERSION=2). ANALYSIS_ONLY_MODE valve로 분석 phase 끝나면 early return | **NEW A5b.3** + A1.6 valve list / C1 (cache schema 별도 namespace) |
+| **Sprint 2A — 2b prompt에 style rule** | `build_section_fill_prompt`에 `style_profiles` 인자 + "role별 말투 가이드" 섹션 prompt 박음 | A13.1 |
+| **Sprint 2B — 조립 단계 marker/content 글꼴 분리** | `_replace_text_in_paragraph_elem_split` (양식 t element 중 첫 글자 매칭으로 marker_t 선택, content_t = 가장 긴 t). 양식 텍스트박스 cell의 t[0]이 공백 case 우회 | A18.6 (chapter title path) / A18.10 (body item path) |
+| **Sprint 3A — 2b prompt에 emphasis layer + markup 지시** | SECTION_FILL_PROMPT에 "강조 표시 — 양식 글꼴 분리 보존" 섹션 + `[[emN]]...[[/emN]]` markup 형식 + `build_section_fill_prompt`에 `emphasis_layers`, `paragraph_emphasis_map` 인자 | A13.1 / SECTION_FILL_PROMPT |
+| **Sprint 3B — emphasis markup parser** | `_parse_emphasis_markup` — `[[(em\d+)]](.*?)[[/em\d+]]` 매칭 + `valid_layer_ids` set으로 AI 환각 markup 무시 | A18.10 sub-step |
+| **Sprint 3C — emphasis-aware run split** | `_replace_text_with_emphasis_segments` — Sprint 2B split + content_t를 segments별 새 run으로 분할 + `charpr_map[layer_id]` 적용 | A18.10 sub-step |
+| **Sprint 3D — assemble + DB tool wire** | `assemble_hwpx_hybrid` 시그너처에 `emphasis_layers=None` 추가. body item path에서 emphasis-aware / Sprint 2B split / 기존 path 3분기. tbl_box cell paragraph target. **markup 0개 pre-parse**로 emphasis path 우회 (cluster base 박힘 회피, 양식 본래 글꼴 보존) | A18.10 |
+| **marker_separator.py — leading emphasis markup 인식** | AI가 marker도 `[[emN]]<marker>[[/emN]]`로 감싸 출력하는 경우 strip_marker가 markup 안쪽으로 marker 매칭 | A18.6b / A18.10 (strip_marker path) / A19.2 |
+
+→ **검증 완료** (사용자 어제 양식 실행으로 4 항목 확인 완료, handoff_2026_05_20 "검증해야 할 것" 통과). 다음은 다른 양식(민원인/CC7)에서도 정상 작동 + 회귀 case 발견 시 fix.
+
+## 2026-05-20 Refresh 요약 (이전 5-18 audit 대비 주요 변경 — 17 commit)
+
+이전 audit 작성 후 추가된 17개 commit이 파이프라인 위상을 크게 바꿈. 영향 받은 섹션은 본문 내 `[2026-05-20 update]` 마커로 표시.
+
+| 분류 | 변경 | 영향 섹션 |
+|---|---|---|
+| **flow reorg** | Phase E를 1c 후로 이동 (`3346bf0`) — 1e canonical clustering이 chapter context(chapter_id) 알고 결정 | A2.2 → **Phase E inline (new A2.2b)** → A2.5 / A3 reduced role |
+| **1e clustering 강화** | 자식 약화(부모 강한 신호) + chapter root cross-chapter 통합(`cc5786f`) | A2.5 |
+| **형제 배타 모델 전환** | blacklist(exclusive_rules.variants) → white-list(`sibling_cooccurrence_rules`) (`d4088a5`) + variant 단위 표현(`f8a6304`) + instance-aware + pattern_tree multi_variant 경고(`f05b773`) | A2.6 / A13 prompt input |
+| **1f table_kind 도입** | marker_policy_1f role entry에 `table_kind` (decorative_box/real_table/not_applicable) 추가 (`535e3a4`) | A2.8 / A18.10 outer fallback safety |
+| **2b prompt 강화** | root role hard constraint + instance count hint (`7f35fc0`) + chapter title 답습 금지 (`81aceb4`, `e1723f3` 일반화) | A13 |
+| **chapter title marker 자동 조립** | assembly 단계에서 양식 1f marker_policy로 chapter title marker 자동 부착 (`b3ff4ca`/`92823df`/`7acc9f1`). AI input은 `strip_chapter_title_marker`로 정제 → AI는 의미만 결정, code가 형식(marker) 책임 | **NEW A18.6b** / A12 input strip / A6 |
+| **표지(cover) preserve** | chapter title 첫 등장 전 doc.paragraphs 통째 header_indices 추가 (`e7fab74`) — truncate_xml이 빈 paragraph 제거하여 1a-doc 매핑 깨지는 문제 우회 | **NEW A18.5b** |
+| **blank line region-aware** | blank 빈 줄도 chapter_anchors[ci] 뒤에 insert (body item과 같은 path, `b0e6ffc`) | A18.10 |
+| **`_replace_text_in_paragraph_elem` t-run 보존** | cover table cell처럼 ctrl run + text run 혼합 paragraph에서 text run을 지우지 않도록 has_t 체크 추가 (`8d1e909`) | A18.6 (via marker_separator 대체 path) |
+| **seed local_title_role fallback** | `extract_chapter_template_plan_seed`이 sub-tree 없는 chapter(표/일정 위주 마지막 chapter)도 첫 paragraph role을 항상 채움 (`2cbcc4f`) | A11 |
+| **13.7c split 임계값 완화** | `should_split_adaptation_batch` default budget=128000, ratio=0.95 → threshold ~121,600자 (이전 60,000) (`18e187b`) — 작은 chapter set은 single batch 유지하여 overall_source_focus 일관성 확보 (handoff fix a 완료) | A12.3 |
+| **cache version bump** | CACHE_SCHEMA_VERSION 6 → 11 (paragraph.chapter_id, sibling_cooccurrence_rules, child_set_variants, multi_variant_parents 경고, 1e prompt 강화 누적) | C1 |
+
+[handoff fix (a)] 완료. 남은 fix (b) split path overall_source_focus 합치기는 큰 양식(수십+ chapter)에서만 유효 — 현재 양식 3개는 single batch 유지로 우회 가능.
+
+### commit traceability index (5/18 → 5/20)
+
+신규 commit과 본문 섹션 매핑. 변경 코드 위치도 함께.
+
+| commit | 설명 | 본문 섹션 | 핵심 코드 |
+|---|---|---|---|
+| `3346bf0` | Phase E를 1c 후로 이동 | A2.2b, A2.5, A3, C1.4 | `hwpx_analyzer.py:17284` (`assign_chapter_ids_from_phase_e`) + `:3108` prompt |
+| `cc5786f` | 1e clustering — 자식 약화 + chapter root cross-chapter 통합 | A2.5, C1.2 | `:2969` (`CANONICAL_CLUSTERING_PROMPT`) |
+| `d4088a5` | 형제 배타 blacklist → cooccurrence white-list | A2.6, A13.1, C1.4 | `:7880` (`compute_sibling_cooccurrence_rules`) |
+| `f8a6304` | 형제 배타 — child_set_variants (variant 단위) | A2.6, A13.1, C1.2 | `:7880` (variants field) |
+| `f05b773` | cooccurrence instance-aware + pattern_tree multi-variant 경고 | A2.6, A13.1, C1.2 | `:7880` (samples field) + `_format_pattern_tree` |
+| `535e3a4` | 1f table_kind (decorative_box vs real_table) | A2.8, A18.10 | `:3701+` (`MARKER_POLICY_PROMPT`) + `hwp_generator.py` outer fallback |
+| `7f35fc0` | 2b prompt — root role hard constraint + instance count hint | A13.1 | `:14716+` (`SECTION_FILL_PROMPT`) |
+| `81aceb4` | 2b prompt — chapter title 답습 금지 | A13.1 | `SECTION_FILL_PROMPT` 신규 섹션 |
+| `e1723f3` | SECTION_FILL_PROMPT 일반화 (양식 specific 예시 제거) | A13.1 | `SECTION_FILL_PROMPT` |
+| `b3ff4ca` | chapter title marker 자동 조립 (assembly) | A18.6b | `hwp_generator.py:1696-1725` |
+| `92823df` | chapter title marker — UnboundLocal fix + 13.7c input strip | A12.2, A18.6b | `hwp_generator.py:1541-1543` + `hwpx_analyzer.py:10208` (`strip_chapter_title_marker`) |
+| `7acc9f1` | chapter title marker sibling_index 1-based 보정 | A18.6b | `hwp_generator.py:1709` (`ci + 1`) |
+| `e7fab74` | 표지(cover) preserve | A18.5b | `hwp_generator.py:1806-1830` |
+| `b0e6ffc` | blank line region-aware placement | A18.10 | `hwp_generator.py:2678-2719` |
+| `8d1e909` | `_replace_text_in_paragraph_elem` t-run 보존 | A18.6 | `hwp_generator.py:2868~` (has_t check) |
+| `2cbcc4f` | seed local_title_role fallback | A11 | `hwpx_analyzer.py:10050` (`extract_chapter_template_plan_seed`) |
+| `18e187b` | 13.7c split 임계값 완화 (gpt-5.4 128k 활용) | A12.3, C4.4 | `hwpx_analyzer.py:12511` (`should_split_adaptation_batch`) |
+
+### 2026-05-20~21 dirty workfile traceability (워크트리 미커밋, production에는 배포됨)
+
+| Sprint | 설명 | 본문 섹션 | 핵심 코드 (실측 line) |
+|---|---|---|---|
+| **1A** | 11.2 본체 — STYLE_PROFILE_PROMPT + sample 수집 + 10 cluster batch + parse | A5b.1, B6 | `hwpx_analyzer.py:6221` (prompt) / `:6275` (`_collect_style_samples`) / `:6442` (`build_style_profile_prompt`) / `:6501` (`parse_style_profile_from_llm`) |
+| **1C** | 11.2b emphasis — extract_paragraph_emphasis_map + EMPHASIS_LAYER_PROMPT + base/layer 판정 | A5b.2 | `:6584` (`extract_paragraph_emphasis_map`) / `:6774` (prompt) / `:6843` (`build_emphasis_layer_prompt`) / `:6903` (`parse_emphasis_layer_from_llm`) / `:14380` (`_build_1a_to_xml_p_idx_mapping` — 1C에서 기존 13.7b helper 재사용) |
+| **1D** | ANALYSIS_ONLY_MODE valve (DB tool) — 11.2/11.2b 완료 후 1차 dump 후 2a 직전 early return | A1.6, A5b.3 | DB tool valve only |
+| **1E** | style namespace cache (`<hash>_style.json`, STYLE_CACHE_SCHEMA_VERSION=2). main cache와 독립 invalidate | A5b.3, C1 | `:5218` (`save_template_cache(namespace=...)`) / `:5234` (`load_template_cache(namespace=...)`) |
+| **2A** | 2b prompt에 style rule 박기 (`style_profiles` 인자) | A13.1, SECTION_FILL_PROMPT | `:15509` (`build_section_fill_prompt`) |
+| **2B** | 조립 단계 marker/content 글꼴 분리 — 첫 글자 매칭으로 t[0] 공백 cell case 해결 | A18.6 (chapter title), A18.10 (body) | `hwp_generator.py:3260` (`_replace_text_in_paragraph_elem_split`) — chapter title 호출 `:1745`, body 호출 `:2833` |
+| **3A** | 2b prompt에 emphasis rule + `[[emN]]...[[/emN]]` markup 지시 | A13.1, SECTION_FILL_PROMPT | `:15263` (prompt 강조 섹션) / `:15509` (`emphasis_layers`, `paragraph_emphasis_map` 인자) |
+| **3B** | emphasis markup parser — valid_layer_ids로 AI 환각 markup 무시 | A18.10 sub-step | `hwp_generator.py:3362` (`_parse_emphasis_markup`) |
+| **3C** | emphasis-aware run split + charpr 매핑 | A18.10 sub-step | `:3401` (`_replace_text_with_emphasis_segments`) |
+| **3D** | assemble + DB tool wire — body item 3분기 path + tbl_box cell target + markup 0개 우회 | A18.10 | `:1089` (`assemble_hwpx_hybrid(emphasis_layers=...)`) / body path `:2782-2844` |
+| **strip_marker** | leading emphasis markup wrap 인식 | A18.6b / A18.10 / A19.2 | `marker_separator.py:strip_marker` (~line 83 부근 patch) |
+
+→ Sprint 1+2+3은 **단일 commit으로 묶이지 않은 워크트리 dirty** 상태로 5/19~5/20 동안 누적. 사용자가 cp+DB update+SIGHUP만으로 배포. handoff_2026_05_20에 "git commit 안 함" 명시. 검증 완료 후 본 audit refresh와 함께 git commit 예정.
 
 ---
 
@@ -90,11 +172,12 @@
 - audit note: 🚩 dead. step1ab namespace 자체도 A1/A2에서 write path 없음.
 - confidence: high
 
-### A1.6 hybrid_mode / canonical_mode valves [active — but hybrid path is debug-only]
-- 위치: `dbtool:433-437`
+### A1.6 hybrid_mode / canonical_mode / ANALYSIS_ONLY_MODE valves [active] **[2026-05-21 update — ANALYSIS_ONLY_MODE 추가]**
+- 위치: `dbtool:433-437` + ANALYSIS_ONLY_MODE는 DB tool valves 정의 블록
 - 출력:
-  - `hybrid_mode` (bool) — gates A2.3 (parent_hint_measurement)
+  - `hybrid_mode` (bool) — gates A2.3 (parent_hint_measurement). 현재 OFF
   - `canonical_mode` (str) — passed to `merge_levels_into_structure(canonical_mode=...)`
+  - `ANALYSIS_ONLY_MODE` (str, "on"/"off") — Sprint 1D valve. **ON** 시 A5b 끝나고 1차 debug dump 후 2a 진입 전 early return (A5b.3 참조). cluster style + emphasis 분석 검증 전용 모드.
 - audit note: 🚩 MEMORY.md "HYBRID_MEASUREMENT valve: off로 변경됨" → 현재 production OFF. 이름은 "measurement"이지만 ON일 때 production path 교체(A2.3 mutation). name vs behavior 괴리.
 - confidence: high
 
@@ -176,6 +259,14 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 - audit note: 🚩 AI가 `parent_idx` 줘도 코드가 무시 (`hwpx_analyzer.py:2281` 주석 "1c가 줘도 무시"). `compute_parent_and_sibling_from_levels`가 level 기반으로 재계산.
 - confidence: high
 
+### A2.2b Phase E inline — TOC chapter planner → chapter_id 부여 [active] **[2026-05-20 update — NEW position]**
+- commit `3346bf0` "Phase E를 1c 후로 이동". 이전엔 A3에서 별도 stage로 호출되었으나, 1e canonical clustering이 chapter context를 알고 cluster 결정하도록 1c 직후로 이동.
+- 호출 함수: `has_toc_gate` (`:16128`) → `build_toc_based_chapter_plan_prompt` (`:16390`) → `parse_toc_based_chapter_plan_from_llm` (`:16481`) → `validate_toc_based_chapter_plan` (`:16505`) → `assign_chapter_ids_from_phase_e` (`:17284`)
+- mutation: 각 `structure["paragraphs"][i]`에 `chapter_id: int` 부여 (`-1` = chapter 밖, 표지/header/TOC 등). Phase E 실패/no_toc → 모두 `-1`.
+- 이전 A3에서 했던 작업(orchestration + cache) 일부는 그대로 유지 (A3은 cache 통합 + chapter_types overwrite 책임만 남음).
+- 효과: A2.5 1e clustering이 chapter_id 기준으로 같은 marker라도 다른 chapter면 분리 (chapter root 예외: cross-chapter 통합 허용).
+- confidence: high (cache schema v7+에 paragraph.chapter_id 보존)
+
 ### A2.3 hybrid_mode block [debug-only when valve=off, mutation when on]
 - 위치: `dbtool:729-835`
 - 입력: `level_parsed["decisions"]` (parent_hint_idx는 hybrid only), `_TEMPLATE_CORE_CASES[_cache_key]`
@@ -188,21 +279,31 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 - 위치: `dbtool:857-869`
 - 출력: `_role_registry_baseline` — `_debug_payload["1e_canonical_clustering"]["role_registry_baseline_code"]` 만. main path 영향 X (주석 명시)
 
-### A2.5 1e — AI structural canonicalization [active]
+### A2.5 1e — AI structural canonicalization (chapter-aware) [active] **[2026-05-20 update]**
 - AI tag: `hwpx_canonical_clustering` (+ `_repair` retry)
 - 위치: `dbtool:871-986`
 - 흐름: AI call → parse → issues 있으면 repair AI call → 둘 다 실패 시 `canonicalize_by_data` fallback
+- 입력: paragraphs (with `chapter_id` from A2.2b Phase E inline). prompt(`build_canonical_clustering_prompt`, `:3108`)이 paragraph table에 `ch={chapter_id}` 컬럼 추가.
+- **chapter-aware constraint** (`CANONICAL_CLUSTERING_PROMPT`, `:2969`):
+  1. **자식 약화** (`cc5786f`): 부모 role 같으면 자식 종류·개수 차이만으로 split 금지. 부모 role 다르면 hard constraint로 다른 cluster.
+  2. **chapter_id 분리** (`3346bf0`): chapter 내부 body paragraph는 같은 marker라도 chapter_id 다르면 다른 cluster.
+  3. **chapter root 예외** (`cc5786f`): 각 chapter 첫 paragraph(level 0, 같은 부모 role, 같은 marker family)는 chapter_id 무관 통합 (chapter title role이 N개 cluster로 파편화되어 marker 부착이 깨지는 문제 방지).
 - 출력:
   - `_role_registry` — actually consumed: **debug payload 전용**. `apply_structural_clustering`이 이미 `paragraphs[i].role`을 cluster_id로 mutate했기 때문에 `_role_registry` 자체는 main logic에서 안 읽음
   - `_1e_final_source`: "1e_original" / "1e_repaired" / "fallback_baseline"
 - mutation: `apply_structural_clustering`이 `structure["paragraphs"][i].role`을 cluster_id로 교체
-- audit note: 🚩 **"1e" 레이블 두 번 사용**. 여기는 AI canonical_clustering, A2.7은 code format_rules. 실행 순서: 1a → 1b → 1c → parent-correction → **1e AI canonicalization** → 1d code → **1e code format** → 1f marker policy. 번호와 실행 순서 불일치.
+- audit note: 🚩 **"1e" 레이블 두 번 사용**. 여기는 AI canonical_clustering, A2.7은 code format_rules. 실행 순서: 1a → 1b → 1c → **Phase E inline (A2.2b)** → parent-correction → **1e AI canonicalization (chapter_id 입력)** → 1d code → **1e code format** → 1f marker policy. 번호와 실행 순서 불일치는 그대로.
 - confidence: high
 
-### A2.6 1d — `compute_exclusivity_rules_code` [active, code only]
-- 위치: `hwpx_analyzer.py:7737` (호출 `dbtool:999-1018`)
+### A2.6 1d — `compute_exclusivity_rules_code` + `compute_sibling_cooccurrence_rules` [active, code only] **[2026-05-20 update — model 전환]**
+- 위치: `hwpx_analyzer.py:7737` (exclusivity_rules), `:7880` (sibling_cooccurrence_rules) (호출 `dbtool:999-1018`)
 - 입력: `_pc_data` (`compute_parent_instance_children_by_parent_idx` if hybrid_mode else `compute_parent_instance_children`)
-- 출력: `exclusive_rules` — `structure["exclusive_rules"]` set
+- 출력:
+  - `exclusive_rules` (legacy blacklist 모델, 양식에서 분리된 child set만 명시) — `structure["exclusive_rules"]`. 호환을 위해 유지.
+  - `sibling_cooccurrence_rules` (**new white-list 모델**, `d4088a5`) — `structure["sibling_cooccurrence_rules"]`. default 배타 + 양식 관찰 공존 쌍만 예외. per-parent `child_set_variants` (`f8a6304`) 보유: `variants = [{variant_id, child_set, samples, instance_count}, ...]` (frozenset dedup).
+  - **instance-aware** (`f05b773`): variant마다 양식 instance sample (marker + text + first_idx) 포함. AI가 instance ↔ variant 직관 매핑.
+- 모델 전환 의도: 옛 "variant 다양화 권장" + "한 instance 안 안 섞기" 두 instruction 충돌 (예: cluster_11 instance 1개에 cluster_12+cluster_16 같이 박는 위반) → default 배타 + white-list로 명시.
+- consumed by: A13 2b prompt (`build_section_fill_prompt`)에 `cooccurrence_rules` 인자로 전달 → cooccurrence section render. SECTION_FILL_PROMPT 룰 5번이 "한 instance 한 variant + 유동적 갯수" 강조.
 - audit note: AI 대안 (`build_exclusivity_analysis_prompt`)이 import만 있고 호출 0 (Part B 참조)
 
 ### A2.7 1e (코드) — `compute_format_rules_code` [active, code only]
@@ -211,14 +312,15 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 - 출력: `format_rules`, `blank_rules` → `structure["format_rules"]`, `structure["blank_rules"]`
 - audit note: 🚩 "AI 호출 폐기. 결정적·고속·무토큰." 주석. AI 대안 (`build_format_analysis_prompt`)이 import만 있고 호출 0 (Part B 참조)
 
-### A2.8 1f — marker policy induction [active, AI]
+### A2.8 1f — marker policy induction + **table_kind 분류** [active, AI] **[2026-05-20 update]**
 - AI tag: `hwpx_1f_marker_policy`
-- 위치: `:3731` (build) / `:3776` (parse) / `:3799` (verify). 호출 `dbtool:1042-1064`
-- 입력: `paragraphs`, `_idx_texts`
-- 출력: `_marker_policy_1f` (dict {roles: [{role, marker_policy_status, evidence, verification}]})
-  - actually consumed: `structure["marker_policy_1f"]`, `section_results[sid]["marker_policy_1f"]`, cache, `extract_marker_policies` (12.1 path)
+- 위치: `:3850` (build) / `:3911` (parse) / `:3934` (verify). 호출 `dbtool:1042-1064`
+- 입력: `paragraphs`, `_idx_texts`, **`light_xml`** (paragraph idx별 tbl 정보 — cell 수/cell 텍스트 — 첨부, `535e3a4`)
+- 출력 `_marker_policy_1f` (dict {roles: [{role, marker_policy_status, evidence, verification, **table_kind**, **table_kind_reason**}]})
+  - **`table_kind`** (`535e3a4`): `decorative_box` (텍스트 강조·박스·배너 용도, cell 텍스트가 paragraph 본문과 일치 또는 부분 분할) / `real_table` (행/열 독립 데이터, 매출/일정/비교) / `not_applicable` (해당 role sample에 tbl 없음). AI가 cell 텍스트와 paragraph 본문 의미 비교로 판단.
+  - actually consumed: `structure["marker_policy_1f"]`, `section_results[sid]["marker_policy_1f"]`, cache, `extract_marker_policies` (12.1 path), **A18.10 outer fallback safety** (real_table만 skip; decorative_box는 통과 — 박스형 paragraph 누락 버그 해결)
   - 🚩 `_msgs_1f`, `_llm_1f` raw는 `_debug_payload`에 없음 (Agent 1 unresolved). confidence: medium
-- audit note: ✅ 1f IS AI confirmed. `extract_marker_policies` (`:7490`)는 별도 함수로 12.1 marker roundtrip path에서만 사용.
+- audit note: ✅ 1f IS AI confirmed. `extract_marker_policies` (`:7490`)는 별도 함수로 12.1 marker roundtrip path에서만 사용. 변경 후 `extract_marker_policies`는 `table_kind`를 결과 dict에 포함.
 
 ### A2.9 `validate_structure_for_cache` + `write_cache_validation_debug` [active gate]
 - 위치: `:5142` (validate) / `:5332` (write). 호출 `dbtool:1070-1078`
@@ -258,10 +360,17 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 
 ---
 
-## A3 — Phase E (TOC chapter planner) (`dbtool:1335-1488`)
+## A3 — Phase E (TOC chapter planner) (`dbtool:1335-1488`) **[2026-05-20 update — 역할 부분 이동]**
+
+**위상 변화** (`3346bf0`, 2026-05-18): Phase E의 핵심(`has_toc_gate` → AI plan → validate → `assign_chapter_ids_from_phase_e`)이 A2 loop 안 1c 직후로 이동(A2.2b 참조). A3 자리에 남은 책임은:
+1. A2.2b가 이미 완료된 Phase E 결과의 cache replay (cache hit 시 AI skip)
+2. one_c_diagnostic 매 run fresh recompute (Track D-2)
+3. (A5에서) cache 통합 write-back + chapter_types overwrite
+
+단, **DB tool 코드 구조 자체는 두 호출(A2.2b inline + A3 cache replay)을 모두 시도**할 수 있음 (한쪽이 cache hit이면 다른 쪽 skip). 다음 cleanup 후보.
 
 ### A3.1 `diagnose_1c_non_body_handling` [active]
-- 위치: `:16265` (Track D-2)
+- 위치: `:16694` (Track D-2)
 - 동작: 1c가 non-body paragraph를 어떻게 다뤘는지 측정. CONTAINER(자식 OK) / LEAF(자식 wrong) 분리.
 - 출력: `_pe_one_c_diag` → `_debug_payload["phase_e_chapter_planner"]["one_c_diagnostic"]`
 
@@ -271,20 +380,21 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 - 출력: `_section_results_for_phase_e` (narrowed dict)
 
 ### A3.3 `has_toc_gate` [active]
-- 위치: `:15699`
+- 위치: `:16128`
 - 출력: `_pe_gate` (`has_toc, toc_paragraph_hints, detection_method, scanned_*`)
 - 동작: role match (`table_of_contents`/`toc`) OR text regex (`차례`/`목차`/`Contents` 등 12개)
 
 ### A3.4 `build_toc_based_chapter_plan_prompt` [active]
 - AI tag: `hwpx_phase_e_toc_based_chapter_plan`
-- 위치: `:15963` (system at `:15790` constant)
+- 위치: `:16390`
 - 입력: `_pe_toc` + `_pe_body` + `_pe_tree`
+- 🚩 [2026-05-20 update] prompt 후속 정리(`75f2c13`, `ca0b87b`, `04b0c2a`, `7a470d0`, `56a11ac`, `8812b92`, `6162067`, `93e1972` 등)로 TOC sub-list chapter vs subpattern 구분 원리, level binary choice(0 vs 1), 같은 level 일관성 절대 원칙, sibling group 단위 depth 선택 등 강화.
 
 ### A3.5 `parse_toc_based_chapter_plan_from_llm` + retry [active]
-- 위치: `:16054`. max 1 retry. 실패 시 `status="ai_call_failed"`
+- 위치: `:16481`. max 1 retry. 실패 시 `status="ai_call_failed"`
 
 ### A3.6 `validate_toc_based_chapter_plan` [active]
-- 위치: `:16078`. paragraph_ref 존재 체크 + 불일치 시 confidence low 강등
+- 위치: `:16505`. paragraph_ref 존재 체크 + 불일치 시 confidence low 강등
 
 ### A3.7 Phase E cache hit branch [active]
 - 위치: `dbtool:1361-1371`
@@ -292,7 +402,7 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 - 출력: `_phase_e_skipped_by_cache=True` flag (A5.1에서 사용)
 
 ### A3.8 `run_phase_e_chapter_planner` [dead-code]
-- 위치: `:16441`
+- 위치: `:16868`
 - 🚩 정의는 있지만 DB tool에서 import 0. orchestration이 inline (has_toc_gate + build + parse + validate). 호출처 grep 결과 zero.
 
 ---
@@ -341,6 +451,79 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
   - `section_results[0]["structure"]["chapter_types"] = _new_chapter_types`
 - 출력: per-type 메타 `merged_chapter_count, _phase_e_source: True, _phase_e_family_id, _phase_e_member_unit_indices`
 - audit note: 🚩 4중 mutation. cache는 legacy chapter_types 유지 → 다음 run cache hit 후 다시 overwrite. dispatcher seam.
+
+---
+
+## A5b — Stage 11.2 + 11.2b (Sprint 1, 양식 분석 phase) **[2026-05-21 update — NEW stage]**
+
+위치: Phase E + Track C PRODUCTION 전환 직후, A6(2a chapter_classify) 진입 전. cluster 확정된 후 cluster별 (a) 말투 rule + (b) inline 강조 layer 추출. **양식 분석만의 부산물** — 본문 생성 단계(A13 2b prompt + A18 assembly)에 입력. analyzer.py 미커밋 워크트리 dirty(production 배포됨).
+
+### A5b.1 — 11.2 본체 (말투 rule, AI) [active]
+
+- AI tag: `hwpx_style_profile` (10 cluster batch)
+- 위치:
+  - prompt 상수: `hwpx_analyzer.py:6221` (`STYLE_PROFILE_PROMPT`)
+  - sample 수집: `:6275` (`_collect_style_samples`)
+  - prompt build: `:6442` (`build_style_profile_prompt`, 10 cluster batch)
+  - parse: `:6501` (`parse_style_profile_from_llm`)
+- 입력:
+  - `paragraphs` (cluster_id 부여 후, A2.5 + A2.2b)
+  - `idx_full_texts`
+  - `semantic_tags` (optional)
+- 동작:
+  1. cluster별 paragraph 전수 sample 수집 + 정규화 dedup
+  2. 80K char budget 초과 시 forced (shortest + longest + tag별 1) + stratum stratified
+  3. cluster 10개씩 batch → AI 호출 → role별 `content_style_rules_for_generation` + `additional_observations`
+  4. rule마다 `when` / `when-not` + `[sN]` inline 인용 강제
+- 출력 `style_profiles` (dict by cluster_id):
+  ```
+  {cluster_id: {"rules": ["rule1 ... [s0, s2]", ...], "observations": "자유 자연어 ... [sN]"}}
+  ```
+- 소비처: A13 2b prompt (`build_section_fill_prompt(style_profiles=_style_profiles, ...)`)
+- audit note: ✅ 이전 audit B6 "dead-code (literal pass)" 표기는 **stale**. Sprint 1로 활성화됨. A19.3 옛 pass block은 잔존 가능 (확인 후 cleanup 후보).
+- confidence: high
+
+### A5b.2 — 11.2b emphasis (inline 강조 layer, AI) [active]
+
+- AI tag: `hwpx_emphasis_layer` (10 cluster batch)
+- 위치:
+  - charPr 다양성 추출: `hwpx_analyzer.py:6584` (`extract_paragraph_emphasis_map`) — 양식 raw zip 직접 열어 tbl cell 안 paragraph 포함
+  - 1a paragraph idx ↔ raw zip top-idx 매핑: `:14380` (`_build_1a_to_xml_p_idx_mapping`) — 13.7b 기존 helper 재사용 (text 정규화 substring matching)
+  - prompt 상수: `:6774` (`EMPHASIS_LAYER_PROMPT`)
+  - prompt build: `:6843` (`build_emphasis_layer_prompt`) — sample paragraph에 `[[em1]]...[[/em1]]` markup으로 layer 표시
+  - parse: `:6903` (`parse_emphasis_layer_from_llm`)
+- 입력: 양식 raw zip + `structure["paragraphs"]` (cluster_id) + `idx_full_texts`
+- 동작:
+  1. raw zip 직접 순회 → 각 paragraph descendant run 순회 (텍스트박스 cell 안 run **포함**)
+  2. cluster별 charPr 다양성 측정 → 빈도순 em1/em2/... layer 부여
+  3. multi-charpr paragraph만 sample 보존
+  4. AI 호출 → cluster마다 `base_layer_id` + `emphasis_layers[]` (rule + 적용 조건 + 비적용 조건 + [sN])
+- 출력 `emphasis_layers_by_cluster` (dict by cluster_id):
+  ```
+  {cluster_id: {
+    "base_layer_id": "em3",
+    "base_charpr_id": "154",
+    "emphasis_layers": [
+      {"layer_id": "em1", "charpr_id": "240", "rule": "..."},
+      ...
+    ]
+  }}
+  ```
+- 소비처:
+  - A13 2b prompt (`build_section_fill_prompt(emphasis_layers=..., paragraph_emphasis_map=...)`)
+  - A17/A18 assembly (`assemble_hwpx_hybrid(emphasis_layers=...)`)
+- audit note: 매핑 정확성 — `_build_1a_to_xml_p_idx_mapping`이 빈 text paragraph는 fallback (이전엔 sequential index로 잘못 매핑돼 cluster_19 같이 빈 1a paragraph 가진 cluster의 cell 안 charPr 못 잡았음, Sprint 1C fix)
+- confidence: high
+
+### A5b.3 — style namespace cache + ANALYSIS_ONLY_MODE early return [active]
+
+- style cache 파일: `/tmp/hwpx_cache/<hash16>_style.json` (main `<hash16>.json`과 **별도 namespace**)
+- 버전: `STYLE_CACHE_SCHEMA_VERSION = 2` (1→2 bump 시 Sprint 1 진행 중 cell run 포함 등 변경)
+- 호출: `save_template_cache(cache_key, payload, namespace='style')` (`hwpx_analyzer.py:5218`), `load_template_cache(cache_key, namespace='style')` (`:5234`)
+- 효과: main cache(CACHE_SCHEMA_VERSION=11)와 독립 invalidate — 11.2/11.2b 변경해도 main 1a~1f cache hit 유지
+- early return: ANALYSIS_ONLY_MODE valve `on` 일 때 A5b.1+A5b.2 완료 + 1차 dump 후 2a 진입 전 `return None, _summary_msg` → outer `generate_document`가 `hwpx_bytes is None` 분기 처리 (debug_log만 반환, .hwpx 출력 X). 분석 phase 검증 전용 모드.
+- audit note: 🚩 cache write 분산 — main cache 5개 mutation 위치(C1.6) + style cache 1개 mutation(A5b). 총 6번. main과 style 동기화 깨질 위험은 없으나(다른 namespace) cache file 위치는 동일 directory.
+- confidence: high
 
 ---
 
@@ -480,13 +663,14 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 
 ---
 
-## A11 — 13.7a-A1 chapter route prep (`dbtool:2055-2083`)
+## A11 — 13.7a-A1 chapter route prep (`dbtool:2055-2083`) **[2026-05-20 update]**
 
 - chapter route 변수 초기화: `_chapter_objects=[]`, `_chapter_empty_reasons=[]`
 - `_tup_regions/_tup_region_by_id/_tup_chapter_regions` 인덱싱
-- `_chapter_plan_seed = extract_chapter_template_plan_seed(_tup, structure, _idx_full_texts)` (`:9781`) — 13.4b
+- `_chapter_plan_seed = extract_chapter_template_plan_seed(_tup, structure, _idx_full_texts)` (`:10050`) — 13.4b
 - `_chapter_loop_driver`: `"template_plan"` if seed valid && confidence != low else `"2a_chapters"`
 - `_broad_source = pdf_text_content or content_text or ""` (A12, A13, A14, A16 입력)
+- **seed local_title_role fallback** (`2cbcc4f`, 2026-05-18): `extract_per_chapter_pattern`이 `_empty_chapter_pattern` (sub-tree 없음 — 표/일정 위주 마지막 chapter 등)으로 fallback할 때, chapter의 **첫 paragraph role을 `local_title_role`로 기본 채움**. 이전엔 빈 문자열로 버려져 13.7c adapted_title 처리에서 role 매칭 실패하던 케이스 해결.
 
 ---
 
@@ -501,20 +685,20 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 
 ### A12.2 adaptation_plan (AI B) [active]
 - AI tag: `hwpx_13_7c_adaptation_plan` (+ retry, + `_chunk_N` for split)
-- 위치: `:11465` (build) / `:11889` (parse)
+- 위치: `:11791` (build) / `:12215` (parse)
 - 입력: `_source_inventory`, `_ch_inputs_for_plan`, `broad_source_preview=_broad_source[:50000]` (task 1 fix)
+  - **🚩 [2026-05-20 update] AI input title strip** (`92823df`): `_ch_inputs_for_plan[i].original_title`은 `strip_chapter_title_marker` (`:10208`)로 양식 1f marker_policy의 detected_marker prefix 제거 후 AI에 전달. AI는 title의 의미만 판단, 형식(marker)은 code 책임 (책임 분리). assembly 단계의 marker auto-prepend (A18.6b)와 짝.
 - 출력: `_ap_parsed`:
   - `chapter_decisions` (list[decision])
   - `overall_source_focus` (dict | None) ← top-level
   - `_validation` (dict)
 
-### A12.3 split path [active, has bug]
+### A12.3 split path [active, **(a) fix done**] **[2026-05-20 update]**
 - 위치: `dbtool:2168-2208`
-- 트리거: `should_split_adaptation_batch(_ap_prompt_text)` (`:12185`)
-- 🚨 **outstanding bug**: split path가 `_ap_parsed = {"chapter_decisions": _all_decisions, "_validation": ...}` 로만 재구성 → `overall_source_focus` 누락. `_osf = _ap_parsed.get("overall_source_focus")` (line 2254)가 None
-- 해결책 후보 2026-05-18 인수인계:
-  - (a) `should_split_adaptation_batch` 임계값 완화 (60000 → 128000 또는 safety_ratio 0.6→0.95)
-  - (b) split path에서 chunk1 focus를 final로 저장 + ambiguity_flag
+- 트리거: `should_split_adaptation_batch(_ap_prompt_text)` (`:12511`)
+- 임계값 변경 (`18e187b`, 2026-05-18): `model_context_char_budget=128000`, `safety_ratio=0.95` → 약 **121,600자** (이전 60,000자). gpt-5.4 128k context 활용. 작은~중간 양식(예: 조달청 3 chapter, ~60K prompt)은 **single batch 유지** → AI가 chapter set 한 관점으로 보고 `overall_source_focus` 정상 결정.
+- 🚨 큰 양식(수십~수백 chapter)에서 여전히 split 발동 가능. split path가 `_ap_parsed = {"chapter_decisions": _all_decisions, "_validation": ...}` 로만 재구성 → `overall_source_focus` 누락 — **(b) fix 보류**:
+  - (b) split path에서 chunk1 focus를 final로 저장 + ambiguity_flag (chunk별 다른 focus 가능성)
 
 ### A12.4 validation / normalize / fallback [active]
 - per decision: `normalize_adaptation_decision` (`:12203`) → `validate_adaptation_decision` (`:11983`) → demote 시 `make_validation_failed_decision` (`:12329`)
@@ -532,19 +716,32 @@ cache miss branch. 모든 section iterate하지만 `section_results[0]`만 downs
 
 ## A13 — 2b chapter loop (`dbtool:2293-2614`)
 
-### A13.1 template-driven path [active]
+### A13.1 template-driven path [active] **[2026-05-20 update — prompt 강화] [2026-05-21 update — Sprint 2A + 3A 인자]**
 - 조건: `not _shallow_done and _chapter_plan_seed`
 - 위치: `dbtool:2293-2513`
+- **2b prompt 강화** (`7f35fc0`, `81aceb4`, `e1723f3`, 2026-05-18):
+  - **root role hard constraint** (`7f35fc0`): `parent_id=null`은 패턴 트리 최상위 role만. 자식 role을 root로 박는 거 금지. 양식 parent instance N개 필요하면 N개 생성, 자식을 root로 합치지 마.
+  - **instance count hint** (`7f35fc0`): `build_section_fill_prompt` catalog 출력에 "양식 instance: N개" hint 추가 (count 필드 사용). cooccurrence section에 "양식 instance 수: N개 (생성 권장)" 표시. AI가 instance 갯수 의식하도록.
+  - **chapter title 답습 금지** (`81aceb4`): adapted_title prepend로 AI가 첫 root sub-item에 chapter title 그대로 복제하던 버그 해결. root sub-item은 ch title보다 한 단계 좁고 구체적 sub-주제 작성.
+  - **양식 specific 예시 제거** (`e1723f3`): 조달청 양식 specific 단어("추진성과 및 평가" 등) 제거 → 일반 가이드 + "양식 role 카탈로그의 sample text를 직접 참고"로 위임 (CLAUDE.md 하드코딩 금지 원칙).
+  - **cooccurrence section format 전환** (`d4088a5`/`f8a6304`/`f05b773`): 옛 "공존 가능 쌍" → variant 단위. variant마다 양식 instance sample (marker + text). pattern_tree multi-variant parent 옆에 ⚠️ 경고 주석.
+  - 사용자 명시 동의로 MEMORY '2b prompt 수정 X' 룰 부분 해제 (해당 root constraint / answer suppression 항목 한정).
+- **Sprint 2A + 3A 인자 추가** (워크트리 dirty, 2026-05-20):
+  - **`build_section_fill_prompt` 시그너처** (`hwpx_analyzer.py:15509`): 신규 인자 `style_profiles: dict | None = None`, `emphasis_layers: dict | None = None`, `paragraph_emphasis_map: dict | None = None`
+  - **"role별 말투 가이드" 섹션** prompt 박음 (Sprint 2A) — A5b.1 결과 cluster별 rule + observations
+  - **"강조 표시 — 양식 글꼴 분리 보존" 섹션** prompt 박음 (Sprint 3A, `SECTION_FILL_PROMPT:15263` 내부) — markup 형식 `[[emN]]...[[/emN]]`, base는 markup 안 함, cluster에 정의된 layer만 사용
+  - **"role별 강조 layer 가이드" 섹션** prompt 박음 (Sprint 3A) — A5b.2 결과 cluster별 base_layer_id + 각 강조 layer rule
+  - DB tool 4개 호출(template-driven + 2a-driven + section N 등)에 모두 `style_profiles=_style_profiles, emphasis_layers=_emphasis_layers_by_cluster` 전달
 - per-chapter flow:
   1. `ch_title = adapted_title` (모든 action에서, 13.7c-2phase)
   2. local_pattern from `tpl_ch.get("local_pattern")` else seed_pattern (13.6-B)
   3. `_title_action`, `_content_action`, `_action = _title_action` (debug alias)
   4. **모든 chapter는 2b 호출** (`source_gap` 분기는 placeholder `if False`)
-  5. `build_section_fill_prompt(..., pdf_text=_broad_source, ...)` (`:14542`)
+  5. `build_section_fill_prompt(..., pdf_text=_broad_source, cooccurrence_rules=structure["sibling_cooccurrence_rules"], style_profiles=_style_profiles, emphasis_layers=_emphasis_layers_by_cluster, paragraph_emphasis_map=_paragraph_emphasis_map, ...)` (`:15509`)
   6. **adaptation hint prepend** (13.7e v2): `_title_action in adapt_*` 면 첫 user message 앞에 hint block (adapted_title, original_title, actions, preserved/adapted_aspects[:3], supporting_evidence[:3])
-  7. AI call (tag `hwpx_section_fill_{ch_idx}`)
+  7. AI call (tag `hwpx_section_fill_{ch_idx}`) — AI 출력에 emphasis markup `[[emN]]...[[/emN]]` 포함 가능 (Sprint 3A)
   8. override grammar (13.6-B): `pattern_to_grammar(_ch_local_pattern)` (`:9972`)
-  9. `process_section_fill_result(...)` (`:15360`) — 내부 흐름: `parse_section_fill_from_llm` (`:14867`) → `normalize_section_items` (`:14920`) → `validate_ai_parent_ids` (`:15091`) → `apply_parent_id_fallback` (`:15295`) → `reconstruct_tree_from_flat` + `validate_reconstruction`
+  9. `process_section_fill_result(...)` (`:15360`) — 내부 흐름: `parse_section_fill_from_llm` (`:14867`) → `normalize_section_items` (`:14920`) → `validate_ai_parent_ids` (`:15091`) → `apply_parent_id_fallback` (`:15295`) → `reconstruct_tree_from_flat` + `validate_reconstruction`. **markup은 strip 안 함** — AI 출력 text 그대로 chapter_object 안에 들어가 A18.10 emphasis path에서 parse
   10. `_ch_status`: `"filled"` if items>1, else `"insufficient_source"`. `_action=="preserve"` → `"preserved_by_13_7c"`
   11. `_ch_region = _tup_region_by_id.get(tpl_ch.get("region_id"))`
   12. `diagnose_chapter_empty_reason(_sf_result)` (`:11007`)
@@ -663,7 +860,7 @@ else:
 - local_ch_idx → global ch_idx remap (`_section_0_ch_count + _local_ch_idx`)
 - 🚩 remap이 section 0 chapter count + section N ordering에 의존 — A11 chapter ordering 변경 시 fragile
 
-### A17.5 assembly call [active]
+### A17.5 assembly call [active] **[2026-05-21 update — Sprint 3D `emphasis_layers` 인자]**
 ```python
 result = assemble_hwpx_hybrid(
     template_path, structure, content_data,
@@ -672,8 +869,11 @@ result = assemble_hwpx_hybrid(
     preserve_indices=_chapter_preserve,
     analyzed_sections=_analyzed_section_ids,
     chapter_local_exemplars=_chapter_local_exemplars,
+    emphasis_layers=_emphasis_layers_by_cluster,  # Sprint 3D
 )
 ```
+- 시그너처: `hwp_generator.py:1089` (`emphasis_layers: dict | None = None`, line 1100). A5b.2의 cluster별 base/layer 매핑이 A18.10 body item path에서 charpr 매핑·markup parse에 사용.
+- DB tool은 assemble 호출 2개(chapter route + shallow route 또는 동일 path에서 두 분기) 모두 emphasis_layers 전달.
 
 ### A17.6 debug capture
 - `_debug_payload["section_fill"]`, `["final_content"]`, `["assembly"]` (success_count, fail_count, errors, output_size, marker_rewrite_log, rewrite_alignment, phase2_reattach_result, section_info)
@@ -701,14 +901,45 @@ result = assemble_hwpx_hybrid(
 ### A18.5 preserve set 구성
 - `_is_skip` level 0 + 첫 paragraph + 9.1b secPr carrier + `preserve_indices`(region plan) + `_chapter_proc["empty_preserve_indices"]`
 
-### A18.6 chapter_anchors 매칭 loop (`:1566-1752`) [active]
+### A18.5b 표지(cover) preserve [active] **[2026-05-20 update — NEW]**
+- 위치: `hwp_generator.py:1806-1830` (`e7fab74`, 2026-05-18)
+- 호출 시점: chapter_anchors 매칭 loop(A18.6) 직후
+- 동작: `min(chapter_anchors[ci])` doc_idx 이전의 모든 `doc.paragraphs` index를 `header_indices`에 통째 추가
+- 해결한 버그: `truncate_xml`이 token budget 위해 빈 paragraph 제거 → 1a paragraphs(예: 224)와 doc.paragraphs(예: 418) 매핑 깨짐 → `_is_skip`이 1a 기반이라 양식 표지의 빈 paragraph 못 잡음 → body remove에서 사라짐 (제목/날짜/기관 사이 spacing 빈 줄 12개 정도 누락)
+- 데이터 흐름: chapter_anchors 매칭이 doc.paragraphs idx 직접 사용 → 그 이전을 preserve로 우회
+- log: `[cover preserve] chapter 전 doc paragraph N개 추가 preserve (first_chapter_doc_idx=...)`
+
+### A18.6 chapter_anchors 매칭 loop (`:1545-1764`) [active]
 - **Priority 1**: `section_local_first_idx + section_id` → `_section_top_level_paragraphs[sid][idx]` + `_validate_anchor_signature`
 - **Priority 2**: legacy `paragraph_indices[0] + idx_map` (same section만)
 - **Priority 3**: text fallback `_find_anchor_in_section_by_text(title_text, sid)` (same section)
 - **Priority 4**: `chapter_anchor_failures.append`, `placement_failure`
 - **invariant**: anchor owning section ≠ chapter.section_id → CROSS_SECTION_BLEED hard fail (skip)
-- **13.7d 2-phase adapted_title**: `_ad_text = _ch_obj._debug.adaptation_decision.adapted_title`. non-empty && ≠ anchor text → `_replace_text_in_paragraph_elem(_anchor_el, _ad_text, NS)` (`:3001`). action 무관 적용 (최근 fix, line 1673-1674 코멘트)
+- **13.7d 2-phase adapted_title**: `_ad_text = _ch_obj._debug.adaptation_decision.adapted_title`. non-empty && ≠ anchor text → adapted text를 anchor element에 박음. action 무관 적용.
+- **🚩 [2026-05-20 update] `_replace_text_in_paragraph_elem` has_t 보존** (`8d1e909`, hwp_generator.py:3210): cover table cell처럼 `runs[0]=ctrl(colPr) + runs[1]=text` 같은 paragraph에서 `runs[1:]` iterate 중 runs[1] (has_ctrl=False, has_tbl=False) 통째 제거하던 버그 fix. **has_t 체크 추가**해 t element 가진 run은 보존.
+- **🚩 [2026-05-21 update] Sprint 2B marker/content 글꼴 분리 분기** (`hwp_generator.py:1742-1750`):
+  - A18.6b의 `_marker_auto_applied`가 True (1f marker_policy로 marker 자동 부착됨) && `_ad_marker_text` non-empty → `_replace_text_in_paragraph_elem_split(_anchor_el, _ad_marker_text, _ad_content_text, NS)` (`:3260`). 양식 t element들 중 첫 글자 매칭으로 marker_t 선택, 가장 긴 t를 content_t로 → marker 글꼴(예: Ⅱ의 charPr=150)과 본문 글꼴(charPr=154)을 각자 t에 박아 양식 글꼴 보존.
+  - 그 외(fallback) → 기존 `_replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)` (`:1750`)로 합쳐서 박음.
+  - 효과 (handoff_2026_05_20 양식 evidence): 조달청 Chapter Ⅱ의 paragraph cell 안 t[0]=charPr=150("Ⅱ"), t[1]=charPr=407("."), t[2]=charPr=154(본문) 구조에서 marker = "Ⅱ. " 첫 글자 "Ⅱ" → t[0] match → marker 박음. content_t = 가장 긴 t[2] (charPr=154) → adapted content 박음. t[1] 비움. **본문 글꼴 보존**.
 - per-ci diag append → `/tmp/hwpx_debug/_d02_anchor_per_ci.jsonl` (`:1722`)
+
+### A18.6b chapter title marker 자동 조립 [active] **[2026-05-20 update — NEW sub-stage]**
+- 위치: `hwp_generator.py:1696-1725` (`b3ff4ca` + `92823df` UnboundLocal fix + `7acc9f1` sibling_index 1-based fix, 2026-05-18)
+- 호출 시점: chapter_anchors loop 안, `_replace_text_in_paragraph_elem` 호출 직전
+- 책임 분리 (AI/code):
+  - AI: chapter title의 **의미** (adapted_title text — marker 없음)
+  - code: chapter title의 **형식** (marker — 양식 1f marker_policy + ci 기준 sequence)
+- 데이터 흐름:
+  1. `_marker_policies = extract_marker_policies(paragraphs_info, marker_policy_1f=_marker_policy_1f)` (chapter_anchors loop 직전, `:1541-1543`)
+  2. chapter title role(`_title_role_for_anchor`)의 policy lookup
+  3. `strip_marker(_ad_text, role, policy)` → AI text에서 marker residual 제거 (있는 경우)
+  4. `generate_expected_marker_normalized(role, policy, ci + 1)` (1-based sibling_index) → 양식 policy 기반 marker 생성 (예: Ⅰ/Ⅱ/Ⅲ)
+  5. `reattach_marker(stripped, marker, separator)` → `_ad_text_with_marker`
+  6. `_replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)`
+- policy_type='no_marker' → skip (AI text 그대로)
+- policy 없음 → skip (graceful fallback)
+- 효과: AI가 marker 안 넣어도 code가 정확히 sequence 부여. 다음 챕터(Ⅳ, Ⅴ, ...) 추가돼도 code가 자동 처리. body items와 같은 marker_separator path 재사용.
+- log: `[13.7d marker auto-prepend ci={ci}] role=... policy=... marker='Ⅱ' sep=' ' '...' → '...'`
 
 ### A18.7 empty preserve 재계산
 - `_chapter_proc["empty_preserve_indices"]` clear → `chapter_anchors[ci]` doc_idx로 재구성 (정확도 ↑)
@@ -720,11 +951,23 @@ result = assemble_hwpx_hybrid(
 - header_indices 외 paragraph 전부 remove. `_remove_per_section` 추적
 - 🚩 `_residual_candidates`, `_preserved_per_section` (lines 1931-1966) — debug 목적 build만, downstream read 없음
 
-### A18.10 body item insertion loop (`:2408-2746`) [active]
+### A18.10 body item insertion loop (`:2408-2846`) [active] **[2026-05-20 update — table_kind + blank region-aware] [2026-05-21 update — Sprint 3D 통합 path]**
 - exemplar pick: role + `chapter_local_exemplars[ci]` (13.7b §4) > section N placeholder fallback > legacy fallback
-- outer fallback safety: exemplar에 `tbl` 있으면 skip
+- **outer fallback safety — table_kind aware** (`535e3a4`, 2026-05-18): exemplar에 `tbl` 있으면 무조건 skip이 아니라 **`_marker_policies[role].table_kind`로 분기**. `real_table`만 skip. `decorative_box` / `not_applicable` / missing은 통과. 양식의 박스형 paragraph (◈/[전략1]/과제 1 등 — paragraph 자기 안에 강조용 tbl 배너 자식 포함)가 누락되던 버그 해결.
 - **marker rewrite** (content_only_mode=True): `strip_marker` → AI marker residual strip → `generate_expected_marker_normalized` + `reattach_marker` → `_rewrite_marker` safety net
-- blank_rules + format_rules indent_parts 적용
+- **blank line region-aware placement** (`b0e6ffc`, hwp_generator.py:2678-2719, 2026-05-18):
+  - blank_rules + format_rules indent_parts 적용
+  - blank 빈 줄도 body item과 같은 path로 `chapter_anchors[ci]` 뒤에 insert. cursor를 blank로 update → 다음 body item이 blank 뒤에 들어감.
+  - 이전엔 `section_elem.append(deepcopy(blank_el))`로 section 끝에 몰림 → chapter 영역 밖 누락 (13.7d region-aware placement 도입 후 비대칭으로 발생한 회귀)
+  - chapter 컨텍스트 없으면 (shallow route 등) → `section_elem.append` fallback
+- **Sprint 3D 통합 body text path** (`hwp_generator.py:2782-2844`, 2026-05-20 워크트리 dirty):
+  - **cluster emphasis lookup**: `_body_cluster_em = (emphasis_layers or {}).get(role) or {}`. cluster 정의된 layer가 있으면 `_body_charpr_map["base"] = base_charpr_id` + 각 layer의 charpr_id, `_body_valid_layers` set 구성.
+  - **tbl_box인 경우 cell paragraph target** (`:2799-2811`): exemplar new_elem의 첫 tr → tc → subList → paragraph가 진짜 text 박을 target. 추가 cell paragraph는 remove.
+  - **markup 0개 pre-parse 우회 로직** (`:2818-2820`): valid emphasis markup이 0개면 emphasis path를 우회해 Sprint 2B path로 falls through. 이유: markup 0개에 emphasis path 돌면 segments=[(None, 전체)]가 되어 cluster base charpr로 박혀 양식 본래 글꼴 잃음. 이 가드로 양식 글꼴 보존.
+  - **3분기**:
+    1. `_body_valid_layers && _has_valid_em` → `_replace_text_with_emphasis_segments(target_p, marker_with_indent, segments, charpr_map, NS)` (`:3401`). marker → 첫 bearing t (첫 글자 매칭), content_t의 run 위치에 segments별 새 run 분할 + 각 run의 charPrIDRef = `charpr_map[layer_id]` 또는 `charpr_map["base"]`. AI 환각 markup (정의 안 된 layer)은 `_parse_emphasis_markup`의 valid_layer_ids로 base 처리.
+    2. `_body_marker_text && not _has_valid_em` → `_replace_text_in_paragraph_elem_split(target_p, marker_with_indent, content, NS)` (`:3260`). Sprint 2B 첫 글자 매칭으로 marker/content t 분리. 예: "과제 N" paragraph cell의 t[1]=charPr=240(파란 배경) + t[3]=charPr=128(본문) → marker "과제 N " 첫 글자 "과" → t[1] match → marker 박음(파란 배경 보존). content → 가장 긴 t[3] → 본문 박음.
+    3. **no marker no emphasis** → 기존 path: tbl_box이면 `_set_cloned_element_text`, 아니면 `_replace_text_in_paragraph_elem(_body_target_p, ...)` (`:3210`).
 - deepcopy + `_reassign_unique_ids(_assembly_id_counter=[3_000_000_000])` (`:1040`)
 - `_set_cloned_element_text` (`:2947`)
 - **region-aware placement**: `_ci in chapter_anchors` → 그 section 안 anchor 뒤에 insert. 다른 section bleed → error
@@ -761,8 +1004,9 @@ result = assemble_hwpx_hybrid(
 - else: `build_marker_roundtrip_debug(...)` (`marker_separator.py:380`)
 - `_debug_payload["marker_roundtrip_readiness"]`
 
-### A19.3 11.2 style profile [dead-code]
-- 🚩 literal `pass`. "Style profile AI calls disabled to reduce latency". `build_style_profile_prompt`/`parse_style_profile_from_llm` import만 살아있음
+### A19.3 11.2 style profile [moved to A5b — 옛 자리 cleanup 후보] **[2026-05-21 update]**
+- 🚩 이전 audit에 "literal pass, Style profile AI calls disabled"라 표기 → **stale**. Sprint 1으로 11.2 본체가 활성화되면서 호출 위치가 **A5b.1 (Phase E + Track C transfer 직후)**로 이동. A19 자리에는 옛 pass block이 잔존할 가능성 (확인 후 cleanup 후보).
+- `build_style_profile_prompt`/`parse_style_profile_from_llm` import + 호출 모두 **active**. A5b.1 참조.
 
 ### A19.4 12.0 template unit observation [debug + cache write-back]
 - AI tag: `hwpx_template_unit_observation` (+ retry)
@@ -818,9 +1062,11 @@ result = assemble_hwpx_hybrid(
 - A19.4 참조
 - 🚩 "debug-only" 표기 vs 실제 production 입력 — see audit C4
 
-## B6 — 11.2 Style Profile [dead-code]
+## B6 — 11.2 Style Profile + 11.2b Emphasis [active] **[2026-05-21 update — Sprint 1로 활성화]**
 
-- A19.3 참조. literal `pass` block
+- A5b.1 + A5b.2 참조. 이전 audit "dead-code (literal pass)" 표기는 stale — Sprint 1으로 활성화됨.
+- 호출 위치: Phase E + Track C cache 통합 직후, ANALYSIS_ONLY_MODE early return 직전 (A5b.3)
+- 옛 A19 자리의 pass block은 잔존 가능 → A19.3 참조, cleanup 후보
 
 ## B7 — Legacy 분석용 AI prompts [legacy, separate endpoint]
 
@@ -881,16 +1127,23 @@ result = assemble_hwpx_hybrid(
 
 # Part C — Cross-cutting / Audit
 
-## C1 — Cache schema (namespace='full', `CACHE_SCHEMA_VERSION = 6`)
+## C1 — Cache schema (namespace='full', `CACHE_SCHEMA_VERSION = 11`) **[2026-05-20 update] [2026-05-21 update — style namespace 추가]**
 
 ### C1.1 파일 위치 / 경로
-- `TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"` (`hwpx_analyzer.py:5046`)
-- namespace='full': `<DIR>/<hash16>.json` (suffix 없음)
-- namespace='step1ab': `<DIR>/<hash16>_step1ab.json` — 현재 write path 없음
+- `TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"` (`hwpx_analyzer.py:5181`)
+- namespace='full': `<DIR>/<hash16>.json` (suffix 없음) — 1a~1f + Phase E + Track C + 12.0 + target_unit_plan
+- namespace='style': `<DIR>/<hash16>_style.json` — **Sprint 1 신규 namespace** (2026-05-20). 11.2 style_profiles + 11.2b emphasis_layers. `STYLE_CACHE_SCHEMA_VERSION = 2`. main과 독립 invalidate (11.2/11.2b prompt 변경 시 style만 무효화, 1a~1f는 hit 유지)
+- namespace='step1ab': `<DIR>/<hash16>_step1ab.json` — 현재 write path 없음 (dead, A1.5)
 
 ### C1.2 버전 호환
-- `cache_schema_version < 6` → load 시 None 반환 (info log only, warning 아님)
+- `cache_schema_version < 11` → load 시 None 반환 (info log only, warning 아님)
 - 자동 invalidate. 영향 없는 변경(assemble logic 등)에서도 v bump 시 강제 재실행
+- 5/18 → 5/20 사이 누적 bump:
+  - v6→7 (`3346bf0`): paragraph.chapter_id 추가 (Phase E inline)
+  - v7→8 (`d4088a5`): structure.sibling_cooccurrence_rules 추가 (white-list 모델)
+  - v8→9 (`f8a6304`): per-parent child_set_variants 표현 (variant 단위)
+  - v9→10 (`f05b773`): cooccurrence instance-aware + multi_variant_parents 경고 데이터
+  - v10→11 (`cc5786f`): 1e prompt 자식 약화 + chapter root cross-chapter 통합 룰 (prompt 변경이지만 결과 다름 → invalidate)
 
 ### C1.3 Top-level keys (실측 cache 파일 인스펙션 + 코드 두 source 일치)
 ```
@@ -899,21 +1152,27 @@ chapter_types                   — outer alias (structure.chapter_types 중복)
 signals                         — _signals (compute_role_context_signals)
 idx_texts                       — _idx_texts (≤80자)
 idx_full_texts                  — _idx_full_texts (unlimited)
-marker_policy_1f                — outer alias (structure.marker_policy_1f 중복)
+marker_policy_1f                — outer alias (structure.marker_policy_1f 중복) — entry에 `table_kind` 포함 (v11)
 paragraph_count, table_count    — sanity check
 template_file_id                — original file_id (hash fallback)
 section_count                   — extract_all_sections_xml 길이
 section_results                 — {sid: section_local_view}
 phase_e_chapter_planner         — A5.1 write (v6+, conditional on phase E success)
 chapter_pattern_family          — A5.1 write (v6+, conditional)
-cache_schema_version            — int
+cache_schema_version            — int (현재 11)
 ```
 
 ### C1.4 `structure` 내부 keys
 ```
-paragraphs, tables, validator_issues, exclusive_rules, format_rules, blank_rules,
-marker_policy_1f, chapter_types, template_grammar, role_text_types,
-per_type_role_semantics, target_unit_plan, template_unit_observation
+paragraphs                      — each item has chapter_id (v7+) from Phase E inline
+tables, validator_issues
+exclusive_rules                 — legacy blacklist (호환 유지)
+sibling_cooccurrence_rules      — NEW (v8+) white-list model; per-parent child_set_variants
+format_rules, blank_rules
+marker_policy_1f                — entry per role has `table_kind` (v11)
+chapter_types                   — Phase E 결과로 overwrite 가능 (A5.2)
+template_grammar, role_text_types, per_type_role_semantics
+target_unit_plan, template_unit_observation
 ```
 
 ### C1.5 `section_results[sid]` keys
@@ -922,13 +1181,14 @@ structure, chapter_types, marker_policy_1f, signals, idx_texts, idx_full_texts
 ```
 
 ### C1.6 cache write 분산 (단일 cache 파일을 mutate하는 위치들)
-- A2.12 incremental save (per-section loop)
-- A5.1 Phase E + Track C 통합 write-back
-- A8.4 target_unit_plan write-back (legacy AI)
-- A19.1 target_unit_plan 재write (cache miss 시)
-- A19.4 template_unit_observation write-back
+- A2.12 incremental save (per-section loop) — `<hash16>.json`
+- A5.1 Phase E + Track C 통합 write-back — `<hash16>.json`
+- **A5b.3 style cache write** — `<hash16>_style.json` (별도 namespace, **2026-05-21 update**)
+- A8.4 target_unit_plan write-back (legacy AI) — `<hash16>.json`
+- A19.1 target_unit_plan 재write (cache miss 시) — `<hash16>.json`
+- A19.4 template_unit_observation write-back — `<hash16>.json`
 
-🚩 같은 cache 파일을 5개 단계가 partial mutation. consumer가 어느 단계 결과 읽는지 헷갈릴 위험.
+🚩 같은 main cache 파일을 5개 단계가 partial mutation. style cache는 1개 단계만 mutate. consumer가 어느 단계 결과 읽는지 헷갈릴 위험 (main만 해당). style은 namespace 분리로 격리.
 
 ### C1.7 중복 키 (3계층 drift 위험)
 - `chapter_types`: top-level / `structure["chapter_types"]` / `section_results[sid]["chapter_types"]` / `section_results[sid]["structure"]["chapter_types"]` (Phase E sync) → **4중**
@@ -963,6 +1223,8 @@ structure, chapter_types, marker_policy_1f, signals, idx_texts, idx_full_texts
 09_grammar_validation_result.json     ← hwpx_analyzer.py:8878 (write_stage_debug_files 안)
 10_assemble_result.json               ← :10
 11_validation_summary.json            ← hwpx_analyzer.py:8970 (write_stage_debug_files 안)
+12b_style_profile.json                ← Sprint 1 (A5b.1) 11.2 본체 — 말투 rule per cluster
+12d_emphasis_layers.json              ← Sprint 1 (A5b.2) 11.2b — base/layer 판정 + charpr 매핑
 13_template_unit_observation.json     ← :13 (12.0)
 13_7b_b0b_observation.json            ← :13_7b (b0b artifact)
 14_marker_roundtrip_readiness.json    ← :14 (12.1)
@@ -980,7 +1242,7 @@ _d02_anchor_per_ci.jsonl              ← hwp_generator.py:1722 — .jsonl이라
 ```
 
 ### C2.4 missing numbers
-- 🚩 `12_`가 비어있음. 과거 `12_template_unit_observation`이 `13_`으로 이동된 후 정리 안 됨 — numbering drift
+- 🚩 `12_` 정확한 단일 슬롯은 여전히 비어있음 (과거 `12_template_unit_observation`이 `13_`으로 이동). Sprint 1으로 `12b_`(style_profile), `12d_`(emphasis_layers) 채워짐 — `12_`/`12a_`/`12c_`/`12e_`는 미사용. 그래도 숫자 numbering drift는 부분 해소.
 
 ## C3 — Validation gates 모음
 
@@ -1027,7 +1289,7 @@ _d02_anchor_per_ci.jsonl              ← hwp_generator.py:1722 — .jsonl이라
 - `build_content_mapping_prompt` (B7) — 정의만 호출 0
 - `build_exclusivity_analysis_prompt`/`parse_exclusivity_from_llm` (B8)
 - `build_format_analysis_prompt`/`parse_format_rules_from_llm` (B8)
-- `build_style_profile_prompt`/`parse_style_profile_from_llm` (B6 + A19.3)
+- ~~`build_style_profile_prompt`/`parse_style_profile_from_llm`~~ — **[2026-05-21 update] 더 이상 dead 아님**. Sprint 1으로 A5b.1에서 활성화. 옛 A19.3 위치 pass block만 잔존 (cleanup 후보)
 - `_chapter_trees` append (B15) — 13.7a-A1 후 dead-write
 - `_chapter_proc["adapted_title_deferred"]` list (B16) — 실제 apply는 다른 path
 - `_residual_candidates`, `_preserved_per_section` (B17)
@@ -1044,9 +1306,10 @@ _d02_anchor_per_ci.jsonl              ← hwp_generator.py:1722 — .jsonl이라
 
 ### C4.4 Production-affecting bugs (현재 진행)
 
-11. **A12.3 split path overall_source_focus drop** — 출력 시 `_ap_parsed`가 chapter_decisions만 합치고 root field 누락. 2026-05-18 인수인계 outstanding.
+11. **A12.3 split path overall_source_focus drop** — 출력 시 `_ap_parsed`가 chapter_decisions만 합치고 root field 누락. **[2026-05-20 update] (a) fix (`18e187b`) 완료** — split 임계값 60K → 121.6K로 완화. 작은 양식은 single batch 유지로 우회. (b) split path 합치는 코드 fix는 큰 양식(수십+ chapter) 위해 유지 보류.
 12. **`_section_n_si = _source_inventory` NameError-guarded reuse (A16.6)** — A12 안 돌면 fragile (chapter route + `_chapter_plan_seed` None)
 13. **outer `truncated_xml`/`removed_indices`/`idx_map` dead-but-computed** (A1.2) — cache-miss path에서 per-section이 덮어씀
+14. **[2026-05-20 update — NEW] truncate_xml이 빈 paragraph 제거 → 1a-doc 매핑 깨짐** — `e7fab74` cover preserve로 우회됨(A18.5b)만, 근본 원인은 `truncate_xml`이 token budget 위해 빈 paragraph 제거하면서 1a paragraphs와 doc.paragraphs 인덱스 매핑이 attestation 없이 단순화. 표지 외 위치에도 영향 가능. 별도 fix 후보.
 
 ### C4.5 Side effects on shared dirs
 
@@ -1062,7 +1325,23 @@ _d02_anchor_per_ci.jsonl              ← hwp_generator.py:1722 — .jsonl이라
 ### C4.7 두 데이터 source가 같은 정보를 producer로 갖는 패턴
 
 19. **`extract_header_roles` analyzer 함수 vs DB tool inline** (A6.1) — MEMORY는 함수 호출이라 표기, 실제 dump는 inline. prompt builder는 양쪽 shape 수용 — 변경 시 두 곳 다 봐야 함
-20. **`extract_marker_policies` (12.1) vs `marker_policy_1f` (1f)** — 둘 다 marker policy 정보 보유. 1f가 cache + structure, 12.1은 12.1 path만 — 일관성 검증 필요
+20. **`extract_marker_policies` (12.1) vs `marker_policy_1f` (1f)** — 둘 다 marker policy 정보 보유. 1f가 cache + structure, 12.1은 12.1 path만 — 일관성 검증 필요. **[2026-05-20 update]** assembly A18.6b chapter title marker auto-prepend는 `extract_marker_policies`를 호출 (line 1541-1543). table_kind field도 `extract_marker_policies` 출력에 포함되어야 함 (A18.10에서 사용) — 두 producer가 같은 데이터 모양 유지하는지 검증 필요.
+
+### C4.8 [2026-05-20 update] 책임 분리 (AI vs code) 강화
+
+21. **chapter title 책임 분리**: AI는 의미만 결정(`adapted_title` 텍스트), code는 형식(marker, sequence) 책임.
+    - AI input strip: `strip_chapter_title_marker` (`:10208`) → adaptation_plan input에서 양식 marker 제거 (A12.2)
+    - code marker auto-prepend: A18.6b에서 양식 1f marker_policy + ci 기준 sequence로 자동 부착
+    - 다음 챕터 (Ⅳ, Ⅴ, ...) 추가돼도 code가 정확 sequence 부여
+    - body items와 같은 `marker_separator` path 재사용으로 일관성 보장
+22. **flow reorg 영향 (Phase E → 1c 후로 이동)**: DB tool 코드 구조가 두 위치(A2.2b inline + A3 cache replay)에서 Phase E 호출 시도 가능. cleanup 후보 — 한쪽으로 통합 필요.
+
+### C4.9 [2026-05-21 update] Sprint 1+2+3 책임 분리 / 양식 글꼴 보존
+
+23. **양식 분석 vs 본문 생성 phase 분리** (Sprint 1): 11.2/11.2b는 양식 한 번만 분석하면 충분 → main cache(1a~1f)와 독립된 style namespace cache. 11.2 prompt 변경 시 main cache invalidate 불필요 → 1a~1f 재실행 방지.
+24. **AI 출력 emphasis는 텍스트 markup으로** (Sprint 3): AI는 양식 charPr ID를 모름 — 출력 텍스트에 `[[emN]]...[[/emN]]` markup만 표시. cluster별 layer ↔ charPr 매핑은 code가 책임(A5b.2의 charpr_map). 잘못된 layer는 `valid_layer_ids`로 무시.
+25. **marker/content 글꼴 분리 — pre-extract 없음, 조립 시 직접 활용** (Sprint 2B): "마커/내용 글꼴 분리"용 별도 분석 stage 추가 X. `_replace_text_in_paragraph_elem_split`이 조립 시 양식 paragraph t element 직접 매칭으로 처리 (첫 글자 매칭으로 marker_t 선택, 가장 긴 t를 content_t로). 양식 텍스트박스 cell t[0]이 공백인 case 해결.
+26. **markup 0개 가드 — emphasis path 우회로 양식 글꼴 보존** (Sprint 3D): AI가 markup 0개 출력하면 cluster base charpr로 전체 박혀 양식 본래 글꼴 손실 위험. body item path(`:2818-2820`)에서 valid markup 0개면 emphasis path 우회 → Sprint 2B path로 fall through → 양식 본래 t별 글꼴 보존.
 
 ---
 
@@ -1107,10 +1386,23 @@ _d02_anchor_per_ci.jsonl              ← hwp_generator.py:1722 — .jsonl이라
 ## 별도 참조 문서
 
 - `_pipeline_audit_part_a1_a2.md` — Agent 1 원본 (A1+A2 상세, 458줄)
-- `_pipeline_audit_part_a3_a10.md` — Agent 2 원본 (A3~A10 상세, ~560줄)
+- `_pipeline_audit_part_a3_a10.md` — Agent 2 원본 (A3~A10 상세, ~560줄) — **note: A3 Phase E가 이후 1c 후로 이동**(`3346bf0`). 이 원본은 옛 위치 기준.
 - `_pipeline_audit_part_a11_a19.md` — Agent 3 원본 (A11~A19 상세, ~450줄)
 - `_pipeline_audit_part_b_c.md` — Part B + C 초기 draft
 - `pipeline_audit_2026_05_11.md` — 이전 audit (2026-05-11), 13.7c 이전 시점
-- `client_presentation_hwpx_pipeline.md` — 클라이언트 발표용 요약 (2026-05-11, untracked)
+- `client_presentation_hwpx_pipeline.md` — 클라이언트 발표용 요약 (2026-05-11)
 
-본 문서는 위 4개 source를 합쳐서 cross-reference + audit findings 통합한 것.
+본 문서는 위 4개 source를 합쳐서 cross-reference + audit findings 통합한 것. 2026-05-20 refresh로 17개 추가 commit (5/18 → 5/20) 반영.
+
+### 다음 refresh 시점 trigger
+
+- Phase E inline cleanup (A2.2b + A3 둘 다 호출하는 구조 통합)
+- split path overall_source_focus fix (b)
+- truncate_xml 빈 paragraph 제거 → 1a-doc 매핑 근본 fix (cover preserve 우회 의존 해제)
+- Track D-1 1c prompt 개선 (cache invalidate 비용)
+- 새 양식 추가 검증 (production 전환 기준)
+- **A19.3 옛 11.2 pass block 정리** (Sprint 1 이후 잔존, 확인 후 cleanup)
+- **Sprint 1+2+3 git commit** (현재 워크트리 dirty, production은 cp 배포로 사용 중) — audit refresh와 함께 묶어서 커밋
+- **emphasis layer noise 정리 검토** (Sprint 4 후보): 11.2b가 cluster당 50+ layer 만드는 case (구조 기호/공백 등). 사용자는 "AI 판단 위임"으로 결정했지만 2b prompt에 너무 많은 layer 들어가면 focus dilution 가능. monitor 후 noise filter 도입 여부 결정.
+- **다른 양식 (민원인 / CC7) Sprint 1+2+3 검증** — 조달청만 검증됨. 다른 cluster pattern에서 회귀/edge case 발생 시 fix
+- **◈ 위치 잘못 회귀 fix** (사용자 미룬 항목): 2장 "1 문제정책 관리제도 운영여건" 바로 밑에 ◈ 와야 하는데 다른 위치 — 이전 fix 후 회귀
