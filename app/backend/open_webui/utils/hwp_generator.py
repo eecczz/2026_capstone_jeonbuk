@@ -1741,6 +1741,32 @@ def assemble_hwpx_hybrid(
                 # 이전엔 _title_norm == _anchor_norm이면 skip하여 양식 그대로 두었는데,
                 # 새 제목과 그대로 제목 사이 조립 동작 불일치 발생.
                 try:
+                    # 본문 path 통일 (2026-05-21):
+                    # 본문은 본보기(exemplars[role]) deepcopy해서 글자 박는 방식.
+                    # chapter title도 동일 매커니즘 적용 — anchor element의 ctrl 없는 run을
+                    # 본보기 run으로 교체. anchor가 wrong 자리(단일 t 구조 header 등)를 잡아도
+                    # 본보기의 마커 t + 본문 t 분리 구조가 들어가서 split 정상 동작 → 마커 글꼴 보존.
+                    # element 자체는 parent에서 안 빠지므로 doc_para_to_idx, header_indices 영향 없음.
+                    _ct_exemplar = exemplars.get(_title_role_for_anchor)
+                    _exemplar_run_swap_applied = False
+                    if _ct_exemplar is not None:
+                        _exemplar_runs = _ct_exemplar.findall(f"{NS}run")
+                        # 본보기에 t 있는 run이 있을 때만 교체 (없으면 anchor 그대로)
+                        _ex_has_t = any(
+                            any(el.tag == f"{NS}t" for el in _r.iter())
+                            for _r in _exemplar_runs
+                        )
+                        if _ex_has_t:
+                            # anchor element의 ctrl 없는 run 모두 제거 (ctrl run은 보존)
+                            for _run in list(_anchor_el.findall(f"{NS}run")):
+                                if _run.find(f"{NS}ctrl") is None:
+                                    _anchor_el.remove(_run)
+                            # 본보기 run을 deepcopy해서 anchor element에 추가
+                            for _run in _exemplar_runs:
+                                _new_run = deepcopy(_run)
+                                _anchor_el.append(_new_run)
+                            _exemplar_run_swap_applied = True
+
                     if _marker_auto_applied and _ad_marker_text:
                         # Sprint 2B: marker/content 두 t에 분리 박기 (글꼴 보존)
                         _replace_text_in_paragraph_elem_split(
@@ -1751,14 +1777,15 @@ def assemble_hwpx_hybrid(
                         _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
                     _adapted_title_applied = True
                     log.info(
-                        f"[13.7d ci={ci}] adapted_title applied (action={_ad_action}, "
-                        f"marker_auto={_marker_auto_applied}, split={bool(_ad_marker_text)}): "
+                        f"[chapter title body-path-unified ci={ci}] applied "
+                        f"(action={_ad_action}, marker_auto={_marker_auto_applied}, "
+                        f"split={bool(_ad_marker_text)}, exemplar_swap={_exemplar_run_swap_applied}): "
                         f"'{_anchor_text_preview[:50]}' → '{_ad_text_with_marker[:50]}'"
                     )
                 except Exception as _adapt_e:
                     _adapted_title_skip_reason = f"replace_failed:{_adapt_e}"
                     log.warning(
-                        f"[13.7d ci={ci}] adapted_title 교체 실패 — 양식 원본 유지: {_adapt_e}"
+                        f"[chapter title body-path-unified ci={ci}] 교체 실패 — 양식 원본 유지: {_adapt_e}"
                     )
 
             _chapter_anchor_debug.append({
