@@ -83,20 +83,41 @@ def strip_marker(text: str, role: str, policy: dict) -> dict:
     separator = ""
     content = stripped
 
-    # leading emphasis markup ([[emN]]<marker>[[/emN]]) wrap 인식 — AI가 marker도
-    # emphasis 글꼴이라 markup으로 감싸는 경우 (예: cluster_19의 "과제 1" 마커).
-    # markup 안쪽 텍스트로 marker 매칭 → 매칭되면 markup 전체를 strip.
+    # leading emphasis markup ([[emN]]...[[/emN]]) wrap 인식 — AI가 marker를 강조
+    # 표시 안쪽에 박는 경우. 두 가지 case 구분:
+    #   case 1: 강조 안쪽이 marker만 (예: "[[em1]]Ⅱ[[/em1]] 제목") → 강조 전체
+    #           strip 후 뒤 텍스트가 본문. (예: cluster_19 "과제 1" 마커)
+    #   case 2: 강조 안쪽이 marker + 본문 (예: "[[em5]]* (운영규모) ...[[/em5]]")
+    #           → 강조 표시는 보존하고 안쪽에서 marker만 떼서 본문에 강조 다시 감싸기.
+    #           AI 의도 강조 글꼴이 조립 단계에 전달되도록 함.
     _em_lead_pat = re.compile(r'^\[\[(em\d+)\]\](.*?)\[\[/\1\]\]', re.DOTALL)
     _em_match = _em_lead_pat.match(stripped)
     if _em_match:
-        _em_inner = _em_match.group(2).lstrip()
+        _em_layer = _em_match.group(1)
+        _em_inner_raw = _em_match.group(2)
+        _em_inner = _em_inner_raw.lstrip()
+        _after_em = stripped[_em_match.end():]
+
+        def _apply_em_split(m: str, marker_len: int):
+            """case 1/case 2 구분해서 detected_marker/separator/content 결정."""
+            _after_marker_inner = _em_inner[marker_len:]
+            if not _after_marker_inner.strip():
+                # case 1: 강조 안쪽이 marker만 (whitespace 가능) → 강조 전체 strip
+                sep = _detect_separator(_after_em)
+                cnt = _after_em[len(sep):] if sep else _after_em
+                return m, sep, cnt
+            # case 2: 강조 안쪽이 marker + 본문 → 강조 표시 보존
+            sep = _detect_separator(_after_marker_inner)
+            _inner_content = _after_marker_inner[len(sep):] if sep else _after_marker_inner
+            cnt = f"[[{_em_layer}]]{_inner_content}[[/{_em_layer}]]"
+            if _after_em:
+                cnt += _after_em
+            return m, sep, cnt
+
         # markup 안쪽으로 marker 매칭
         for m in sorted(markers, key=len, reverse=True):
             if _em_inner.startswith(m):
-                detected_marker = m
-                after = stripped[_em_match.end():]
-                separator = _detect_separator(after)
-                content = after[len(separator):] if separator else after
+                detected_marker, separator, content = _apply_em_split(m, len(m))
                 break
         # sequence detection 시도 (markup 안쪽으로)
         if not detected_marker and policy.get("style") == "sequence":
@@ -104,10 +125,9 @@ def strip_marker(text: str, role: str, policy: dict) -> dict:
                 _em_inner, policy_type
             )
             if _seq_marker:
-                detected_marker = _seq_marker
-                after = stripped[_em_match.end():]
-                separator = _detect_separator(after)
-                content = after[len(separator):] if separator else after
+                detected_marker, separator, content = _apply_em_split(
+                    _seq_marker, len(_seq_marker)
+                )
 
     # Match against known markers (longest first) — plain marker (markup 없이)
     if not detected_marker:

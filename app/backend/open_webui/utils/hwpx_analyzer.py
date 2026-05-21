@@ -1870,13 +1870,29 @@ def serialize_to_compact(light_xml: str, cell_text_limit: int = 60) -> dict:
     lines.append(f"## 문단 목록 (총 {len(paragraphs)}개)")
     lines.append("")
 
-    _para_styles = {}  # idx → {"paraPrIDRef": str, "charPrIDRef": str}
+    _para_styles = {}  # idx → {"paraPrIDRef": str, "charPrIDRef": str, "body_first_charpr": str}
+
+    def _find_body_first_charpr(p_elem) -> str:
+        """paragraph 안(텍스트박스 cell 안 run 포함)에서 실제 본문 첫 글자가 박힌
+        run의 charPrIDRef를 반환. ctrl/tbl 컨테이너 run(text 없음)이나 공백·탭만
+        있는 run은 건너뜀. 사람 눈에 보이는 본문 글자의 형식 ID — paragraph 외부
+        형식(paraPrIDRef)이 같아도 글자 크기·폰트가 다른 case를 잡기 위한 신호."""
+        for run in p_elem.iter(f"{NS_HP}run"):
+            for t in run.iter(f"{NS_HP}t"):
+                if t.text and t.text.strip():
+                    return run.get("charPrIDRef", "")
+        return ""
 
     for p_idx, p in enumerate(paragraphs):
         para_pr = p.get("paraPrIDRef", "0")
         first_run = p.find(f"{NS_HP}run")
         char_pr = first_run.get("charPrIDRef", "0") if first_run is not None else "0"
-        _para_styles[p_idx] = {"paraPrIDRef": para_pr, "charPrIDRef": char_pr}
+        body_first_cp = _find_body_first_charpr(p)
+        _para_styles[p_idx] = {
+            "paraPrIDRef": para_pr,
+            "charPrIDRef": char_pr,
+            "body_first_charpr": body_first_cp,
+        }
 
         # 표 참조 — 실제 데이터 표만 T 태그 부착 (꾸미기 박스는 제외)
         tbls_in_p = list(p.iter(f"{NS_HP}tbl"))
@@ -2051,7 +2067,9 @@ def build_level_analysis_prompt(structure_json: dict, signals: dict = None, hybr
         prev_family = p.get("prev_marker_family", "")
         next_family = p.get("next_marker_family", "")
         same_paraPr = p.get("same_paraPr_run", False)
+        same_body_charpr = p.get("same_body_charpr_run", False)
         para_pr = p.get("paraPrIDRef", "")
+        body_cp = p.get("body_first_charpr", "")
         cands = p.get("role_candidates", [])
 
         text_preview = text_by_idx.get(idx, "")[:80] if text_by_idx else ""
@@ -2069,9 +2087,11 @@ def build_level_analysis_prompt(structure_json: dict, signals: dict = None, hybr
             f'"marker_family": "{marker_family}"',
             f'"description": {json.dumps(desc, ensure_ascii=False)}',
             f'"paraPrIDRef": "{para_pr}"',
+            f'"body_charpr": "{body_cp}"',
             f'"prev_marker_family": "{prev_family}"',
             f'"next_marker_family": "{next_family}"',
             f'"same_paraPr_run": {str(same_paraPr).lower()}',
+            f'"same_body_charpr_run": {str(same_body_charpr).lower()}',
             f'"role_candidates": {cands_str}',
         ]
         if text_preview:
@@ -2089,7 +2109,13 @@ def build_level_analysis_prompt(structure_json: dict, signals: dict = None, hybr
         "3. AI 1 후보 1순위 채택. 위치/구조상 어색하면 다른 후보 또는 새 role (override)\n"
         "4. 같은 부모 아래 자식들의 sibling_group_id 부여\n\n"
         "## features 활용\n"
-        "- same_paraPr_run = true: 직전과 같은 paraPr → 같은 위계의 형제 가능성 높음\n"
+        "- **body_charpr** = paragraph 안 실제 첫 글자가 박힌 run의 글자 형식 ID. "
+        "사람 눈에 보이는 글자 크기·폰트·굵기 자체를 나타냄. "
+        "**paraPrIDRef는 paragraph 외부 형식(들여쓰기·줄간격)만 표현하므로 글자 크기·폰트 차이를 못 잡음.** "
+        "두 paragraph가 같은 paraPr여도 body_charpr가 다르면 시각적으로 완전히 다른 형식.\n"
+        "- **same_body_charpr_run = true**: 직전 paragraph와 본문 글자 형식 동일 → 같은 위계의 형제 가능성 매우 높음 (시각적 동급).\n"
+        "- **same_body_charpr_run = false 이지만 same_paraPr_run = true**: paragraph 외부 형식만 같고 본문 글자 형식 다름 → 사람 눈에 다른 형식. 같은 위계의 형제 가능성 낮음. **직전 paragraph의 자식**이거나 다른 level일 가능성 높음.\n"
+        "- same_paraPr_run = true + same_body_charpr_run = true: 두 신호 모두 일치 → 형제 가능성 강함.\n"
         "- marker_family 같은 연속 → enumeration siblings (같은 level)\n"
         "- marker_family 다른 등장 (interleaved 패턴) → 자식 가능성\n"
         "- marker_family 다른 등장 (replace 패턴) → 같은 level 가능\n\n"
@@ -5181,7 +5207,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 11  # 1e prompt — 자식 약화 + chapter root 예외 (chapter title cross-chapter 통합)
+CACHE_SCHEMA_VERSION = 12  # paragraph.body_first_charpr 추가 — 본문 첫 글자 charPr 신호로 1c 형제 판단
 
 
 def compute_template_hash(template_path: str) -> str:
@@ -8797,6 +8823,15 @@ def compute_paragraph_features(paragraphs: list[dict]) -> list[dict]:
             prev_para_pr and prev_para_pr == p.get("paraPrIDRef", "")
         )
 
+        # 본문 첫 글자 형식(body_first_charpr) 일치 신호 — paraPrIDRef는 paragraph
+        # 외부 형식(들여쓰기·줄간격)만 표현하므로 글자 크기·폰트는 못 잡음.
+        # body_first_charpr는 paragraph 안 실제 첫 글자가 박힌 run의 charPr ID로,
+        # 사람 눈에 보이는 글자 형식 자체. 같으면 같은 시각 형식, 다르면 다름.
+        prev_body_cp = paragraphs[i-1].get("body_first_charpr", "") if i > 0 else ""
+        new_p["same_body_charpr_run"] = bool(
+            prev_body_cp and prev_body_cp == p.get("body_first_charpr", "")
+        )
+
         enriched.append(new_p)
     return enriched
 
@@ -12375,7 +12410,7 @@ def build_adaptation_plan_prompt(
     """13.7e: chapter mapping batch prompt (template-flow / source-surface 원칙).
 
     - chapter의 역할/순서/깊이는 template이 결정 (Roman numeral 위치로 고정 X)
-    - 제목 변경 여부는 title_source_fit으로 판단 (topic_specific = 무조건 변경 X)
+    - adapted_title은 '먼저 같게 vs 다르게' 분류 없이 자연스럽게 결정 (결과 같든 다르든 OK)
     - source는 main_headings / available_topics / evidence_samples / preview에서 선택
     - chapter set은 동일한 overall_source_focus 공유 (multi-agenda source 대응)
     """
@@ -12409,9 +12444,10 @@ def build_adaptation_plan_prompt(
         "- chapter role은 **Roman numeral 위치로 고정되지 않습니다.** Ⅱ장이라고 status가 아니고, Ⅲ장이라고 action이 아닙니다.\n"
         "  original_title과 local_pattern_summary, local_catalog_summary를 우선 봐서 role을 판단합니다.\n"
         "- source의 heading/제목/표현이 좋아 보여도, template chapter role과 맞지 않으면 그대로 가져오지 않습니다.\n"
-        "- chapter 제목의 **변경 여부**는 'topic_specific 여부'가 아니라 'source와의 적합성(title_source_fit)'으로 결정합니다.\n"
-        "  → original_title이 이미 source와 chapter role에 잘 맞으면 그대로 둡니다.\n"
-        "  → source와 안 맞는 marker/주제어/phrase만 변경합니다.\n\n"
+        "- chapter 제목은 source와 chapter role을 보고 자연스럽게 결정합니다. \n"
+        "  '같게 vs 다르게'를 먼저 분류하지 말고, source와의 적합성에 따라 처리합니다:\n"
+        "  → original_title이 이미 source와 chapter role에 잘 맞으면 변경 최소화 (token 보정 또는 그대로).\n"
+        "  → source와 안 맞는 marker/주제어/phrase는 보정 또는 재구성.\n\n"
         "Source focus 일관성:\n"
         "- 하나의 chapter set은 특별한 이유가 없는 한 동일한 source topic/thread를 중심으로 구성합니다.\n"
         "- source에 여러 안건/주제가 있더라도, chapter들을 서로 무관한 안건으로 나누지 마세요.\n"
@@ -12533,76 +12569,52 @@ def build_adaptation_plan_prompt(
         "  parent 전체를 한 role로 단정하지 말고, 그 안의 sub-evidence 중 chapter role에 맞는 조각만 선택.\n"
         "- 한 source heading의 모든 내용을 한 chapter에 몰아넣지 마세요. 다른 chapter도 사용할 수 있게 분배.\n\n"
         "선택한 조각은 supporting_evidence에 기록. 부족하면 source_gap_flags에 명시.\n\n"
-        "Step 5 — title_source_fit 판정 + adapted_title 결정 (가장 중요)\n\n"
-        "**제목 변경 여부는 title_source_fit이 결정합니다 (topic_specific 여부가 아님).**\n\n"
-        "title_source_fit enum:\n"
-        "- supported_as_is:\n"
-        "    original_title을 **그대로** 사용합니다. **adapted_title은 original_title과 정확히 같아야 합니다.**\n"
-        "    (보정/약간 수정은 supported_as_is가 아닙니다. needs_topic_adaptation으로 보내세요.)\n"
-        "    조건: original_title의 핵심 주제어가 source(특히 overall_source_focus)와 맞고,\n"
-        "         chapter role도 일치하며, markers/placeholder가 없거나 source 환경과 동일.\n"
-        "    예: source가 광역버스 대책 문서 + 양식 'Ⅱ. 광역버스 확대 및 전용차로 도입'\n"
-        "      → supported_as_is, adapted_title='광역버스 확대 및 전용차로 도입' (정확히 동일).\n"
-        "    예: '추진배경', '추진성과 및 평가', '주요 대책별 추진일정' 같은 generic 또는\n"
-        "      source-compatible 제목 + markers 없음 → supported_as_is.\n"
-        "- needs_marker_fill:\n"
-        "    ○○○, [기관명], <연도> 같은 placeholder만 채우면 됨. base phrase는 손대지 않음.\n"
-        "    예: '○○○ 추진성과 및 평가' → '정책품질관리제도 추진성과 및 평가'.\n"
-        "- needs_topic_adaptation:\n"
-        "    base phrase의 의미는 유지하면서 표면 세부(주제어/연도/기관 또는 공식 명칭/표현)를 보정.\n"
-        "    두 하위 패턴 모두 이 enum에 들어감:\n"
-        "      (a) marker swap: '2024년 → 2025년', '부동산정책 → 정책품질관리'.\n"
-        "          예: '2024년 부동산정책 추진방향' + 2025년 정책품질관리 source\n"
-        "              → '2025년 정책품질관리 추진방향'.\n"
-        "      (b) wording precision fix: 핵심 의미 유지하며 source 공식 명칭/정확 표현으로 보정.\n"
-        "          예: '광역버스 확대 및 전용차로 도입' + source가 '광역버스 운행 확대' 표기 사용\n"
-        "              → '광역버스 운행 확대 및 전용차로 도입'.\n"
-        "          예: '업무추진 여건 및 방향' + same_genre source의 정확 표현\n"
-        "              → '정책품질관리 운영여건 및 방향'.\n"
-        "    공통 패턴: base phrase의 dominant role/의미는 그대로, 표면 token만 source 표준으로 보정.\n"
-        "    **과변경 방지 (매우 중요):**\n"
-        "      needs_topic_adaptation은 제목의 **구조와 dominant role을 유지한 채 source와 불일치하는 token만\n"
-        "      최소 수정**하는 action입니다. **새로운 대책/범위/하위항목을 제목에 추가하지 마세요.**\n"
-        "      OK: '광역버스 확대 및 전용차로 도입' → '광역버스 운행 확대 및 전용차로 도입' (token 정확화).\n"
-        "      금지: '광역버스 확대 및 전용차로 도입' → '광역버스 운행 확대, 차고지 정비 및 전용차로 종합대책'\n"
-        "          (범위 확장 — 차고지 정비는 새 하위항목 추가).\n"
-        "      범위 확장이 필요해 보이면 needs_role_equivalent_rewrite로 넘어가는지 재검토.\n"
-        "      어절 수가 크게 늘거나 새 명사가 들어가면 wording precision fix가 아닐 가능성 큼.\n"
-        "    구분: phrase 자체를 새로 짜야 하면 needs_role_equivalent_rewrite로 가세요.\n"
-        "- needs_role_equivalent_rewrite:\n"
-        "    template_phrase_signal이 있고 source 장르가 다르며 original이 source와 직접 맞지 않음.\n"
-        "    base phrase를 그대로 둘 수 없고 role 동등 제목으로 재구성 필요.\n"
-        "    예: '2024년 업무추진 여건 및 방향' + different_genre source (회의자료)\n"
-        "      → '문제정책 관리제도 운영여건 및 개선방향'.\n\n"
-        "title_action enum (title_source_fit에서 derived):\n"
+        "Step 5 — adapted_title 결정 (가장 중요)\n\n"
+        "각 chapter의 adapted_title을 결정합니다. **'같게 가져갈지 다르게 가져갈지'를 먼저 분류하지 마세요.**\n"
+        "Template-flow 우선 원칙에 따라 자연스러운 제목을 정합니다. 결과가 original_title과 같으면 같은 것,\n"
+        "다르면 다른 것입니다.\n\n"
+        "공통 처리 원칙:\n"
+        "- chapter의 역할(role), 순서, 깊이는 template이 결정. source가 바꾸지 않음.\n"
+        "- original_title이 이미 source와 chapter role에 자연스럽게 맞으면 변경 최소화 (그대로 두거나 token만 보정).\n"
+        "- placeholder(○○○, [기관명], <연도> 등)는 source 도메인 명사로 채움.\n"
+        "- base phrase의 의미와 dominant role은 유지하면서, source 도메인과 불일치하는 token만 최소 수정.\n"
+        "  예: '2024년 부동산정책 추진방향' + 2025년 정책품질관리 source\n"
+        "    → '2025년 정책품질관리 추진방향'.\n"
+        "  예: '광역버스 확대 및 전용차로 도입' + source가 '광역버스 운행 확대' 표기 사용\n"
+        "    → '광역버스 운행 확대 및 전용차로 도입'.\n"
+        "- template_phrase_signal이 있고 source 장르가 다르며 original이 source와 직접 맞지 않으면\n"
+        "  base phrase를 새로 짜고 role 동등 제목으로 재구성.\n"
+        "  공식: adapted_title ≈ [source 도메인 명사] + [template chapter role 어휘].\n"
+        "  source heading을 그대로 복사하지 말고 template role 어휘로 마감.\n"
+        "  예: '2024년 업무추진 여건 및 방향' + different_genre source (회의자료)\n"
+        "    → '문제정책 관리제도 운영여건 및 개선방향'.\n\n"
+        "**과변경 방지 (매우 중요):**\n"
+        "- 새로운 대책/범위/하위항목을 제목에 추가하지 마세요.\n"
+        "  OK: '광역버스 확대 및 전용차로 도입' → '광역버스 운행 확대 및 전용차로 도입' (token 정확화).\n"
+        "  금지: '광역버스 확대 및 전용차로 도입' → '광역버스 운행 확대, 차고지 정비 및 전용차로 종합대책'\n"
+        "      (범위 확장 — 차고지 정비는 새 하위항목 추가).\n"
+        "- 어절 수가 크게 늘거나 새 명사가 들어가면 token swap이 아니라 role-equivalent rewrite로 판단.\n\n"
+        "title_action enum:\n"
         "- adapt_topic_terms:\n"
-        "    title_source_fit이 supported_as_is / needs_marker_fill / needs_topic_adaptation일 때.\n"
-        "    base phrase 유지, markers/placeholder/표현 세부만 처리.\n"
-        "    supported_as_is는 adapted_title == original_title 강제.\n"
+        "    base phrase 유지 + markers/placeholder/표현 세부만 처리 (token swap 정도).\n"
+        "    이 action으로 처리한 결과가 original_title과 글자 단위로 같아도 자연스러운 결과면 OK.\n"
         "- adapt_role_equivalent_title:\n"
-        "    title_source_fit이 needs_role_equivalent_rewrite일 때.\n"
-        "    template role 어휘 유지 + source 도메인 명사 흡수.\n"
-        "    공식: adapted_title ≈ [source 도메인 명사] + [template chapter role 어휘].\n"
-        "    source heading을 그대로 복사하지 말고, template role 어휘로 마감.\n\n"
+        "    base phrase 재구성. template role 어휘 + source 도메인 명사로 새 제목 작성.\n"
+        "    공식: adapted_title ≈ [source 도메인 명사] + [template chapter role 어휘].\n\n"
         "content_action enum:\n"
         "- generate_from_source: chapter role에 맞는 source evidence가 충분.\n"
         "- generate_with_template_scaffold: source evidence가 부분적으로 부족.\n"
         "  source_gap_flags / missing_source_requirements 명시. 사실 날조 금지.\n\n"
         "제목 갱신 규칙 (반드시 따를 것):\n"
-        "- template_title_nature가 topic_specific이어도 title_source_fit이 supported_as_is이면 adapted_title은\n"
-        "  original_title과 같을 수 있습니다. ('topic_specific = 무조건 변경'은 아닙니다.)\n"
-        "- adapted_title이 original_title과 반드시 달라야 하는 경우는 title_source_fit이\n"
-        "  needs_marker_fill / needs_topic_adaptation / needs_role_equivalent_rewrite일 때.\n"
-        "- needs_marker_fill: placeholder/marker만 정확히 채움. 나머지는 손대지 말 것.\n"
-        "- needs_topic_adaptation: 주제어/연도/기관 교체. base phrase 유지.\n"
-        "- needs_role_equivalent_rewrite: phrase 재구성. source 도메인 + template role 어휘.\n"
-        "- source 장르가 양식과 같은데 markers만 다르면 needs_topic_adaptation (적극 갱신 X, 깔끔 치환).\n"
-        "- generic_role_title + markers 없음 + role 일치면 거의 항상 supported_as_is.\n\n"
+        "- placeholder(○○○, [기관명], <연도>)가 있으면 source 도메인 명사로 정확히 채움. 나머지는 손대지 말 것.\n"
+        "- 주제어/연도/기관 교체로 source와 맞출 수 있으면 base phrase 유지하고 token만 교체.\n"
+        "- template_phrase_signal이 있고 source 장르가 다르면 phrase 재구성 (role 동등 제목).\n"
+        "- source 장르가 양식과 같으면 변경 최소화 (token만 보정).\n"
+        "- generic_role_title + markers 없음 + role 일치면 거의 변경 없음 — 그대로 두는 게 자연스러움.\n\n"
         "anti-pattern (절대 금지):\n"
         "- source와 이미 잘 맞는 제목을 'topic_specific'이라는 이유만으로 강제 변경.\n"
         "  예: source가 광역버스 대책 문서인데 '광역버스 확대 및 전용차로 도입'을 '주요 대책 추진방향' 식으로\n"
         "    오히려 generic하게 바꾸기 → 금지.\n"
-        "- title_source_fit이 supported_as_is인데 adapted_title을 다르게 작성하기 → 금지.\n"
         "- topic_specific_title을 source와 다른 상태로 그대로 두기 (markers 미처리).\n"
         "- 양식 phrase 슬롯에 source 도메인 명사를 강제 1:1 치환 ('업무추진' → '정책품질').\n"
         "- source의 heading/표현을 chapter role 무시하고 그대로 가져오기.\n"
@@ -12632,10 +12644,8 @@ def build_adaptation_plan_prompt(
         '      "template_phrase_signal": "양식 결합 phrase 또는 null.",\n'
         '      "source_genre_match": "same_genre|different_genre|unclear",\n'
         '      "source_genre_reason": "장르 판단 근거.",\n'
-        '      "title_source_fit": "supported_as_is|needs_marker_fill|needs_topic_adaptation|needs_role_equivalent_rewrite",\n'
-        '      "title_fit_reason": "왜 이 source_fit으로 판정했는지. original_title 핵심어와 source의 관계 명시.",\n'
         '      "title_action": "adapt_topic_terms|adapt_role_equivalent_title",\n'
-        '      "adapted_title": "title_source_fit=supported_as_is면 original_title과 **정확히 같아야** 함 (글자 단위 일치). needs_marker_fill / needs_topic_adaptation / needs_role_equivalent_rewrite이면 original_title과 달라야 함.",\n'
+        '      "adapted_title": "chapter에 적합한 제목. 결과가 original_title과 글자 단위로 같든 다르든 자연스러우면 OK. \'먼저 같게 vs 다르게\'를 분류하지 말고 자연스러운 제목을 결정.",\n'
         '      "title_adaptation_reason": "어떤 처리(유지/marker채움/주제어교체/재구성)를 했는지 명시.",\n'
         '      "content_action": "generate_from_source|generate_with_template_scaffold",\n'
         '      "ordering_hint": {\n'
@@ -12663,7 +12673,8 @@ def build_adaptation_plan_prompt(
         "1. **template-flow가 source-fit보다 우선.** chapter role/순서/깊이는 template이 결정.\n"
         "2. **chapter role은 위치가 아니라 original_title과 패턴으로 결정.**\n"
         "   Ⅱ장이 항상 status가 아니고 Ⅲ장이 항상 action이 아닙니다.\n"
-        "3. **제목 변경 여부는 title_source_fit이 결정.** topic_specific = 무조건 변경이 아닙니다.\n"
+        "3. **adapted_title은 '같게 vs 다르게'를 먼저 분류하지 말고 자연스럽게 결정.** \n"
+        "   topic_specific이라도 source와 잘 맞으면 변경 최소화, 안 맞으면 보정 또는 재구성.\n"
         "4. **chapter set은 단일 overall_source_focus를 공유.** 안건 흩기 금지.\n"
         "5. chapter_title_mode + template_role_hint cross-validation. 모순되면 재검토.\n"
         "6. mixed role source heading은 sub-evidence를 chapter role별로 분배.\n"
@@ -12681,30 +12692,26 @@ def build_adaptation_plan_prompt(
         "  Ⅰ. 추진배경:\n"
         "    template_role_hint='intro', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=[], template_phrase_signal=null, template_title_nature='generic_role_title'.\n"
-        "    title_source_fit='supported_as_is'.\n"
-        "    title_action='adapt_topic_terms', adapted_title='추진배경' (유지).\n"
+        "    title_action='adapt_topic_terms', adapted_title='추진배경' (자연스럽게 그대로).\n"
         "  \n"
         "  Ⅱ. 광역버스 확대 및 전용차로 도입:\n"
         "    template_role_hint='action' (대표 어휘 '확대/도입'). **위치 Ⅱ이지만 status 아님.**\n"
         "    chapter_title_mode='measure_topic_title'.\n"
         "    genre_markers=[], template_phrase_signal=null, template_title_nature='topic_specific_title'\n"
         "      (도메인 콘텐츠 결합이므로).\n"
-        "    title_source_fit='supported_as_is' (source가 광역버스 대책 문서이므로 잘 맞음).\n"
-        "    title_action='adapt_topic_terms', adapted_title='광역버스 확대 및 전용차로 도입' (original과 정확히 동일).\n"
+        "    title_action='adapt_topic_terms', adapted_title='광역버스 확대 및 전용차로 도입' (source가 광역버스 대책이라 자연스럽게 그대로).\n"
         "    \n"
         "    (변형) source가 '광역버스 운행 확대'라는 정확한 표기를 사용한다면:\n"
-        "      title_source_fit='needs_topic_adaptation' (wording precision fix 패턴).\n"
-        "      adapted_title='광역버스 운행 확대 및 전용차로 도입'.\n"
-        "      이 경우는 supported_as_is가 아님 — original_title과 다르기 때문.\n"
+        "      title_action='adapt_topic_terms', adapted_title='광역버스 운행 확대 및 전용차로 도입' (wording precision fix).\n"
         "  \n"
         "  Ⅲ. 차량증편 및 안전인력 확대 등:\n"
         "    template_role_hint='action', chapter_title_mode='measure_topic_title'.\n"
-        "    title_source_fit='supported_as_is', adapted_title='차량증편 및 안전인력 확대 등' (유지).\n"
+        "    title_action='adapt_topic_terms', adapted_title='차량증편 및 안전인력 확대 등' (자연스럽게 그대로).\n"
         "  \n"
         "  Ⅳ. 주요 대책별 추진일정:\n"
         "    template_role_hint='schedule', chapter_title_mode='schedule_title'.\n"
-        "    template_title_nature='generic_role_title', title_source_fit='supported_as_is'.\n"
-        "    adapted_title='주요 대책별 추진일정' (유지).\n"
+        "    template_title_nature='generic_role_title'.\n"
+        "    title_action='adapt_topic_terms', adapted_title='주요 대책별 추진일정' (자연스럽게 그대로).\n"
         "\n"
         "[예시 2] 3-chapter 양식 + cross-genre source — phrase 재구성 필요\n"
         "  양식 = {Ⅰ. 추진성과 및 평가, Ⅱ. 2024년 업무추진 여건 및 방향, Ⅲ. 2024년 핵심 추진과제}\n"
@@ -12715,13 +12722,12 @@ def build_adaptation_plan_prompt(
         "  Ⅰ. 추진성과 및 평가:\n"
         "    template_role_hint='status', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=[], template_phrase_signal=null, template_title_nature='generic_role_title'.\n"
-        "    title_source_fit='supported_as_is', adapted_title='추진성과 및 평가' (유지).\n"
+        "    title_action='adapt_topic_terms', adapted_title='추진성과 및 평가' (자연스럽게 그대로).\n"
         "  \n"
         "  Ⅱ. 2024년 업무추진 여건 및 방향:\n"
         "    template_role_hint='status', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=['2024년'], template_phrase_signal='업무추진 여건 및 방향'.\n"
         "    source_genre_match='different_genre' (양식=업무계획, source=회의자료).\n"
-        "    title_source_fit='needs_role_equivalent_rewrite'.\n"
         "    title_action='adapt_role_equivalent_title'.\n"
         "    좋은 adapted_title: '문제정책 관리제도 운영여건 및 보완방향',\n"
         "                       '주요 현황 및 제도운영 쟁점',\n"
@@ -12731,7 +12737,7 @@ def build_adaptation_plan_prompt(
         "  Ⅲ. 2024년 핵심 추진과제:\n"
         "    template_role_hint='action', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=['2024년'], template_phrase_signal='핵심 추진과제'.\n"
-        "    title_source_fit='needs_role_equivalent_rewrite'.\n"
+        "    title_action='adapt_role_equivalent_title'.\n"
         "    좋은 adapted_title: '제도보완 방안 및 향후 추진과제',\n"
         "                       '문제정책 관리제도 보완 과제 및 조치계획'.\n"
         "    나쁜: '제도 보완 및 향후 조치계획' (source heading 그대로 복사).\n"
@@ -12741,20 +12747,17 @@ def build_adaptation_plan_prompt(
         "  source = 2025년 정책품질관리 도메인의 정책 추진 보고 (same_genre).\n"
         "  template_role_hint='action', chapter_title_mode='measure_topic_title' (도메인+대책방향) or 'role_stage_title'.\n"
         "  genre_markers=['2024년', '부동산정책'], template_phrase_signal=null.\n"
-        "  title_source_fit='needs_topic_adaptation'.\n"
-        "  title_action='adapt_topic_terms', adapted_title='2025년 정책품질관리 추진방향'.\n"
+        "  title_action='adapt_topic_terms', adapted_title='2025년 정책품질관리 추진방향' (token swap).\n"
         "\n"
         "[예시 4] placeholder만 있는 generic boilerplate — needs_marker_fill\n"
         "  양식 chapter = 'Ⅰ. ○○○ 추진성과 및 평가'.\n"
         "  template_title_nature='topic_specific_title' (○○○ marker 존재).\n"
         "  genre_markers=['○○○'], template_phrase_signal=null.\n"
-        "  title_source_fit='needs_marker_fill'.\n"
-        "  title_action='adapt_topic_terms', adapted_title='정책품질관리제도 추진성과 및 평가'.\n"
+        "  title_action='adapt_topic_terms', adapted_title='정책품질관리제도 추진성과 및 평가' (placeholder fill).\n"
         "\n"
         "최종 self-check (모든 chapter_decision 작성 후 통과 필수):\n"
-        "0. **변경 여부는 title_source_fit만 결정합니다.**\n"
-        "   template_title_nature는 진단용 라벨일 뿐 변경 여부를 결정하지 않습니다.\n"
-        "   topic_specific_title이어도 title_source_fit='supported_as_is'이면 제목을 그대로 둡니다.\n"
+        "0. **adapted_title은 '같게 vs 다르게' 사전 분류 없이 자연스럽게 결정.** \n"
+        "   결과가 original_title과 같든 다르든 chapter role/source에 자연스러우면 OK.\n"
         "1. **chapter role 판단이 Roman numeral 위치에 끌려가지 않았는가?**\n"
         "   measure_topic_title인 chapter가 위치 때문에 status/issue로 잘못 분류되지 않았는가?\n"
         "   위치-role 충돌 시 역할어 분석을 우선 (chapter_title_mode는 단축키가 아닙니다).\n"
@@ -12763,24 +12766,17 @@ def build_adaptation_plan_prompt(
         "   - status인데 dominant 표현이 action ('... 방안/조치계획'으로 시종일관) → mismatch.\n"
         "   - action인데 dominant 표현이 단순 현황 ('... 현황/실태'로 방향성 없이) → mismatch.\n"
         "   - 허용: status/issue에 '현황 및 개선방향', '운영여건 및 보완방향' 같은 status+방향성 결합형.\n"
-        "3. **title_source_fit과 adapted_title이 일관되는가?**\n"
-        "   - supported_as_is → **adapted_title은 original_title과 정확히 같아야 함 (글자 단위 일치).**\n"
-        "     약간의 수정/보정이라도 있으면 needs_topic_adaptation으로 재라벨.\n"
-        "   - needs_marker_fill → placeholder만 채워짐, 나머지 그대로.\n"
-        "   - needs_topic_adaptation → 주제어/연도/기관 교체 또는 wording precision fix. base phrase 의미 유지.\n"
-        "   - needs_role_equivalent_rewrite → phrase 재구성, template role 어휘로 마감.\n"
-        "4. **모든 chapter가 overall_source_focus.topic 안에서 구성되었는가?**\n"
+        "3. **모든 chapter가 overall_source_focus.topic 안에서 구성되었는가?**\n"
         "   chapter들이 서로 다른 정책 패키지로 흩어졌다면 focus 재선택 후 다시 작성.\n"
         "   같은 정책 패키지 안의 세부 대책 분배는 정상 (focus granularity 확인).\n"
         "   불가피하게 다른 정책 패키지를 섞었다면 ambiguity_flags='multi_topic_source_mixing_risk' 기록.\n"
-        "5. **source의 heading/표현을 그대로 복사한 chapter가 있다면 chapter role과 dominant 일치하는가?**\n"
+        "4. **source의 heading/표현을 그대로 복사한 chapter가 있다면 chapter role과 dominant 일치하는가?**\n"
         "   복사인데 role이 다르면 → template role 어휘로 재가공.\n"
-        "6. mixed role source heading의 sub-evidence를 한 chapter에 몰아넣지 않았는가?\n"
-        "7. source가 양식 도메인과 다른데도 markers/phrase가 그대로 남아있는 chapter는 없는가?\n"
+        "5. mixed role source heading의 sub-evidence를 한 chapter에 몰아넣지 않았는가?\n"
+        "6. source가 양식 도메인과 다른데도 markers/phrase가 그대로 남아있는 chapter는 없는가?\n"
         "\n"
         "**한 줄 정리: 제목은 source를 반영해야 하지만, chapter의 역할어와 문서 흐름은 template을 따라야 합니다.**\n"
-        "**제목 변경 여부는 'topic_specific 여부'가 아니라 'source와의 적합성(title_source_fit)'으로 결정합니다.**\n"
-        "**supported_as_is는 글자 단위로 original_title과 같아야 합니다. 약간의 보정도 needs_topic_adaptation입니다.**\n"
+        "**'먼저 같게 가져갈지 다르게 가져갈지'를 정하지 말고, source 적합성과 chapter role에 따라 자연스러운 제목을 정하면 됩니다.**\n"
     )
 
     return [
@@ -12951,11 +12947,8 @@ def validate_adaptation_decision(decision: dict) -> dict:
         if v is not None and not isinstance(v, list):
             violations.append(f"{lk}_not_list")
 
-    # 6. v2: title_source_fit / chapter_title_mode / template_title_nature / source_genre_match 검증
-    tsf = decision.get("title_source_fit")
-    if tsf is not None and tsf not in TITLE_SOURCE_FITS:
-        violations.append(f"title_source_fit_invalid: {tsf!r}")
-
+    # 6. v2: chapter_title_mode / template_title_nature / source_genre_match 검증
+    # (title_source_fit은 2026-05-21 제거됨 — '같게 vs 다르게' 사전 분류 안 함)
     ctm = decision.get("chapter_title_mode")
     if ctm is not None and ctm not in CHAPTER_TITLE_MODES:
         violations.append(f"chapter_title_mode_invalid: {ctm!r}")
@@ -12967,30 +12960,6 @@ def validate_adaptation_decision(decision: dict) -> dict:
     sgm = decision.get("source_genre_match")
     if sgm is not None and sgm not in SOURCE_GENRE_MATCHES:
         violations.append(f"source_genre_match_invalid: {sgm!r}")
-
-    # 7. v2 hard check: title_source_fit=supported_as_is면 adapted_title == original_title (글자 단위)
-    original_title = decision.get("original_title", "")
-    if (tsf == "supported_as_is"
-            and isinstance(adapted_title, str)
-            and isinstance(original_title, str)
-            and adapted_title.strip() != original_title.strip()):
-        violations.append(
-            f"supported_as_is_requires_exact_match: "
-            f"adapted={adapted_title!r} original={original_title!r}"
-        )
-
-    # 8. v2: title_action ↔ title_source_fit 일관성
-    if (tsf == "needs_role_equivalent_rewrite"
-            and title_action not in ("adapt_role_equivalent_title",)):
-        violations.append(
-            f"needs_role_equivalent_rewrite_requires_adapt_role_equivalent_title: "
-            f"got title_action={title_action!r}"
-        )
-    if (tsf in ("supported_as_is", "needs_marker_fill", "needs_topic_adaptation")
-            and title_action != "adapt_topic_terms"):
-        violations.append(
-            f"{tsf}_requires_adapt_topic_terms: got title_action={title_action!r}"
-        )
 
     # 9. content_action=generate_with_template_scaffold면 confidence high 금지 (source 부족 상태)
     if content_action == "generate_with_template_scaffold" and confidence == "high":
@@ -15526,6 +15495,7 @@ def build_section_fill_prompt(
     style_profiles: dict | None = None,
     emphasis_layers: dict | None = None,
     paragraph_emphasis_map: dict | None = None,
+    marker_policy_1f: dict | None = None,
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -15559,6 +15529,37 @@ def build_section_fill_prompt(
             _vs = _r.get("variants") or []
             if _p and len(_vs) >= 2:
                 _multi_variant_parents.add(_p)
+
+    # 양식 sample text 머리 마커 제거 helper — 1f marker_policy로 role별 markers 조회.
+    # AI한테 양식 sample 박을 때 머리 마커는 보내지 말 것 (책임 분리: code가 자동 부착).
+    # AI가 sample 보고 마커 따라하는 동작(예: 강조 안쪽에 마커 박기) 방지 목적.
+    _role_markers_map: dict = {}
+    if marker_policy_1f and isinstance(marker_policy_1f, dict):
+        for _entry in (marker_policy_1f.get("roles") or []):
+            _rname = _entry.get("role", "")
+            if not _rname:
+                continue
+            _ms = []
+            for _ev in (_entry.get("evidence") or []):
+                _m = (_ev.get("detected_marker") or "").strip()
+                if _m and _m not in _ms:
+                    _ms.append(_m)
+            if _ms:
+                # 긴 마커 먼저 (예: "**" 우선 후 "*")
+                _role_markers_map[_rname] = sorted(set(_ms), key=len, reverse=True)
+
+    def _strip_leading_marker(text: str, role_name: str) -> str:
+        if not text or role_name not in _role_markers_map:
+            return text
+        _stripped = text.lstrip()
+        _lead_ws = text[:len(text) - len(_stripped)]
+        for _m in _role_markers_map[role_name]:
+            if _stripped.startswith(_m):
+                # 마커와 그 뒤 모든 공백·탭 함께 제거. 1개만 떼면 AI가 sample
+                # 따라 본문 머리에 공백 박는 경우 코드가 부착한 "* " 뒤에 공백 중복.
+                _rest = _stripped[len(_m):].lstrip(" \t")
+                return _lead_ws + _rest
+        return text
 
     # 패턴 트리 텍스트
     pattern_text = _format_pattern_tree(
@@ -15652,9 +15653,11 @@ def build_section_fill_prompt(
 
                         lines.append(f"\n  **[variant {vid}]** (양식 관찰: {vic} instance)")
                         # 양식 instance sample — text만 표시 (marker는 제외)
+                        # text_preview에는 양식 paragraph 마커가 박혀있어, 1f policy로 떼서 보냄
                         for s in samples[:3]:
                             stx = s.get("text_preview", "")
                             if stx:
+                                stx = _strip_leading_marker(stx, parent)
                                 lines.append(f"    - 양식 instance text: \"{stx[:80]}\"")
                         # variant 자식 set
                         lines.append(f"    - 이 variant의 자식 set: {{ " + ", ".join(child_strs) + " }}")
@@ -15664,10 +15667,14 @@ def build_section_fill_prompt(
             exclusive_text = "\n".join(lines) + "\n\n"
 
     # role 카탈로그 텍스트 — marker 정보 제거 (코드가 자동 부착)
+    # sample 텍스트 머리에 박힌 양식 마커(예: "* (운영규모)..." 의 "* ")도 1f policy로 떼서 보냄.
+    # 안 떼면 AI가 sample 따라 마커를 본문에 박는 동작 발생 가능.
     catalog_lines = []
     for role_name, info in role_catalog.items():
         desc = info.get("description", "")
         sample = info.get("sample", "")
+        if sample:
+            sample = _strip_leading_marker(sample, role_name)
         count = info.get("count", 0)  # 양식 전체 등장 횟수 (instance 갯수 hint)
         count_str = f', 양식 instance: {count}개' if count else ""
         sample_str = f'\n  예시: "{sample}"' if sample else ""

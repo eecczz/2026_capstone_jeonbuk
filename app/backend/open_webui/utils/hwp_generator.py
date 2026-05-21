@@ -1736,9 +1736,10 @@ def assemble_hwpx_hybrid(
             _title_norm = " ".join(_ad_text_with_marker.split())
             if not _ad_text:
                 _adapted_title_skip_reason = "empty_adapted_title"
-            elif _title_norm == _anchor_norm:
-                _adapted_title_skip_reason = "adapted_matches_anchor"
             else:
+                # 양식 본래와 같든 다르든 항상 박음 (양식 잔재 비우고 본문 자리에 정확히 박기).
+                # 이전엔 _title_norm == _anchor_norm이면 skip하여 양식 그대로 두었는데,
+                # 새 제목과 그대로 제목 사이 조립 동작 불일치 발생.
                 try:
                     if _marker_auto_applied and _ad_marker_text:
                         # Sprint 2B: marker/content 두 t에 분리 박기 (글꼴 보존)
@@ -3214,10 +3215,13 @@ def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
     양식이 chapter title을 table box로 표현하는 경우, direct run.t만 보면 table 안 text가
     안 바뀌고 first_run에 새 t가 추가되어 양식 원본 + adapted 둘 다 출력되는 문제 fix.
 
-    동작:
+    동작 (2026-05-21 chapter title 조립 통일):
     - paragraph 안 모든 descendant t element 수집 (table cell 안 t 포함)
-    - 첫 t에 adapted_title 박고 나머지 t의 text 비움
-    - t element가 하나도 없으면 첫 run에 새 t SubElement 추가
+    - **본문 자리 찾기**: 비공백 t 중 가장 긴 t를 target으로 (= 본문 글꼴 자리).
+      첫 t에 통째 박지 않음 — 양식 paragraph가 마커/본문 글꼴 분리된 구조일 때
+      마커 자리에 본문이 박혀 마커 서식으로 보이는 wrong 방지.
+    - target에 text 박고 다른 비공백 t는 비움. **공백/탭만 있는 t는 들여쓰기 자리로 보존**.
+    - t element 하나도 없으면 첫 run에 새 t SubElement 추가
     - ctrl 요소가 있는 run은 보존 (header, footer, pageNum 등)
     """
     import xml.etree.ElementTree as _stdlib_ET
@@ -3226,13 +3230,21 @@ def _replace_text_in_paragraph_elem(p_elem, text: str, NS: str):
     t_elems = [el for el in p_elem.iter() if el.tag == f"{NS}t"]
 
     if t_elems:
-        # 첫 t element에 adapted_title 박음
-        first_t = t_elems[0]
-        first_t.text = text
-        for child in list(first_t):
-            first_t.remove(child)
-        # 나머지 t element는 text 비우기 (양식 원본 잔재 제거)
-        for t in t_elems[1:]:
+        # 본문 자리 = 가장 긴 비공백 t (마커 자리/공백 자리 회피)
+        bearing = [t for t in t_elems if (t.text or "").strip()]
+        if bearing:
+            target_t = max(bearing, key=lambda t: (len(t.text or ""), t_elems.index(t)))
+        else:
+            target_t = t_elems[0]  # 모두 빈 t — 첫 t fallback
+        target_t.text = text
+        for child in list(target_t):
+            target_t.remove(child)
+        # 나머지 비공백 t 비움. 공백/탭 only t는 양식 본래 들여쓰기 자리로 보존.
+        for t in t_elems:
+            if t is target_t:
+                continue
+            if not (t.text or "").strip():
+                continue
             t.text = ""
             for child in list(t):
                 t.remove(child)
@@ -3305,22 +3317,29 @@ def _replace_text_in_paragraph_elem_split(p_elem, marker_text: str, content_text
                 marker_t = bearing[0]
 
             # content → 가장 긴 bearing (marker_t 제외)
+            # 공백+탭만인 t는 양식 들여쓰기 자리 — content_t 후보에서 제외.
+            # 그렇지 않으면 본문이 들여쓰기 글꼴(작은 폰트) 자리로 박힘.
             non_marker = [t for t in bearing if t is not marker_t]
-            if non_marker:
+            content_candidates = [t for t in non_marker if (t.text or "").strip()]
+            if content_candidates:
                 content_t = max(
-                    non_marker,
+                    content_candidates,
                     key=lambda t: (len(t.text or ""), bearing.index(t)),
                 )
             else:
-                content_t = marker_t  # bearing 1개뿐인 fallback
+                # 모든 non_marker가 공백 only — marker_t에 통째 박기 (들여쓰기는 보존)
+                content_t = marker_t
 
             if content_t is marker_t:
                 # 같은 t에 둘 다 박음 (분리 불가 fallback)
                 marker_t.text = marker_text + content_text
                 for child in list(marker_t):
                     marker_t.remove(child)
+                # 나머지 t 비움 — 단 양식 본래 공백/탭 only t는 들여쓰기 자리이므로 보존
                 for t in t_elems:
                     if t is marker_t:
+                        continue
+                    if not (t.text or "").strip():
                         continue
                     t.text = ""
                     for child in list(t):
@@ -3332,19 +3351,30 @@ def _replace_text_in_paragraph_elem_split(p_elem, marker_text: str, content_text
                 content_t.text = content_text
                 for child in list(content_t):
                     content_t.remove(child)
-                # 나머지 t 비움 (마커/내용 외 모든 t — 양식 원본 잔재 제거)
+                # 나머지 t 비움 — 양식 본래 공백/탭 only t는 들여쓰기 자리로 보존
                 for t in t_elems:
                     if t is marker_t or t is content_t:
+                        continue
+                    if not (t.text or "").strip():
                         continue
                     t.text = ""
                     for child in list(t):
                         t.remove(child)
         else:
-            # bearing 1개 이하 — split 불가, 합쳐서 박음
-            t_elems[0].text = marker_text + content_text
-            for child in list(t_elems[0]):
-                t_elems[0].remove(child)
-            for t in t_elems[1:]:
+            # bearing 1개 이하 — split 불가, 합쳐서 박음.
+            # t_elems[0]에 박으면 양식 paragraph 첫 단위(보통 들여쓰기 공백)에 박혀
+            # 작은 글꼴 자리에 들어감. bearing[0](실제 글자 있던 첫 단위)에 박아야
+            # 양식 본래 본문 글꼴 자리 보존. bearing 0개면 t_elems[0] fallback.
+            target_t = bearing[0] if bearing else t_elems[0]
+            target_t.text = marker_text + content_text
+            for child in list(target_t):
+                target_t.remove(child)
+            # 나머지 비움 — 단 양식 본래 공백/탭 only t는 들여쓰기 자리이므로 보존
+            for t in t_elems:
+                if t is target_t:
+                    continue
+                if not (t.text or "").strip():
+                    continue
                 t.text = ""
                 for child in list(t):
                     t.remove(child)
@@ -3445,11 +3475,19 @@ def _replace_text_with_emphasis_segments(
     bearing = [t for t in t_elems if (t.text or "").strip()]
 
     if len(bearing) < 2:
-        # split 불가 — 합쳐서 박음
-        t_elems[0].text = marker_text + flat_content
-        for child in list(t_elems[0]):
-            t_elems[0].remove(child)
-        for t in t_elems[1:]:
+        # split 불가 — 합쳐서 박음.
+        # bearing[0](실제 글자 있던 첫 단위)에 박아야 양식 본래 본문 글꼴 자리 보존.
+        # t_elems[0]는 보통 paragraph 첫 단위(들여쓰기 공백)라 작은 글꼴 자리.
+        target_t = bearing[0] if bearing else t_elems[0]
+        target_t.text = marker_text + flat_content
+        for child in list(target_t):
+            target_t.remove(child)
+        # 나머지 비움 — 양식 본래 공백/탭 only t는 들여쓰기 자리로 보존
+        for t in t_elems:
+            if t is target_t:
+                continue
+            if not (t.text or "").strip():
+                continue
             t.text = ""
             for child in list(t):
                 t.remove(child)
@@ -3468,8 +3506,31 @@ def _replace_text_with_emphasis_segments(
         marker_t = bearing[0]
 
     # content_t (가장 긴 bearing, marker 제외)
+    # 공백+탭만인 t는 양식 들여쓰기 자리 — content_t 후보에서 제외.
+    # 그렇지 않으면 본문 segments가 들여쓰기 글꼴(작은 폰트) 자리로 박힘.
     non_marker = [t for t in bearing if t is not marker_t]
-    content_t = max(non_marker, key=lambda t: (len(t.text or ""), bearing.index(t)))
+    content_candidates = [t for t in non_marker if (t.text or "").strip()]
+    if content_candidates:
+        content_t = max(content_candidates, key=lambda t: (len(t.text or ""), bearing.index(t)))
+    else:
+        content_t = marker_t
+
+    # content_t == marker_t fallback: 들여쓰기만 있는 양식(예: 공백 t + 마커+본문 합쳐진 t)
+    # 분리 불가 — 양식 본래 글꼴 보존하면서 marker + content 통째 박음.
+    # 들여쓰기 공백 t는 그대로 둠.
+    if content_t is marker_t:
+        marker_t.text = marker_text + flat_content
+        for child in list(marker_t):
+            marker_t.remove(child)
+        for t in t_elems:
+            if t is marker_t:
+                continue
+            if not (t.text or "").strip():
+                continue
+            t.text = ""
+            for child in list(t):
+                t.remove(child)
+        return
 
     # marker 박기
     marker_t.text = marker_text
@@ -3478,8 +3539,22 @@ def _replace_text_with_emphasis_segments(
 
     # content 박기
     if len(content_segments) <= 1:
-        # base only → content_t에 그대로
-        content_t.text = flat_content
+        # single segment — base(None) 또는 layer 명시 둘 다 포함.
+        # layer 명시된 경우에는 본문 자리(content_t)가 속한 run의 글꼴 번호를
+        # 그 layer 번호로 바꿔주어야 양식 본래 본보기 글꼴이 아닌
+        # AI 의도 강조 글꼴이 적용됨. base(None)는 양식 본래 글꼴 유지.
+        if content_segments:
+            seg_layer, seg_text = content_segments[0]
+        else:
+            seg_layer, seg_text = None, flat_content
+        if seg_layer is not None:
+            seg_cp = _lookup_cp(seg_layer)
+            if seg_cp:
+                for run in p_elem.iter(f"{NS}run"):
+                    if content_t in list(run):
+                        run.set("charPrIDRef", seg_cp)
+                        break
+        content_t.text = seg_text
         for child in list(content_t):
             content_t.remove(child)
     else:
@@ -3533,9 +3608,11 @@ def _replace_text_with_emphasis_segments(
                     run_parent.insert(insert_idx, new_run)
                     insert_idx += 1
 
-    # 나머지 bearing t 비움 (marker/content 외 — 양식 원본 잔재 제거)
+    # 나머지 bearing t 비움 — 양식 본래 공백/탭 only t는 들여쓰기 자리이므로 보존
     for t in t_elems:
         if t is marker_t or t is content_t:
+            continue
+        if not (t.text or "").strip():
             continue
         t.text = ""
         for child in list(t):
