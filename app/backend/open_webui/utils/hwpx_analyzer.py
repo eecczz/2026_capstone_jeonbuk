@@ -16132,6 +16132,141 @@ def build_section_style_prompt(
     ]
 
 
+async def apply_section_style_to_items(
+    items_from_2b: list[dict],
+    chapter_title: str,
+    chapter_type_name: str,
+    call_llm_fn,
+    role_catalog: dict | None = None,
+    marker_policies: dict | None = None,
+    style_profiles: dict | None = None,
+    emphasis_layers: dict | None = None,
+    paragraph_emphasis_map: dict | None = None,
+    ch_idx_for_log: int = 0,
+    title_role: str | None = None,
+) -> tuple[list[dict], str]:
+    """2b items + chapter title → 2c 호출 → 마커/강조 입힌 items + 변경된 chapter title.
+
+    공통 진입점 — 모든 본문 만들기 흐름이 process_section_fill_result를 통과하고,
+    그 함수가 이 함수를 부른다. 호출 지점마다 따로 박지 않음.
+
+    실패 시 items_from_2b/chapter_title 그대로 반환 (안전망).
+    진단 dump: /tmp/hwpx_debug/2c_apply_log.jsonl
+    """
+    import os as _2c_os, json as _2c_json
+    _2c_dump_path = "/tmp/hwpx_debug/2c_apply_log.jsonl"
+    try:
+        _2c_os.makedirs("/tmp/hwpx_debug", exist_ok=True)
+    except Exception:
+        pass
+
+    def _dump(stage, payload):
+        try:
+            with open(_2c_dump_path, "a", encoding="utf-8") as _f:
+                _f.write(_2c_json.dumps(
+                    {"ch_idx": ch_idx_for_log, "stage": stage, **payload},
+                    ensure_ascii=False,
+                ) + "\n")
+        except Exception:
+            pass
+
+    _dump("entered", {
+        "items_2b_count": len(items_from_2b) if items_from_2b else 0,
+        "chapter_title": (chapter_title or "")[:60],
+        "has_marker_policies": bool(marker_policies),
+        "has_emphasis_layers": bool(emphasis_layers),
+        "has_paragraph_emphasis_map": bool(paragraph_emphasis_map),
+        "role_catalog_size": len(role_catalog) if role_catalog else 0,
+        "has_call_llm_fn": call_llm_fn is not None,
+    })
+
+    if not items_from_2b or call_llm_fn is None:
+        _dump("early_return", {"reason": "no_items" if not items_from_2b else "no_llm_fn"})
+        return items_from_2b, chapter_title
+
+    # chapter title을 root item으로 prepend, items 자식들 id +1 shift.
+    # role은 진짜 chapter title cluster 이름 사용 — 그래야 catalog/마커/강조 sample이
+    # prompt에 박혀서 자식 도구가 마커 결정 가능.
+    items_for_2c = [{
+        "id": 0,
+        "parent_id": None,
+        "role": title_role or "_chapter_title",
+        "text": chapter_title or "",
+    }]
+    for it in items_from_2b:
+        new_it = dict(it)
+        _old_id = new_it.get("id")
+        new_it["id"] = (_old_id + 1) if isinstance(_old_id, int) else None
+        _old_pid = new_it.get("parent_id")
+        if _old_pid is None:
+            new_it["parent_id"] = 0
+        elif isinstance(_old_pid, int):
+            new_it["parent_id"] = _old_pid + 1
+        items_for_2c.append(new_it)
+
+    try:
+        messages_2c = build_section_style_prompt(
+            chapter_title=chapter_title,
+            chapter_type_name=chapter_type_name,
+            items_from_2b=items_for_2c,
+            role_catalog=role_catalog or {},
+            marker_policies=marker_policies,
+            style_profiles=style_profiles,
+            emphasis_layers=emphasis_layers,
+            paragraph_emphasis_map=paragraph_emphasis_map,
+        )
+        _dump("prompt_built", {
+            "messages_count": len(messages_2c),
+            "user_content_len": len(messages_2c[-1].get("content", "")) if messages_2c else 0,
+        })
+        llm_content_2c = await call_llm_fn(messages_2c, f"hwpx_section_style_{ch_idx_for_log}")
+        _dump("llm_returned", {
+            "raw_len": len(llm_content_2c) if llm_content_2c else 0,
+            "raw_preview": (llm_content_2c or "")[:300],
+        })
+        items_2c = parse_section_style_from_llm(llm_content_2c)
+        _dump("parsed", {
+            "items_2c_count": len(items_2c) if items_2c else 0,
+            "first_3_texts": [(it.get("text", "") or "")[:80] for it in items_2c[:3]] if items_2c else [],
+        })
+    except Exception as _2c_e:
+        _dump("failed", {
+            "error_type": type(_2c_e).__name__,
+            "error_msg": str(_2c_e)[:300],
+        })
+        log.warning(f"[2c ch_idx={ch_idx_for_log}] 호출/파싱 실패 — 2b text 그대로: {_2c_e}")
+        return items_from_2b, chapter_title
+
+    # items_2c → 원본 items text 교체
+    new_chapter_title = chapter_title
+    id_to_text: dict = {}
+    for it in items_2c:
+        _id = it.get("id")
+        _text = it.get("text", "")
+        if _id == 0:
+            if _text:
+                new_chapter_title = _text
+        elif isinstance(_id, int) and _id > 0:
+            id_to_text[_id - 1] = _text
+
+    updated = []
+    for it in items_from_2b:
+        new_it = dict(it)
+        _old_id = new_it.get("id")
+        if isinstance(_old_id, int) and _old_id in id_to_text:
+            new_it["text"] = id_to_text[_old_id]
+        updated.append(new_it)
+
+    _dump("applied", {
+        "updated_count": len(updated),
+        "id_to_text_keys": list(id_to_text.keys())[:10],
+        "new_chapter_title": (new_chapter_title or "")[:80],
+        "sample_updated_texts": [(it.get("text", "") or "")[:80] for it in updated[:3]],
+    })
+    log.info(f"[2c ch_idx={ch_idx_for_log}] applied: {len(updated)} items, title='{(new_chapter_title or '')[:40]}'")
+    return updated, new_chapter_title
+
+
 def parse_section_style_from_llm(llm_response: str) -> list[dict]:
     """
     2c LLM 응답에서 형식 입힌 트리 items를 파싱합니다.
@@ -16617,7 +16752,7 @@ def apply_parent_id_fallback(
 # chapter object는 build_chapter_object()로 생성 (위 13.7a-A1 section).
 
 
-def process_section_fill_result(
+async def process_section_fill_result(
     llm_response: str,
     ch_idx: int,
     ch_title: str,
@@ -16630,6 +16765,13 @@ def process_section_fill_result(
     shallow_mode: bool = False,
     override_grammar: dict | None = None,
     override_root_roles: list[str] | None = None,
+    call_llm_fn=None,
+    role_catalog: dict | None = None,
+    paragraphs_info: list | None = None,
+    marker_policy_1f: dict | None = None,
+    style_profiles: dict | None = None,
+    emphasis_layers: dict | None = None,
+    paragraph_emphasis_map: dict | None = None,
 ) -> dict:
     """
     2b LLM 응답을 처리합니다: parse → normalize → validate → fallback → grammar validation.
@@ -16660,8 +16802,49 @@ def process_section_fill_result(
         }
     """
     # 1. parse
+    # DIAG: process_section_fill_result 진입 시 llm_response 형태 dump — 2c wire 진단용
+    try:
+        import os as _psr_os, json as _psr_json
+        _psr_os.makedirs("/tmp/hwpx_debug", exist_ok=True)
+        with open("/tmp/hwpx_debug/2c_psr_trace.jsonl", "a", encoding="utf-8") as _psr_f:
+            _psr_resp = llm_response or ""
+            _psr_f.write(_psr_json.dumps({
+                "ch_idx": ch_idx,
+                "ch_title": (ch_title or "")[:60],
+                "ch_type": ch_type,
+                "raw_len": len(_psr_resp),
+                "raw_first_100": _psr_resp[:100],
+                "starts_with_items_json": _psr_resp.strip().startswith('{"items"'),
+                "has_emphasis_markup": "[[em" in _psr_resp,
+                "has_bracket_label": "[전략" in _psr_resp or "[보완과제" in _psr_resp,
+                "shallow_mode": shallow_mode,
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
     raw_items = parse_section_fill_from_llm(llm_response)
     log.info(f"2b[{ch_idx}] 완료: {ch_title} → {len(raw_items)}개 항목")
+
+    # 2c: 공통 진입점 — 모든 본문 만들기 흐름이 이 함수를 통과하므로 여기 한 곳에서 호출.
+    # 양식 마커 정보는 조립 함수와 같은 패턴으로 함수 안에서 매번 가공 (raw 1f + paragraphs).
+    if call_llm_fn is not None and raw_items:
+        try:
+            _marker_policies_local = extract_marker_policies(
+                paragraphs_info or [],
+                marker_policy_1f=marker_policy_1f or {},
+            )
+            raw_items, ch_title = await apply_section_style_to_items(
+                raw_items, ch_title, ch_type,
+                call_llm_fn=call_llm_fn,
+                role_catalog=role_catalog,
+                marker_policies=_marker_policies_local,
+                style_profiles=style_profiles,
+                emphasis_layers=emphasis_layers,
+                paragraph_emphasis_map=paragraph_emphasis_map,
+                ch_idx_for_log=ch_idx,
+                title_role=title_role,
+            )
+        except Exception as _2c_e:
+            log.warning(f"[2c ch_idx={ch_idx}] 적용 실패 — 2b text 그대로: {_2c_e}")
 
     # 2. grammar 정보 추출 — override가 있으면 local grammar 사용
     if override_grammar and override_root_roles:
