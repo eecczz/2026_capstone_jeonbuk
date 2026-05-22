@@ -1686,51 +1686,9 @@ def assemble_hwpx_hybrid(
             _ad_action = _ad_dec.get("action", "")
             _ad_text = (_ad_dec.get("adapted_title") or "").strip()
 
-            # marker auto-prepend (body items와 동일 path).
-            # AI/code 책임 분리: AI는 의미(title text), code는 양식 marker(형식 일관성).
-            # - AI가 marker 넣었으면 strip → 양식 1f policy로 재부착
-            # - AI가 marker 안 넣었으면 그대로 → 양식 policy로 자동 부착
-            # - sequence marker(Ⅰ/Ⅱ/Ⅲ 등)는 ci를 sibling_index로 사용
-            _ad_text_with_marker = _ad_text  # default (no policy, no_marker, or fallback)
-            _ad_marker_text = ""  # Sprint 2B: marker 부분 (글꼴 분리용)
-            _ad_content_text = _ad_text  # Sprint 2B: content 부분
-            _marker_auto_applied = False
-            if _ad_text and _title_role_for_anchor:
-                _title_policy = _marker_policies.get(_title_role_for_anchor) or {}
-                _title_policy_type = (_title_policy.get("policy_type") or "") if _title_policy else ""
-                if _title_policy_type and _title_policy_type != "no_marker":
-                    try:
-                        from open_webui.utils.marker_separator import (
-                            strip_marker as _sm_ct,
-                            generate_expected_marker_normalized as _gem_ct,
-                            reattach_marker as _rm_ct,
-                        )
-                        _stripped = _sm_ct(_ad_text, _title_role_for_anchor, _title_policy)
-                        _ad_text_stripped = (_stripped.get("content") if isinstance(_stripped, dict) else _ad_text) or _ad_text
-                        # generate_expected_marker_normalized는 1-based sibling_index 기대
-                        # (ci는 0-based enumerate). chapter 순서대로 markers[0..n-1] 매핑.
-                        _expected = _gem_ct(_title_role_for_anchor, _title_policy, ci + 1)
-                        _new_marker = (_expected.get("marker") if isinstance(_expected, dict) else "") or ""
-                        _new_sep = (_expected.get("separator") if isinstance(_expected, dict) else " ") or " "
-                        if _new_marker:
-                            _ad_text_with_marker = _rm_ct(_ad_text_stripped, _new_marker, _new_sep)
-                            # Sprint 2B: marker/content 분리 보존 (양식 첫 t/둘째 t 글꼴 다른 경우)
-                            _ad_marker_text = _new_marker + _new_sep
-                            _ad_content_text = _ad_text_stripped
-                            _marker_auto_applied = True
-                            log.info(
-                                f"[13.7d marker auto-prepend ci={ci}] "
-                                f"role={_title_role_for_anchor} policy={_title_policy_type} "
-                                f"marker='{_new_marker}' sep='{_new_sep}' "
-                                f"'{_ad_text[:40]}' → '{_ad_text_with_marker[:50]}'"
-                            )
-                    except Exception as _mp_e:
-                        log.warning(
-                            f"[13.7d marker auto-prepend ci={ci}] 실패 — AI text 그대로 사용: {_mp_e}"
-                        )
-                        _ad_text_with_marker = _ad_text
-                        _ad_marker_text = ""
-                        _ad_content_text = _ad_text
+            # 2c 분리 (2026-05-22): chapter title 마커는 2c가 _ad_text 안에 이미 입혀서 보냄.
+            # 조립은 _ad_text 그대로 박기만 함. marker auto-prepend / strip / reattach 제거.
+            _ad_text_with_marker = _ad_text
 
             _anchor_norm = " ".join(_anchor_text_preview.split())
             _title_norm = " ".join(_ad_text_with_marker.split())
@@ -1767,19 +1725,12 @@ def assemble_hwpx_hybrid(
                                 _anchor_el.append(_new_run)
                             _exemplar_run_swap_applied = True
 
-                    if _marker_auto_applied and _ad_marker_text:
-                        # Sprint 2B: marker/content 두 t에 분리 박기 (글꼴 보존)
-                        _replace_text_in_paragraph_elem_split(
-                            _anchor_el, _ad_marker_text, _ad_content_text, NS
-                        )
-                    else:
-                        # marker 없이 단일 text (fallback)
-                        _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
+                    # 2c output 그대로 박음 (마커/강조 이미 입혀짐)
+                    _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
                     _adapted_title_applied = True
                     log.info(
                         f"[chapter title body-path-unified ci={ci}] applied "
-                        f"(action={_ad_action}, marker_auto={_marker_auto_applied}, "
-                        f"split={bool(_ad_marker_text)}, exemplar_swap={_exemplar_run_swap_applied}): "
+                        f"(action={_ad_action}, exemplar_swap={_exemplar_run_swap_applied}): "
                         f"'{_anchor_text_preview[:50]}' → '{_ad_text_with_marker[:50]}'"
                     )
                 except Exception as _adapt_e:
@@ -2634,90 +2585,11 @@ def assemble_hwpx_hybrid(
                     f"role={_role_orig!r} ci={_ci_for_role}."
                 )
 
-        # Sprint 2B: marker/content text 분리 보존 (글꼴 다른 양식 paragraph 처리)
+        # 2c 분리 (2026-05-22): 마커/강조 markup은 2c가 text 안에 이미 입혀서 보냄.
+        # 조립은 text 그대로 본보기에 박기만 함. strip/reattach/sibling counter/marker rewrite
+        # 모두 제거. _body_marker_text/_body_content_text는 호환성 변수로만 남김.
         _body_marker_text = ""
-        _body_content_text = text  # default fallback (split 불가 시)
-
-        if content_only_mode:
-            # Phase 2: sibling_index 계산 → reattach → rewrite safety net
-            from open_webui.utils.marker_separator import (
-                generate_expected_marker_normalized, reattach_marker, strip_marker,
-            )
-            policy = _marker_policies.get(role, {})
-            policy_type = policy.get("policy_type", "") if policy else ""
-
-            # chapter title은 기존 rewrite에 위임 (title normalization 유지)
-            if role in _chapter_title_roles:
-                text = _rewrite_marker(bi_idx, role, text)
-            else:
-                # star_depth 포함 모든 policy: 일반 marker policy 경로로 reattach
-                sib_idx, _p2_parent_id, _p2_parent_role, _p2_sgk, _p2_ch_idx, _p2_node = \
-                    _next_sibling_index(bi_idx, role)
-
-                # Debug: per-item reattach context
-                _p2_debug_entry = {
-                    "bi_idx": bi_idx, "role": role, "policy_type": policy_type,
-                    "text_preview": text[:40],
-                    "node_exists": _p2_node is not None,
-                    "node_id": _p2_node.get("id") if _p2_node else None,
-                    "node_parent_id": _p2_node.get("parent_id") if _p2_node else None,
-                    "ch_idx": _p2_ch_idx,
-                    "parent_id": _p2_parent_id, "parent_role": _p2_parent_role,
-                    "sibling_group_key": _p2_sgk, "sibling_index": sib_idx,
-                    "used_tree": _p2_node is not None,
-                    "used_fallback": _p2_node is None,
-                }
-
-                # AI marker residual 감지 + strip
-                strip_check = strip_marker(text, role, policy)
-                if strip_check["detected_marker"]:
-                    text = strip_check["content"]
-                    _phase2_ai_marker_residuals += 1
-
-                # Normalized reattach
-                expected = generate_expected_marker_normalized(role, policy, sib_idx)
-                text_with_marker = reattach_marker(text, expected["marker"], expected["separator"])
-
-                _p2_debug_entry["marker_selected"] = expected.get("marker", "")
-                _p2_debug_entry["reattached_preview"] = text_with_marker[:50]
-
-                # Rewrite safety net (same sibling_index)
-                rewritten = _rewrite_marker(bi_idx, role, text_with_marker, sibling_index_override=sib_idx)
-
-                _p2_debug_entry["rewrite_changed"] = rewritten != text_with_marker
-
-                # Conflict detection
-                if rewritten != text_with_marker:
-                    _phase2_rewrite_conflicts.append({
-                        "item_idx": bi_idx,
-                        "role": role,
-                        "sibling_index": sib_idx,
-                        "reattached": text_with_marker[:80],
-                        "after_rewrite": rewritten[:80],
-                    })
-
-                # Log star_depth items specifically
-                if policy_type == "star_depth":
-                    _phase2_rewrite_conflicts.append({
-                        "item_idx": bi_idx,
-                        "type": "star_depth_debug",
-                        "debug": _p2_debug_entry,
-                    })
-
-                text = rewritten
-
-                # Sprint 2B: 최종 rewritten text에서 marker/content 분리
-                # (양식 paragraph 첫 t / 둘째 t 글꼴 다를 때 보존)
-                try:
-                    _post_strip = strip_marker(text, role, policy)
-                    if _post_strip and _post_strip.get("detected_marker"):
-                        _body_marker_text = _post_strip["detected_marker"] + (_post_strip.get("separator") or "")
-                        _body_content_text = _post_strip.get("content", text) or text
-                except Exception:
-                    pass
-        else:
-            # Phase 1: 기존 marker rewrite만
-            text = _rewrite_marker(bi_idx, role, text)
+        _body_content_text = text
 
         cur_level = role_level.get(role, 0)
 
@@ -3510,6 +3382,59 @@ def _replace_text_with_emphasis_segments(
         return
 
     bearing = [t for t in t_elems if (t.text or "").strip()]
+
+    # 2c 분리 (2026-05-22): marker_text 빈 경우 — 2c output은 마커가 첫 segment 안에 들어 있음.
+    # marker_t 매칭 skip, content_t = bearing[0]로 잡고 segments 전체 분할 박기.
+    if not marker_text and bearing:
+        content_t = bearing[0]
+        content_t_parent_run = None
+        for run in p_elem.iter(f"{NS}run"):
+            if content_t in list(run):
+                content_t_parent_run = run
+                break
+        # 첫 segment → content_t
+        first_layer, first_text = (
+            content_segments[0] if content_segments else (None, flat_content)
+        )
+        first_cp = _lookup_cp(first_layer)
+        if first_cp and content_t_parent_run is not None:
+            content_t_parent_run.set("charPrIDRef", first_cp)
+        content_t.text = first_text
+        for child in list(content_t):
+            content_t.remove(child)
+        # 나머지 segments → 새 run 분할 (charpr_map 따라 글꼴 적용)
+        if len(content_segments) > 1 and content_t_parent_run is not None:
+            run_parent = None
+            for el in p_elem.iter():
+                if content_t_parent_run in list(el):
+                    run_parent = el
+                    break
+            if run_parent is not None:
+                run_idx = list(run_parent).index(content_t_parent_run)
+                insert_idx = run_idx + 1
+                for layer, seg_text in content_segments[1:]:
+                    if not seg_text:
+                        continue
+                    cp = _lookup_cp(layer)
+                    new_run = _stdlib_ET.Element(f"{NS}run")
+                    if cp:
+                        new_run.set("charPrIDRef", cp)
+                    new_t = _stdlib_ET.SubElement(new_run, f"{NS}t")
+                    new_t.text = seg_text
+                    run_parent.insert(insert_idx, new_run)
+                    insert_idx += 1
+        # 나머지 t 비움 — content_t 앞 공백/탭 only는 들여쓰기 자리로 보존
+        c_idx = t_elems.index(content_t)
+        for i, t in enumerate(t_elems):
+            if t is content_t:
+                continue
+            is_ws_only = not (t.text or "").strip()
+            if is_ws_only and i < c_idx:
+                continue
+            t.text = ""
+            for child in list(t):
+                t.remove(child)
+        return
 
     if len(bearing) < 2:
         # split 불가 — 합쳐서 박음.
