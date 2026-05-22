@@ -15293,30 +15293,13 @@ section_header
 소스에서 ※로 시작하더라도 내용이 주제 설명이면 detail_item일 수 있고,
 소스에서 ㅇ로 시작하더라도 내용이 보충 설명이면 note일 수 있습니다.
 
-## 강조 표시 — 양식 글꼴 분리 보존 (있을 경우)
-
-prompt에 **"role별 강조 layer 가이드"** 섹션이 있으면 양식이 이 role에서 inline 강조
-(색·굵기·배경)을 사용한다는 뜻입니다. 그 cluster의 강조 패턴을 다음 markup으로 출력
-text에 표시하세요:
-
-```
-[[em2]]강조할 부분[[/em2]]
-```
-
-- base layer (가이드의 base_layer_id)는 markup 안 함. 일반 텍스트로 작성.
-- 그 외 강조 layer (em2/em3/...)는 해당 rule 적용 조건에 맞는 segment만 감쌈.
-- 한 paragraph 안에 여러 강조 layer 가능: `일반 [[em2]]강조1[[/em2]] 일반 [[em3]]강조2[[/em3]] 일반`
-- 강조 rule이 모호하거나 적용 안 해야 하면 markup 없이 그대로 (base).
-- cluster에 정의되지 않은 layer 사용 금지.
-- 가이드 없는 role은 markup 안 함 (전체 base).
-
-조립 단계가 markup parse해서 양식의 정확한 글꼴 ID(charPrIDRef)를 각 segment에 적용합니다.
-
-## 마커 — 코드가 자동 처리
+## 마커 — 후처리에서 처리
 
 **marker (➊, ➋, ◈, 과제 N, [전략N], □ 등)는 본문에 넣지 마세요.**
-조립 단계에서 role에 맞는 marker를 sibling_index 기반으로 자동 부착합니다.
+후처리 단계(2c)에서 양식 형식 보고 마커를 입힙니다.
 AI는 marker 없이 **본문 내용만** 출력하세요.
+
+강조 표시(글꼴 색·굵기 등)도 후처리 단계에서 입히니 신경 쓰지 마세요.
 
 ## 들여쓰기 — 신경 쓰지 마세요
 
@@ -15676,75 +15659,9 @@ def build_section_fill_prompt(
                 + "\n\n"
             )
 
-    # 11.2b emphasis_layers — 패턴에 등장하는 role의 강조 layer rule
-    # AI는 base 외 layer 적용 시 [[emN]]...[[/emN]] markup 사용.
+    # 2c 분리 (2026-05-22): 강조 markup 생성은 2c 책임 — 2b에서는 강조 가이드 박지 않음.
+    # emphasis_layers / paragraph_emphasis_map 인자는 호환성 위해 받지만 사용 안 함.
     emphasis_text = ""
-    if emphasis_layers:
-        _em_lines = []
-        for role in sorted(pattern_roles):
-            em = emphasis_layers.get(role) or {}
-            ems_list = em.get("emphasis_layers") or []
-            if not ems_list:
-                continue
-            base_lid = em.get("base_layer_id", "")
-            base_cp = em.get("base_charpr_id", "")
-            base_reason = (em.get("base_judgement_reason") or "").strip()
-            _em_lines.append(f"\n### {role}")
-            _em_lines.append(f"- base: `{base_lid}` (cp={base_cp}) — markup 안 함, 일반 텍스트로 작성")
-            if base_reason:
-                _em_lines.append(f"- base 판정 근거: {base_reason}")
-            for layer in ems_list:
-                lid = layer.get("layer_id", "")
-                cp = layer.get("charpr_id", "")
-                rules = layer.get("rules_for_generation") or []
-                if not lid:
-                    continue
-                _em_lines.append(f"- `[[{lid}]]...[[/{lid}]]` (cp={cp}):")
-                for r in rules:
-                    _em_lines.append(f"    - {r}")
-            obs = (em.get("additional_observations") or "").strip()
-            if obs:
-                _em_lines.append(f"- (추가 관찰): {obs}")
-            # 양식 본래 sample annotated_text — AI가 구체 분할 패턴 따라가도록
-            # marker는 코드가 자동 부착 → sample에서 leading marker 제거 (AI가 본문에 marker 안 넣게)
-            if paragraph_emphasis_map:
-                pem_data = paragraph_emphasis_map.get(role) or {}
-                samples = pem_data.get("sample_paragraphs") or []
-                if samples:
-                    # leading marker emphasis 제거 — code가 자동 부착하니 AI가 본문에 넣지 않게.
-                    # 글머리표 (➊➋ ◈ □ ▪ * 등), PUA 영역 (󰊱󰊲 같은 한글체 글머리표), 빈 공백·숫자 wrap만 매칭.
-                    _marker_chars = '➊➋➌➍➎➏➐➑➒➓➀➁➂➃➄➅➆➇➈➉◈◇□■▪◆▶•○●♦◀-✀-➿'
-                    _lead_marker_pat = re.compile(
-                        rf'^(\s*\[\[em\d+\]\]\s*[{_marker_chars}\s\d\.\)\(\*]+\s*\[\[/em\d+\]\]\s*)+'
-                    )
-                    # "과제 N", "전략 N" 같은 marker word
-                    _marker_word_pat = re.compile(
-                        r'^(\s*\[\[em\d+\]\]\s*(?:과제|전략|단계|목표|방향|추진과제)\s*\d*\s*\[\[/em\d+\]\]\s*)+'
-                    )
-                    _em_lines.append("- ⚡ 양식 본래 sample — **이 분할 패턴을 반드시 따라 본문 생성** (marker 제거된 본문만):")
-                    for sp in samples[:3]:
-                        ann = (sp.get("annotated_text") or "").strip()
-                        if ann:
-                            ann = _lead_marker_pat.sub('', ann).strip()
-                            ann = _marker_word_pat.sub('', ann).strip()
-                            ann = _lead_marker_pat.sub('', ann).strip()
-                            if ann:
-                                _em_lines.append(f"    - {ann}")
-                    _em_lines.append("    ↑ **위 sample과 같은 단편 수, 같은 길이, 같은 base/강조 분포**로 본문 작성하세요.")
-                    _em_lines.append("    ↑ 본문 전체를 한 `[[em]]...[[/em]]` 묶음으로 감싸지 마세요. **base 영역(조사·연결어·일반 표현)을 사이사이 둬야** sample 패턴과 일치합니다.")
-        if _em_lines:
-            emphasis_text = (
-                "## role별 강조 layer 가이드 (양식 글꼴 분리 — 강조 layer만 markup)\n"
-                + "**⚠️ 핵심 원칙**: 각 role에 표시된 '양식 본래 sample' 분할 패턴을 **반드시 따라** 본문 생성하세요.\n"
-                + "- sample이 `[[em1]]X[[/em1]][[em2]]Y[[/em2]][[em1]]Z[[/em1]][[em2]]W[[/em2]]` 식 다중 분할이면 → 본문도 같은 단편 수로 분할\n"
-                + "- sample의 base 영역(em1, markup 안 함, 조사·연결어·일반 표현)과 강조 영역이 번갈아 나오면 → 본문도 base/강조 번갈아 작성\n"
-                + "- 본문 전체를 한 `[[em]]...[[/em]]` 묶음으로 감싸는 것 **금지** (sample이 단일 묶음일 때만 허용)\n"
-                + "- 본문 길이도 sample 길이와 비슷하게 (너무 짧게 만들지 말 것)\n"
-                + "각 layer rule에 적용 조건이 명시되어 있음. 조건에 맞는 segment를 `[[layer_id]]...[[/layer_id]]`로 감싸세요.\n"
-                + "rule이 모호하거나 적용 안 해야 하면 markup 안 함 (안전).\n"
-                + "\n".join(_em_lines)
-                + "\n\n"
-            )
 
     user_parts = []
     text_block = (
