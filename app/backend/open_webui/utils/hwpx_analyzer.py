@@ -12594,17 +12594,8 @@ def build_adaptation_plan_prompt(
         "  금지: '광역버스 확대 및 전용차로 도입' → '광역버스 운행 확대, 차고지 정비 및 전용차로 종합대책'\n"
         "      (범위 확장 — 차고지 정비는 새 하위항목 추가).\n"
         "- 어절 수가 크게 늘거나 새 명사가 들어가면 token swap이 아니라 role-equivalent rewrite로 판단.\n\n"
-        "title_action enum:\n"
-        "- adapt_topic_terms:\n"
-        "    base phrase 유지 + markers/placeholder/표현 세부만 처리 (token swap 정도).\n"
-        "    이 action으로 처리한 결과가 original_title과 글자 단위로 같아도 자연스러운 결과면 OK.\n"
-        "- adapt_role_equivalent_title:\n"
-        "    base phrase 재구성. template role 어휘 + source 도메인 명사로 새 제목 작성.\n"
-        "    공식: adapted_title ≈ [source 도메인 명사] + [template chapter role 어휘].\n\n"
-        "content_action enum:\n"
-        "- generate_from_source: chapter role에 맞는 source evidence가 충분.\n"
-        "- generate_with_template_scaffold: source evidence가 부분적으로 부족.\n"
-        "  source_gap_flags / missing_source_requirements 명시. 사실 날조 금지.\n\n"
+        "본문은 양식 말투(style_profiles)와 패턴을 따라 자동 생성됩니다. source 부족은\n"
+        "source_gap_flags / missing_source_requirements에 명시. 사실 날조 금지.\n\n"
         "제목 갱신 규칙 (반드시 따를 것):\n"
         "- placeholder(○○○, [기관명], <연도>)가 있으면 source 도메인 명사로 정확히 채움. 나머지는 손대지 말 것.\n"
         "- 주제어/연도/기관 교체로 source와 맞출 수 있으면 base phrase 유지하고 token만 교체.\n"
@@ -12644,10 +12635,8 @@ def build_adaptation_plan_prompt(
         '      "template_phrase_signal": "양식 결합 phrase 또는 null.",\n'
         '      "source_genre_match": "same_genre|different_genre|unclear",\n'
         '      "source_genre_reason": "장르 판단 근거.",\n'
-        '      "title_action": "adapt_topic_terms|adapt_role_equivalent_title",\n'
         '      "adapted_title": "chapter에 적합한 제목. 결과가 original_title과 글자 단위로 같든 다르든 자연스러우면 OK. \'먼저 같게 vs 다르게\'를 분류하지 말고 자연스러운 제목을 결정.",\n'
         '      "title_adaptation_reason": "어떤 처리(유지/marker채움/주제어교체/재구성)를 했는지 명시.",\n'
-        '      "content_action": "generate_from_source|generate_with_template_scaffold",\n'
         '      "ordering_hint": {\n'
         '        "template_position": "first|middle|last",\n'
         '        "debug_merge_hint": [int]\n'
@@ -12692,26 +12681,26 @@ def build_adaptation_plan_prompt(
         "  Ⅰ. 추진배경:\n"
         "    template_role_hint='intro', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=[], template_phrase_signal=null, template_title_nature='generic_role_title'.\n"
-        "    title_action='adapt_topic_terms', adapted_title='추진배경' (자연스럽게 그대로).\n"
+        "    adapted_title=\'추진배경\' (자연스럽게 그대로).\n"
         "  \n"
         "  Ⅱ. 광역버스 확대 및 전용차로 도입:\n"
         "    template_role_hint='action' (대표 어휘 '확대/도입'). **위치 Ⅱ이지만 status 아님.**\n"
         "    chapter_title_mode='measure_topic_title'.\n"
         "    genre_markers=[], template_phrase_signal=null, template_title_nature='topic_specific_title'\n"
         "      (도메인 콘텐츠 결합이므로).\n"
-        "    title_action='adapt_topic_terms', adapted_title='광역버스 확대 및 전용차로 도입' (source가 광역버스 대책이라 자연스럽게 그대로).\n"
+        "    adapted_title=\'광역버스 확대 및 전용차로 도입\' (source가 광역버스 대책이라 자연스럽게 그대로).\n"
         "    \n"
         "    (변형) source가 '광역버스 운행 확대'라는 정확한 표기를 사용한다면:\n"
-        "      title_action='adapt_topic_terms', adapted_title='광역버스 운행 확대 및 전용차로 도입' (wording precision fix).\n"
+        "      adapted_title='광역버스 운행 확대 및 전용차로 도입' (wording precision fix).\n"
         "  \n"
         "  Ⅲ. 차량증편 및 안전인력 확대 등:\n"
         "    template_role_hint='action', chapter_title_mode='measure_topic_title'.\n"
-        "    title_action='adapt_topic_terms', adapted_title='차량증편 및 안전인력 확대 등' (자연스럽게 그대로).\n"
+        "    adapted_title=\'차량증편 및 안전인력 확대 등\' (자연스럽게 그대로).\n"
         "  \n"
         "  Ⅳ. 주요 대책별 추진일정:\n"
         "    template_role_hint='schedule', chapter_title_mode='schedule_title'.\n"
         "    template_title_nature='generic_role_title'.\n"
-        "    title_action='adapt_topic_terms', adapted_title='주요 대책별 추진일정' (자연스럽게 그대로).\n"
+        "    adapted_title=\'주요 대책별 추진일정\' (자연스럽게 그대로).\n"
         "\n"
         "[예시 2] 3-chapter 양식 + cross-genre source — phrase 재구성 필요\n"
         "  양식 = {Ⅰ. 추진성과 및 평가, Ⅱ. 2024년 업무추진 여건 및 방향, Ⅲ. 2024년 핵심 추진과제}\n"
@@ -12722,13 +12711,12 @@ def build_adaptation_plan_prompt(
         "  Ⅰ. 추진성과 및 평가:\n"
         "    template_role_hint='status', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=[], template_phrase_signal=null, template_title_nature='generic_role_title'.\n"
-        "    title_action='adapt_topic_terms', adapted_title='추진성과 및 평가' (자연스럽게 그대로).\n"
+        "    adapted_title=\'추진성과 및 평가\' (자연스럽게 그대로).\n"
         "  \n"
         "  Ⅱ. 2024년 업무추진 여건 및 방향:\n"
         "    template_role_hint='status', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=['2024년'], template_phrase_signal='업무추진 여건 및 방향'.\n"
         "    source_genre_match='different_genre' (양식=업무계획, source=회의자료).\n"
-        "    title_action='adapt_role_equivalent_title'.\n"
         "    좋은 adapted_title: '문제정책 관리제도 운영여건 및 보완방향',\n"
         "                       '주요 현황 및 제도운영 쟁점',\n"
         "                       '정책품질관리제도 운영 현황 및 개선방향'.\n"
@@ -12737,7 +12725,6 @@ def build_adaptation_plan_prompt(
         "  Ⅲ. 2024년 핵심 추진과제:\n"
         "    template_role_hint='action', chapter_title_mode='role_stage_title'.\n"
         "    genre_markers=['2024년'], template_phrase_signal='핵심 추진과제'.\n"
-        "    title_action='adapt_role_equivalent_title'.\n"
         "    좋은 adapted_title: '제도보완 방안 및 향후 추진과제',\n"
         "                       '문제정책 관리제도 보완 과제 및 조치계획'.\n"
         "    나쁜: '제도 보완 및 향후 조치계획' (source heading 그대로 복사).\n"
@@ -12747,13 +12734,13 @@ def build_adaptation_plan_prompt(
         "  source = 2025년 정책품질관리 도메인의 정책 추진 보고 (same_genre).\n"
         "  template_role_hint='action', chapter_title_mode='measure_topic_title' (도메인+대책방향) or 'role_stage_title'.\n"
         "  genre_markers=['2024년', '부동산정책'], template_phrase_signal=null.\n"
-        "  title_action='adapt_topic_terms', adapted_title='2025년 정책품질관리 추진방향' (token swap).\n"
+        "  adapted_title=\'2025년 정책품질관리 추진방향\' (token swap).\n"
         "\n"
         "[예시 4] placeholder만 있는 generic boilerplate — needs_marker_fill\n"
         "  양식 chapter = 'Ⅰ. ○○○ 추진성과 및 평가'.\n"
         "  template_title_nature='topic_specific_title' (○○○ marker 존재).\n"
         "  genre_markers=['○○○'], template_phrase_signal=null.\n"
-        "  title_action='adapt_topic_terms', adapted_title='정책품질관리제도 추진성과 및 평가' (placeholder fill).\n"
+        "  adapted_title=\'정책품질관리제도 추진성과 및 평가\' (placeholder fill).\n"
         "\n"
         "최종 self-check (모든 chapter_decision 작성 후 통과 필수):\n"
         "0. **adapted_title은 '같게 vs 다르게' 사전 분류 없이 자연스럽게 결정.** \n"
@@ -12890,23 +12877,7 @@ def validate_adaptation_decision(decision: dict) -> dict:
     - validation 실패 → should_demote=True. 호출자가 make_validation_failed_decision으로 변환.
     """
     violations: list[str] = []
-
-    # 1. title_action / content_action enum
-    title_action = decision.get("title_action")
-    content_action = decision.get("content_action")
-    if title_action not in TITLE_ACTIONS:
-        violations.append(f"title_action_invalid: {title_action!r}")
-    if content_action not in CONTENT_ACTIONS:
-        violations.append(f"content_action_invalid: {content_action!r}")
-
-    # action enum 자체가 깨지면 전체 강등
-    if violations:
-        return {
-            "valid": False,
-            "should_demote": True,
-            "demote_reason": "validation_failed",
-            "violations": violations,
-        }
+    # 2026-05-21: title_action / content_action enum 체크 제거 (모든 chapter 같은 path 사용)
 
     # 2. adapted_title 필수 (모든 chapter)
     adapted_title = decision.get("adapted_title")
@@ -12960,10 +12931,6 @@ def validate_adaptation_decision(decision: dict) -> dict:
     sgm = decision.get("source_genre_match")
     if sgm is not None and sgm not in SOURCE_GENRE_MATCHES:
         violations.append(f"source_genre_match_invalid: {sgm!r}")
-
-    # 9. content_action=generate_with_template_scaffold면 confidence high 금지 (source 부족 상태)
-    if content_action == "generate_with_template_scaffold" and confidence == "high":
-        violations.append("scaffold_forbids_confidence_high")
 
     # 10. confidence=high면 supporting_evidence 필수
     se = decision.get("supporting_evidence")
@@ -15989,6 +15956,302 @@ def parse_section_fill_from_llm(llm_response: str) -> list[dict]:
         f"2b 파싱: {len(items)}개 항목, "
         f"has_ai_ids={has_ai_ids}, has_ai_parent_ids={has_ai_parent_ids}"
     )
+    return items
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2c: SECTION_STYLE — 본문 트리에 마커 + 강조 markup 입히기
+# ═══════════════════════════════════════════════════════════════
+# 책임 분리:
+# - 2b: 트리 구조 + 본문 의미만 (마커/강조 무관)
+# - 2c: 작성된 본문에 양식 형식(마커 + 강조 글꼴 분리 markup) 입힘
+# - assemble: 2c output 그대로 본보기에 박음 (마커 부착 코드 없음)
+#
+# 2c는 양식 sample(마커 + 강조 markup 포함 원본) + 양식 마커 힌트 +
+# 강조 layer rule을 보고 각 item의 text에 마커/강조를 입힘.
+# - 양식 마커 단어가 chapter 의미와 부조화면 단어 변경 허용 (예: 전략→보완과제)
+# - 시퀀스 번호는 같은 cluster의 N번째 instance에 부여
+# - 강조 markup은 짝 강제, 양식 분할 패턴 모방
+# - 본문 의미는 그대로 (단어/문장 안 바꿈, 마커+강조만 입힘)
+
+
+SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니다.
+
+## 역할
+이미 작성된 본문 트리에 양식의 **형식**(마커 + 강조 글꼴 분리 markup)을 입힙니다.
+본문 의미·문장은 거의 그대로 보존하고, 마커와 강조 markup만 입히세요.
+
+## 입력 (user 메시지)
+1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·강조 없는 본문.
+2. **양식 role 카탈로그**: 각 role(cluster)별 양식 sample (마커 + 강조 markup 포함 원본).
+3. **양식 마커 힌트**: 각 role별 markers 리스트, family, separator.
+4. **강조 layer 가이드**: 각 role의 base layer + 강조 layer + 적용 rule.
+5. **chapter 의미**: 대제목 텍스트.
+
+## 작업
+
+### 1. 마커 결정 (item마다)
+각 item의 role을 보고 그 role의 양식 sample + 마커 힌트로 판단:
+
+- **양식 마커 그대로 사용** — sample 단어가 chapter·본문 의미와 어울릴 때.
+  예: 양식 `□`, 양식 `Ⅰ.`, 양식 `[전략1]`을 그대로 둘지.
+- **단어 변경** — 양식 sample 단어가 chapter 의미와 부조화면 같은 형식(괄호·띄어쓰기) 유지하고 단어만 chapter 의미에 맞게 바꿈.
+  예: chapter 제목이 "...핵심 보완과제"인데 양식 마커가 `[전략1]`이면 `[보완과제1]`로 변경.
+  주의: 같은 cluster의 모든 instance는 같은 단어로 통일.
+- **시퀀스 번호** — 같은 cluster의 같은 부모 아래 N번째 instance면 N 부여.
+  양식 sample이 1~3번 보였더라도 출력이 5개면 4·5번도 같은 패턴으로 생성.
+- **마커 없음** — 양식 sample에 마커 없는 cluster는 마커 추가하지 마세요.
+- **이미 마커가 있으면** — text 앞에 마커 비슷한 게 이미 있으면: 적절하면 그대로 유지, 양식 형식과 다르면 양식 형식으로 교체, 마커가 두 개 보이면 하나만 남김.
+
+### 2. 강조 markup 입히기 (item마다)
+그 role의 강조 layer 가이드 + 양식 sample 분할 패턴 보고:
+
+- **base layer**는 markup 안 함 — 일반 텍스트로 작성.
+- **강조 layer**는 `[[emN]]segment[[/emN]]`로 감쌈. 적용 조건(가이드의 rule)에 맞는 segment에만.
+- **짝 맞춤 강제** — 여는 `[[emN]]`과 닫는 `[[/emN]]`은 반드시 같은 N. 다른 N으로 닫지 마세요.
+- **양식 분할 패턴 모방** — sample이 `[[em1]]X[[/em1]] [[em2]]Y[[/em2]] [[em1]]Z[[/em1]]` 같이 다중 단편이면 본문도 비슷한 단편 수·길이·base/강조 분포로.
+- 본문 전체를 단일 `[[em]]...[[/em]]`로 감싸지 마세요 (sample이 단일 묶음일 때만).
+- **cluster에 정의되지 않은 layer 사용 금지**.
+- 강조 layer 가이드 없는 role은 markup 안 함.
+
+### 3. 본문 의미 보존
+- text 단어·문장은 의미상 거의 그대로. 마커·강조만 입힘.
+- 띄어쓰기·구두점 등 양식 형식상 자연스러운 미세 조정만 허용.
+- 새 내용 추가 금지. 단어 의미 변경 금지.
+
+## 출력 형식
+입력 트리와 **같은 구조**, **text 필드만** 최종 형식 입힌 텍스트로 교체.
+
+```json
+{
+  "items": [
+    {"id": 0, "parent_id": null, "role": "<root>", "text": "<마커·강조 입힌 최종 텍스트>"},
+    {"id": 1, "parent_id": 0, "role": "<자식>", "text": "<...>"}
+  ]
+}
+```
+
+- `id`, `parent_id`, `role`은 **입력과 동일**하게 유지 (변경 금지).
+- `text`만 변경.
+- 강조 markup은 text 안에 inline.
+- 트리 항목 추가/삭제 금지.
+
+반드시 위 JSON만 출력. 다른 설명 포함 금지.
+"""
+
+
+def build_section_style_prompt(
+    chapter_title: str,
+    chapter_type_name: str,
+    items_from_2b: list[dict],
+    role_catalog: dict,
+    marker_policies: dict | None = None,
+    style_profiles: dict | None = None,
+    emphasis_layers: dict | None = None,
+    paragraph_emphasis_map: dict | None = None,
+) -> list[dict]:
+    """
+    2c 호출: 2b 본문 트리 → 마커 + 강조 markup 입힌 트리.
+
+    Args:
+        chapter_title: chapter 대제목 (의미 판단용)
+        chapter_type_name: chapter 타입 이름
+        items_from_2b: 2b parse 결과 트리 [{id, parent_id, role, text}, ...]
+            chapter title은 트리 root로 합쳐서 들어감 (id=0, parent_id=null, role=chapter_title cluster)
+        role_catalog: role별 양식 sample + description (원본 그대로, 마커 포함)
+        marker_policies: 1f marker policies — role별 markers 리스트 + family + separator
+        style_profiles: 11.2 말투 rule (참고용)
+        emphasis_layers: 11.2b 강조 layer rule
+        paragraph_emphasis_map: 양식 paragraph annotated_text sample (원본, 마커 포함)
+
+    Returns:
+        [{"role": "system", ...}, {"role": "user", ...}]
+    """
+    # 이번 트리에 등장하는 role만 추림
+    used_roles: set = set()
+    for it in items_from_2b:
+        r = it.get("role", "")
+        if r:
+            used_roles.add(r)
+
+    # role 카탈로그 — 양식 sample 원본 그대로 (마커 포함)
+    catalog_lines = []
+    for role_name in sorted(used_roles):
+        info = role_catalog.get(role_name) or {}
+        desc = info.get("description", "")
+        sample = info.get("sample", "")
+        count = info.get("count", 0)
+        count_str = f", 양식 등장: {count}회" if count else ""
+        lines = [f"- **{role_name}**{count_str}"]
+        if desc:
+            lines.append(f"  설명: {desc}")
+        if sample:
+            lines.append(f"  양식 sample(원본): \"{sample}\"")
+        catalog_lines.append("\n".join(lines))
+    catalog_text = "\n".join(catalog_lines)
+
+    # 마커 힌트 — role별 markers 리스트 + family + separator
+    marker_hint_lines = []
+    if marker_policies:
+        for role_name in sorted(used_roles):
+            policy = marker_policies.get(role_name) or {}
+            markers = policy.get("markers") or []
+            family = policy.get("family", "")
+            separator = policy.get("separator", " ")
+            policy_type = policy.get("policy_type", "")
+            if not markers and not family:
+                continue
+            sep_display = repr(separator)
+            markers_display = ", ".join(f'"{m}"' for m in markers[:5]) or "(없음)"
+            marker_hint_lines.append(
+                f"- **{role_name}**: 양식 마커 = [{markers_display}], "
+                f"family={family or '?'}, separator={sep_display}, type={policy_type or '?'}"
+            )
+    marker_hint_text = ""
+    if marker_hint_lines:
+        marker_hint_text = (
+            "## 양식 마커 힌트 (role별)\n"
+            "양식 sample에서 추출한 마커 정보입니다. sample과 일치하지 않으면 sample을 더 믿으세요.\n"
+            + "\n".join(marker_hint_lines)
+            + "\n\n"
+        )
+
+    # 강조 layer 가이드
+    emphasis_text = ""
+    if emphasis_layers:
+        em_lines = []
+        for role_name in sorted(used_roles):
+            em = emphasis_layers.get(role_name) or {}
+            ems_list = em.get("emphasis_layers") or []
+            if not ems_list:
+                continue
+            base_lid = em.get("base_layer_id", "")
+            em_lines.append(f"\n### {role_name}")
+            em_lines.append(f"- base: `{base_lid}` (markup 안 함, 일반 텍스트)")
+            for layer in ems_list:
+                lid = layer.get("layer_id", "")
+                rules = layer.get("rules_for_generation") or []
+                if not lid:
+                    continue
+                em_lines.append(f"- `[[{lid}]]...[[/{lid}]]`:")
+                for r in rules:
+                    em_lines.append(f"    - {r}")
+            obs = (em.get("additional_observations") or "").strip()
+            if obs:
+                em_lines.append(f"- (추가 관찰): {obs}")
+            # 양식 본래 sample annotated_text — 원본 그대로 (마커 포함)
+            if paragraph_emphasis_map:
+                pem = paragraph_emphasis_map.get(role_name) or {}
+                samples = pem.get("sample_paragraphs") or []
+                if samples:
+                    em_lines.append("- 양식 본래 sample (원본 — 마커 + 강조 markup 그대로):")
+                    for sp in samples[:3]:
+                        ann = (sp.get("annotated_text") or "").strip()
+                        if ann:
+                            em_lines.append(f"    - {ann}")
+                    em_lines.append("    ↑ 위 분할 패턴(단편 수·길이·base/강조 분포)을 모방하세요.")
+        if em_lines:
+            emphasis_text = (
+                "## 강조 layer 가이드 (role별)\n"
+                "각 강조 layer rule + 양식 sample의 분할 패턴을 따라 markup 입히세요.\n"
+                "여는 태그와 닫는 태그는 반드시 같은 N (짝 강제).\n"
+                + "\n".join(em_lines)
+                + "\n\n"
+            )
+
+    # 말투 rule (참고용 — 본문 의미 보존이 우선이라 가볍게)
+    style_text = ""
+    if style_profiles:
+        st_lines = []
+        for role_name in sorted(used_roles):
+            sp = style_profiles.get(role_name) or {}
+            rules = sp.get("content_style_rules_for_generation") or []
+            if not rules:
+                continue
+            st_lines.append(f"\n### {role_name}")
+            for r in rules[:3]:  # 핵심 rule 몇 개만
+                st_lines.append(f"- {r}")
+        if st_lines:
+            style_text = (
+                "## 말투 rule (참고용)\n"
+                "본문 의미는 그대로 두되, 띄어쓰기·구두점 등 형식 미세 조정 시 참고.\n"
+                + "\n".join(st_lines)
+                + "\n\n"
+            )
+
+    # 본문 트리 (2b 결과)
+    import json as _json
+    items_json = _json.dumps(
+        [
+            {
+                "id": it.get("id"),
+                "parent_id": it.get("parent_id"),
+                "role": it.get("role"),
+                "text": it.get("text", ""),
+            }
+            for it in items_from_2b
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    user_text = (
+        f"## chapter 의미\n"
+        f"**{chapter_title}** (타입: {chapter_type_name})\n\n"
+        f"## 본문 트리 (2b 결과 — 마커·강조 없음)\n"
+        f"```json\n{items_json}\n```\n\n"
+        f"## 사용 role 양식 sample (원본 — 마커 + 강조 markup 포함)\n"
+        f"{catalog_text}\n\n"
+        f"{marker_hint_text}"
+        f"{emphasis_text}"
+        f"{style_text}"
+        f"각 item의 text에 마커 + 강조 markup을 입혀 같은 트리 구조로 출력하세요.\n"
+        f"본문 의미는 보존하고 형식만 입힘. 반드시 JSON만 출력.\n"
+    )
+
+    return [
+        {"role": "system", "content": SECTION_STYLE_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
+
+
+def parse_section_style_from_llm(llm_response: str) -> list[dict]:
+    """
+    2c LLM 응답에서 형식 입힌 트리 items를 파싱합니다.
+
+    Returns:
+        [{"id", "parent_id", "role", "text"}, ...]
+    """
+    json_match = re.search(r'```(?:json)?\s*([\[{][\s\S]*?[\]}])\s*```', llm_response)
+    if json_match:
+        raw = json_match.group(1)
+    else:
+        brace_match = re.search(r'\{[\s\S]*\}', llm_response)
+        bracket_match = re.search(r'\[[\s\S]*\]', llm_response)
+        if brace_match:
+            raw = brace_match.group(0)
+        elif bracket_match:
+            raw = bracket_match.group(0)
+        else:
+            raise ValueError("2c 응답에서 JSON을 찾을 수 없습니다")
+
+    try:
+        data = json.loads(raw, strict=False)
+    except json.JSONDecodeError:
+        repaired = _repair_json(raw)
+        try:
+            data = json.loads(repaired, strict=False)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"2c JSON 파싱 실패: {e}")
+
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        items = data.get("items", [])
+    else:
+        raise ValueError(f"2c 결과 형식 오류: {type(data)}")
+
+    log.info(f"2c 파싱: {len(items)}개 항목")
     return items
 
 
