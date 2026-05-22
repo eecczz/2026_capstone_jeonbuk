@@ -3378,11 +3378,21 @@ def _replace_text_in_paragraph_elem_split(p_elem, marker_text: str, content_text
                 content_t.text = content_text
                 for child in list(content_t):
                     content_t.remove(child)
-                # 나머지 t 비움 — 양식 본래 공백/탭 only t는 들여쓰기 자리로 보존
-                for t in t_elems:
+                # 나머지 t 비움 정책:
+                # - 마커 자리와 본문 자리 사이 공백/탭 only t는 양식 구분자 자리 — 비움
+                #   (marker_text가 이미 구분자 포함, 보존하면 띄어쓰기 중복)
+                # - 그 외 위치(맨 앞·끝) 공백/탭 only t는 들여쓰기/trailing 자리 — 보존
+                # - 글자 있는 중간 t는 기존대로 비움
+                _m_idx = t_elems.index(marker_t)
+                _c_idx = t_elems.index(content_t)
+                _between_lo = min(_m_idx, _c_idx)
+                _between_hi = max(_m_idx, _c_idx)
+                for _i, t in enumerate(t_elems):
                     if t is marker_t or t is content_t:
                         continue
-                    if not (t.text or "").strip():
+                    _is_ws_only = not (t.text or "").strip()
+                    _is_between = _between_lo < _i < _between_hi
+                    if _is_ws_only and not _is_between:
                         continue
                     t.text = ""
                     for child in list(t):
@@ -3635,11 +3645,20 @@ def _replace_text_with_emphasis_segments(
                     run_parent.insert(insert_idx, new_run)
                     insert_idx += 1
 
-    # 나머지 bearing t 비움 — 양식 본래 공백/탭 only t는 들여쓰기 자리이므로 보존
-    for t in t_elems:
+    # 나머지 t 비움 정책 (split 함수와 통일):
+    # - 마커 자리와 본문 자리 사이 공백/탭 only t는 양식 구분자 자리 — 비움
+    # - 그 외 위치(맨 앞·끝) 공백/탭 only t는 들여쓰기/trailing 자리 — 보존
+    # - 글자 있는 중간 t는 비움
+    _em_m_idx = t_elems.index(marker_t)
+    _em_c_idx = t_elems.index(content_t)
+    _em_between_lo = min(_em_m_idx, _em_c_idx)
+    _em_between_hi = max(_em_m_idx, _em_c_idx)
+    for _ei, t in enumerate(t_elems):
         if t is marker_t or t is content_t:
             continue
-        if not (t.text or "").strip():
+        _em_ws_only = not (t.text or "").strip()
+        _em_between = _em_between_lo < _ei < _em_between_hi
+        if _em_ws_only and not _em_between:
             continue
         t.text = ""
         for child in list(t):
