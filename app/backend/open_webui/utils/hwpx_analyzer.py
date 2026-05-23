@@ -12539,6 +12539,7 @@ def build_adaptation_plan_prompt(
     broad_source_preview: str = "",
     max_source_preview_chars: int = 0,
     header_roles: list[dict] | None = None,
+    template_toc_text: str = "",
 ) -> list[dict]:
     """13.7c (=신 2a) chapter mapping + header batch prompt.
 
@@ -12614,19 +12615,27 @@ def build_adaptation_plan_prompt(
     )
 
     # header role 정보 — 옛 2a에서 흡수. 비어있으면 header 추출 skip.
+    # template_sample을 같이 보내서 LLM이 양식 원 표현·형식을 볼 수 있게 함.
+    # 제목 성격 role은 adapted_title처럼 양식 흐름 유지 + source 도메인 보정.
     _header_brief = []
     for _h in (header_roles or []):
         if isinstance(_h, dict):
             _header_brief.append({
                 "role": _h.get("role", ""),
                 "description": _h.get("description", ""),
+                "template_sample": _h.get("template_sample", ""),
             })
         elif isinstance(_h, str):
-            _header_brief.append({"role": _h, "description": ""})
+            _header_brief.append({"role": _h, "description": "", "template_sample": ""})
     _header_block = (
         "[header_roles]\n"
         f"{_json.dumps(_header_brief, ensure_ascii=False, indent=2)}\n\n"
         if _header_brief else ""
+    )
+    _toc_block = (
+        "[template_toc_text]\n"
+        f"```\n{template_toc_text}\n```\n\n"
+        if template_toc_text and template_toc_text.strip() else ""
     )
 
     user_msg = (
@@ -12635,6 +12644,7 @@ def build_adaptation_plan_prompt(
         "[source_inventory]\n"
         f"{_json.dumps(_inv_brief, ensure_ascii=False, indent=2)}\n\n"
         + _header_block
+        + _toc_block
         + (f"[broad_source_preview]\n```\n{_src_preview}\n```\n\n" if _src_preview else "")
         + "Step 0 — overall_source_focus 결정 (먼저 결정)\n\n"
         "chapter별 결정을 시작하기 전에, 이 chapter set 전체가 사용할 source 중심 주제를 정합니다.\n"
@@ -12822,14 +12832,36 @@ def build_adaptation_plan_prompt(
         "  ],\n"
         '  "header": {\n'
         '    "<header_role_name>": "source에서 이 슬롯에 들어갈 값 (제목/날짜/기관 등). [header_roles]의 각 role에 대해 채움. 없으면 빈 문자열."\n'
-        "  }\n"
+        "  },\n"
+        '  "toc_replacements": [\n'
+        '    {"from": "양식 TOC text의 원본 substring", "to": "교체할 새 텍스트"}\n'
+        "  ]\n"
         "}\n\n"
         "header 추출 규칙 (옛 2a에서 흡수):\n"
         "- 위 [header_roles]에 명시된 role만 key로 사용 (목록에 없는 role 만들지 X).\n"
-        "- 각 role의 description을 읽고 source에서 그 의미에 맞는 값을 추출 (예: 문서 제목, 발표일자, 작성기관).\n"
+        "- 각 role의 description과 template_sample을 같이 보고 source에서 적합한 값을 채움.\n"
+        "- **제목 성격 role** (description에 '제목' 또는 'title' 포함) 처리:\n"
+        "  - chapter title의 adapted_title 처리 방식과 동일하게.\n"
+        "  - **template_sample의 표현 형식·구조·동작어를 유지하고 source 도메인 명사로 token만 보정**.\n"
+        "  - 예: template_sample이 \"2024년 부동산정책 추진방향\", source 도메인이 정책품질관리\n"
+        "    → \"2025년 정책품질관리 추진방향\" (연도·동작어·구조 유지, 도메인 명사만 교체).\n"
+        "  - template_sample의 base phrase 의미·구조 유지. source 도메인과 불일치하는 token만 최소 수정.\n"
+        "- **그 외 role** (날짜·기관 등): source에서 정확한 값을 그대로 추출. 양식 형식 모방 X.\n"
         "- 보안등급/분류표시(예: 대외비)는 제목·날짜·기관 슬롯에 넣지 X.\n"
         "- source에 해당 슬롯에 맞는 값이 없으면 빈 문자열 \"\" (양식 원본 보존).\n"
         "- [header_roles]가 비어있거나 입력에 없으면 \"header\": {} 빈 객체로 출력.\n\n"
+        "toc_replacements 규칙:\n"
+        "- [template_toc_text] 가 입력에 있으면 양식 TOC text 안 substring 교체 list를 만드세요.\n"
+        "- **chapter title 부분** (양식 chapter 원본 제목과 매칭): adapted_title로 교체.\n"
+        "  매칭은 양식 TOC text 안 chapter title이 chapter_decisions의 original_title에 substring으로\n"
+        "  포함되면 매칭 인정 (양식 chapter title이 noisy해서 original_title 길이가 더 길 수도).\n"
+        "  from은 양식 TOC text 안 substring 그대로 (예: 'Ⅰ. 추진성과 및 평가' 또는 마커 제외 부분).\n"
+        "  to는 adapted_title (마커 포함 여부는 from 형태와 맞춤).\n"
+        "- **자식 항목·페이지 번호 등 글자 있는 부분**: '?' 한 글자로 교체.\n"
+        "  예: {'from': '민생경제 안정...', 'to': '?'}\n"
+        "- **TOC 라벨(예: '순 서', '목차', 'Contents')**: 교체 X (replacements에 안 넣음). 보존됨.\n"
+        "- from substring은 양식 TOC text 안 실제 존재해야 함 (이후 코드가 substring 교체 적용).\n"
+        "- [template_toc_text]가 비어있거나 입력에 없으면 \"toc_replacements\": [] 빈 list로 출력.\n\n"
         "판단 원칙:\n"
         "1. **template-flow가 source-fit보다 우선.** chapter role/순서/깊이는 template이 결정.\n"
         "2. **chapter role은 위치가 아니라 original_title과 패턴으로 결정.**\n"
@@ -12967,6 +12999,7 @@ def parse_adaptation_plan_from_llm(
         "chapter_decisions": [],
         "overall_source_focus": None,  # 13.7e v2: top-level focus
         "header": {},  # 옛 2a 흡수: header 슬롯 값
+        "toc_replacements": [],  # 양식 TOC text 안 substring 교체 list
         "_validation": {
             "ok": False,
             "errors": [],
@@ -13017,6 +13050,21 @@ def parse_adaptation_plan_from_llm(
         _result["header"] = {str(k): ("" if v is None else str(v)) for k, v in _hdr.items()}
     else:
         _result["header"] = {}
+
+    # TOC replacements 추출
+    _tocr = _parsed.get("toc_replacements")
+    if isinstance(_tocr, list):
+        _clean = []
+        for _item in _tocr:
+            if not isinstance(_item, dict):
+                continue
+            _from = str(_item.get("from") or "")
+            _to = str(_item.get("to") or "")
+            if _from:
+                _clean.append({"from": _from, "to": _to})
+        _result["toc_replacements"] = _clean
+    else:
+        _result["toc_replacements"] = []
 
     _decisions = _parsed.get("chapter_decisions")
     if not isinstance(_decisions, list):

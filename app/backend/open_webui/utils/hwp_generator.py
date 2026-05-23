@@ -1098,6 +1098,8 @@ def assemble_hwpx_hybrid(
     analyzed_sections: set[int] | None = None,
     chapter_local_exemplars: dict | None = None,
     emphasis_layers: dict | None = None,
+    toc_replacements: list | None = None,
+    toc_paragraph_idx: int | None = None,
 ) -> HwpxResult:
     """
     하이브리드 방식으로 HWPX 문서를 조립합니다.
@@ -1292,10 +1294,29 @@ def assemble_hwpx_hybrid(
     # 1.5c 규칙 로드
     format_rules = structure.get("format_rules", {})
     blank_rules = structure.get("blank_rules", [])
-    blank_lookup = {}
+    # 같은 (from, to, relation) transition이 양식에 여러 번 나오면 다수결로 has_blank 결정.
+    # 옛 코드는 dict 덮어쓰기로 마지막만 살아남아 양식 일관성 잃었음.
+    _blank_votes: dict = {}
     for r in blank_rules:
         key = (r.get("from", ""), r.get("to", ""), r.get("relation", ""))
-        blank_lookup[key] = r
+        _blank_votes.setdefault(key, []).append(r)
+    blank_lookup = {}
+    for _key, _rs in _blank_votes.items():
+        _blank_n = sum(1 for r in _rs if r.get("has_blank"))
+        _no_blank_n = len(_rs) - _blank_n
+        # 동률 또는 다수 → has_blank 적용 (양식 빈 줄 보존 우선; 사용자 의도 "내려쓰기 모두 인식")
+        _final_has_blank = _blank_n >= _no_blank_n and _blank_n > 0
+        _final_paraPr = None
+        if _final_has_blank:
+            for r in _rs:
+                if r.get("has_blank") and r.get("paraPrIDRef"):
+                    _final_paraPr = r["paraPrIDRef"]
+                    break
+        blank_lookup[_key] = {
+            "from": _key[0], "to": _key[1], "relation": _key[2],
+            "has_blank": _final_has_blank,
+            "paraPrIDRef": _final_paraPr,
+        }
 
     # ── 3단계: header 영역 처리 ──
     # header는 {role_name: text} 형태 — role 이름을 AI가 자유롭게 지정
@@ -2974,6 +2995,70 @@ def assemble_hwpx_hybrid(
     except Exception as _fri_e:
         log.warning(f"final id reassignment 실패: {_fri_e}")
         structure["_final_id_reassignment"] = {"error": str(_fri_e)}
+
+    # ── TOC 텍스트 교체 (신 2a가 결정한 toc_replacements 적용) ──
+    # 단일 t.text 안 substring 매칭이면 그 t에서만 replace (양식 글꼴 보존).
+    # 여러 t에 걸친 경우 시작 t에 to 박고 걸친 t들 비움.
+    if toc_replacements and toc_paragraph_idx is not None:
+        try:
+            _toc_real_idx = _to_real_idx(toc_paragraph_idx)
+            if 0 <= _toc_real_idx < len(doc.paragraphs):
+                _toc_p_elem = doc.paragraphs[_toc_real_idx].element
+                _t_elems = list(_toc_p_elem.iter(f"{NS}t"))
+                _toc_applied = 0
+                _toc_skipped = 0
+                for _repl in toc_replacements:
+                    _from_s = _repl.get("from", "")
+                    _to_s = _repl.get("to", "")
+                    if not _from_s:
+                        continue
+                    # 1) 단일 t.text에 substring 발견되면 그 t에서만 replace
+                    _single_hit = False
+                    for _t in _t_elems:
+                        if _t.text and _from_s in _t.text:
+                            _t.text = _t.text.replace(_from_s, _to_s, 1)
+                            _single_hit = True
+                            _toc_applied += 1
+                            break
+                    if _single_hit:
+                        continue
+                    # 2) 여러 t에 걸친 경우 — 누적 위치 추적
+                    _full = "".join(_t.text or "" for _t in _t_elems)
+                    _pos = _full.find(_from_s)
+                    if _pos < 0:
+                        _toc_skipped += 1
+                        continue
+                    _end = _pos + len(_from_s)
+                    _cum = 0
+                    _start_ti, _end_ti = -1, -1
+                    _start_offset, _end_offset = 0, 0
+                    for _ti, _t in enumerate(_t_elems):
+                        _ttext = _t.text or ""
+                        _new_cum = _cum + len(_ttext)
+                        if _start_ti < 0 and _new_cum > _pos:
+                            _start_ti = _ti
+                            _start_offset = _pos - _cum
+                        if _end_ti < 0 and _new_cum >= _end:
+                            _end_ti = _ti
+                            _end_offset = _end - _cum
+                            break
+                        _cum = _new_cum
+                    if _start_ti >= 0 and _end_ti >= 0:
+                        _prefix = (_t_elems[_start_ti].text or "")[:_start_offset]
+                        _suffix = (_t_elems[_end_ti].text or "")[_end_offset:]
+                        if _start_ti == _end_ti:
+                            _t_elems[_start_ti].text = _prefix + _to_s + _suffix
+                        else:
+                            _t_elems[_start_ti].text = _prefix + _to_s
+                            for _mi in range(_start_ti + 1, _end_ti):
+                                _t_elems[_mi].text = ""
+                            _t_elems[_end_ti].text = _suffix
+                        _toc_applied += 1
+                    else:
+                        _toc_skipped += 1
+                log.info(f"TOC text 교체: applied={_toc_applied}, skipped={_toc_skipped}")
+        except Exception as _toc_e:
+            log.warning(f"TOC text 교체 실패: {_toc_e}")
 
     return HwpxResult(
         data=_doc_to_bytes(doc),
