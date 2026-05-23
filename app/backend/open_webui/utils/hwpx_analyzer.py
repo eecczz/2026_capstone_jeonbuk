@@ -15382,10 +15382,13 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 ## 핵심 규칙 (강제)
 
 1. **패턴에 명시된 role만 사용하세요** — 새 role 생성 금지
-2. **개수 제약**:
+2. **개수 제약 (강제)**:
    - `정확히 1개/부모`: 부모 인스턴스 아래 딱 1개만 생성. 2개 이상 절대 금지.
-   - `여러 개 가능`: 내용에 맞게 1개~여러 개 생성 가능.
-   - `권장 개수 약 N`: 양식에서 관찰된 최적 개수. 소스 내용이 충분하면 이 근처로 맞추는 것이 자연스러움. 강제는 아님.
+   - `여러 개 가능`: 양식 관찰 갯수 **min ~ max 사이**에서 결정.
+     - **min 미만 절대 금지** (그보다 적게 만들지 마세요)
+     - **max 초과 절대 금지** (그보다 많이 만들지 마세요)
+     - `mean`은 참고용 (분포의 중심 — 어느 쪽에 가까울지 판단)
+     - 단일 관찰(min=max=N)이면 그 값 N을 그대로 사용
 3. **필수/선택**:
    - `필수(최소 1개)`: 반드시 1개 이상 포함
    - `선택(생략 가능)`: 해당 내용이 소스에 없으면 생략
@@ -15395,8 +15398,6 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
      "자식 variant 목록" 에서 명시됩니다 (양식 관찰).
    - **한 인스턴스 안에는 단 하나의 variant 자식 set만 사용**. 두 variant 섞기 금지.
    - 새 인스턴스 만들 때마다 variant 중 하나 선택 (source 내용 성격에 맞게).
-   - **인스턴스 갯수는 유동적**: 양식에서 관찰된 갯수에 매이지 X. source 분량에 따라 더 만들거나
-     적게 만들 수 있음. 단 양식 갯수 가까이가 자연스러움.
    - 예: parent의 variant 목록이 [{A, B}, {C}]면 → 한 인스턴스는 (A+B) 또는 (C) 둘 중 하나만.
      A+C 또는 B+C 같이는 금지.
 
@@ -15408,6 +15409,24 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 - **role의 sample text는 스타일(문장 길이/포맷) 참고용**입니다. **주제는 완전히 무시**하세요.
 - sample이 "딸기 가격이 15% 상승"이라도 당신 소스가 야구라면 "관중 수가 15% 증가"처럼 **해당 소스 주제로 작성**
 - sample의 **길이/문체/숫자 포함 여부** 같은 형식만 따르세요 (marker는 코드가 처리)
+
+## source 내용 재구성 (양식 구조 우선)
+
+source는 양식과 다른 도메인일 가능성이 큽니다. source의 자연 단위 갯수와
+양식의 instance 갯수가 일치하지 않을 수 있어요.
+
+**원칙: 양식 instance 갯수가 우선. source 자연 갯수에 매몰되지 마세요.**
+
+- source가 7개 항목, 양식 instance가 3개 → source를 양식 3개 instance에
+  나눠 담도록 묶어 재구성
+- source가 2개 항목, 양식 instance가 4개 → source 내용을 양식 4개 자리에
+  맞춰 분할 (단 양식 max 초과 X)
+- source 자연 갯수가 양식 갯수와 달라도 양식 갯수에 맞춰 재배치
+
+**판단 순서**:
+1. 양식 role의 instance 갯수 결정 (min~max 사이에서)
+2. source의 관련 내용을 그 갯수만큼 묶거나 나눠서 각 instance에 배치
+3. **source 갯수에 맞춰 양식 갯수(min~max)를 어기는 것 금지**
 
 ## role의 성격: 제목 vs 본문
 
@@ -15525,9 +15544,9 @@ text 구성: **본문 내용만** (marker, 공백, 들여쓰기 모두 코드가
 
 ## 중요
 - **소스에 없는 내용을 만들어내지 마세요**
-- **소스의 해당 섹션 내용을 빠짐없이 반영하세요**
 - **하나의 role 항목에는 하나의 계층 내용만** — 여러 계층을 합치지 마세요
 - 양식 샘플과 비슷한 길이/문체를 유지하세요
+- **양식 갯수(min~max)는 source 자연 갯수와 무관하게 지키세요**
 - 반드시 JSON만 출력. 다른 설명 포함 금지
 """
 
@@ -15570,12 +15589,15 @@ def _format_pattern_tree(
             flags.append("선택(생략 가능)")
         else:
             flags.append("필수(최소 1개)")
-        if suggested and suggested > 0:
-            flags.append(f"권장 개수 약 {suggested}")
         if observed:
+            _min = min(observed)
+            _max = max(observed)
+            _mean = sum(observed) / len(observed)
             observed_preview = observed[:6]
             more = "…" if len(observed) > len(observed_preview) else ""
-            flags.append(f"관찰={observed_preview}{more}")
+            flags.append(
+                f"양식 갯수 min={_min}, max={_max}, mean={_mean:.1f} (관찰={observed_preview}{more})"
+            )
         # per_type semantics 우선, global fallback
         pts = (per_type_semantics or {}).get(role_name, {})
         type_sem = pts.get("per_type", {}).get(chapter_type_name, {})
