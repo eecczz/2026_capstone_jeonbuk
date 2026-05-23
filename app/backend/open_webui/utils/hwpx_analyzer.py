@@ -12703,9 +12703,14 @@ def build_adaptation_plan_prompt(
         '      - parts list: [{\\"charPrIDRef\\": \\"양식 charPr 그대로\\", \\"text\\": \\"새 텍스트\\"}, ...]\\n'
         '        (template_parts 있는 경우 — 같은 parts 수 + 같은 charPrIDRef 순서로 출력)"\n'
         "  },\n"
-        '  "toc_replacements": [\n'
-        '    {"from": "양식 TOC text의 원본 substring", "to": "교체할 새 텍스트"}\n'
-        "  ]\n"
+        '  "toc_replacements": {\n'
+        '    "chapter_titles": [\n'
+        '      {"chapter_idx": int, "from": "양식 TOC text의 원본 substring", "to": "adapted_title"}\n'
+        "    ],\n"
+        '    "child_items": [\n'
+        '      {"from": "양식 TOC text의 자식 항목 substring (마커 제외)", "to": "?"}\n'
+        "    ]\n"
+        "  }\n"
         "}\n\n"
         "header 추출 규칙 (옛 2a에서 흡수):\n"
         "- 위 [header_roles]에 명시된 role만 key로 사용 (목록에 없는 role 만들지 X).\n"
@@ -12723,24 +12728,24 @@ def build_adaptation_plan_prompt(
         "  - 출력은 같은 parts 갯수 + 같은 charPrIDRef 순서로 list 형태.\n"
         "  - 각 part의 text는 그 글꼴 영역에 맞는 새 텍스트 (양식 sample의 의미·구조 유지).\n"
         "  - template_parts 없으면 단일 문자열로 출력.\n\n"
-        "toc_replacements 규칙 (단순):\n"
-        "- [template_toc_text] 가 입력에 있으면 양식 TOC text 안 substring 교체 list를 만드세요.\n"
+        "toc_replacements 규칙:\n"
+        "- [template_toc_text] 가 입력에 있으면 양식 TOC text 안 substring 교체를 두 그룹으로 만드세요.\n"
         "- **from은 반드시 [template_toc_text] 안 실제 존재하는 substring** (코드가 TOC text에서 검색).\n"
-        "- 두 종류만 처리:\n"
-        "  **(1) chapter title 교체** — [chapters]의 모든 chapter에 대해:\n"
-        "    - from: original_title이 TOC text 안 substring으로 존재하는 깨끗한 형태.\n"
-        "      original_title이 noisy해서 더 길면 TOC text 안 substring 부분만 사용.\n"
-        "    - to: 같은 chapter의 adapted_title\n"
-        "    - chapter 갯수만큼 replacement 필수. 누락 금지.\n"
-        "  **(2) 자식 항목 ? 교체** — chapter title 아래 세부 항목 (chapter title이 아닌 글자):\n"
-        "    - from: TOC text 안 자식 항목 **본문 substring** (마커 제외).\n"
-        "      자식 마커는 from에 포함하지 마세요. 양식 마커는 보존됩니다.\n"
-        "    - to: '?' 한 글자\n"
-        "    - chapter title은 (1)에서 처리하므로 절대 ?로 바꾸지 마세요.\n"
+        "- **chapter_titles 그룹 (chapter_idx 매핑 강제)**:\n"
+        "  [chapters]의 모든 chapter에 대해 빠짐없이 1개씩 entry. chapter_idx 0, 1, 2, ... 다 포함.\n"
+        "  - chapter_idx: [chapters] input의 idx 그대로\n"
+        "  - from: 그 chapter의 original_title이 TOC text 안에 존재하는 깨끗한 substring 형태.\n"
+        "    original_title이 noisy해서 더 길면 TOC text 안 substring 부분만 사용.\n"
+        "  - to: 같은 chapter의 adapted_title\n"
+        "- **child_items 그룹 (자식 항목 ?)**:\n"
+        "  chapter title 아래 세부 항목들. chapter title 아닌 글자.\n"
+        "  - from: TOC text 안 자식 항목 본문 substring (마커 제외).\n"
+        "    자식 마커는 from에 포함하지 마세요. 양식 마커는 보존됩니다.\n"
+        "  - to: '?' 한 글자\n"
         "- 교체하지 않는 것 (replacement 안 만듦):\n"
         "  - TOC 라벨 ('순 서', '목차', 'Contents' 등) — 양식 그대로\n"
         "  - 숫자 (페이지 번호) — 양식 자동 처리 영역\n"
-        "- [template_toc_text]가 비어있거나 입력에 없으면 \"toc_replacements\": [] 빈 list로 출력.\n\n"
+        "- [template_toc_text]가 비어있거나 입력에 없으면 \"toc_replacements\": {\"chapter_titles\": [], \"child_items\": []} 빈 객체로 출력.\n\n"
         "**한 줄 정리: 제목은 source를 반영해야 하지만, chapter의 역할어와 문서 흐름은 template을 따라야 합니다.**\n"
         "**'먼저 같게 가져갈지 다르게 가져갈지'를 정하지 말고, source 적합성과 chapter role에 따라 자연스러운 제목을 정하면 됩니다.**\n"
     )
@@ -12846,10 +12851,27 @@ def parse_adaptation_plan_from_llm(
     else:
         _result["header"] = {}
 
-    # TOC replacements 추출
+    # TOC replacements 추출 — dict {chapter_titles, child_items} 또는 list (옛 호환)
     _tocr = _parsed.get("toc_replacements")
-    if isinstance(_tocr, list):
-        _clean = []
+    _clean: list = []
+    if isinstance(_tocr, dict):
+        # 신 schema: chapter_titles (chapter_idx 매핑) + child_items
+        for _item in (_tocr.get("chapter_titles") or []):
+            if not isinstance(_item, dict):
+                continue
+            _from = str(_item.get("from") or "")
+            _to = str(_item.get("to") or "")
+            if _from:
+                _clean.append({"from": _from, "to": _to})
+        for _item in (_tocr.get("child_items") or []):
+            if not isinstance(_item, dict):
+                continue
+            _from = str(_item.get("from") or "")
+            _to = str(_item.get("to") or "")
+            if _from:
+                _clean.append({"from": _from, "to": _to})
+    elif isinstance(_tocr, list):
+        # 옛 호환: flat list
         for _item in _tocr:
             if not isinstance(_item, dict):
                 continue
@@ -12857,9 +12879,7 @@ def parse_adaptation_plan_from_llm(
             _to = str(_item.get("to") or "")
             if _from:
                 _clean.append({"from": _from, "to": _to})
-        _result["toc_replacements"] = _clean
-    else:
-        _result["toc_replacements"] = []
+    _result["toc_replacements"] = _clean
 
     _decisions = _parsed.get("chapter_decisions")
     if not isinstance(_decisions, list):
