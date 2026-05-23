@@ -13142,6 +13142,226 @@ def parse_adaptation_plan_from_llm(
     return _result
 
 
+# ──────────────────────────────────────────────────────────────────────
+# 2b-source: chapter별 source 범위 분배 (본문 채우기 부하 감소)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def build_source_range_prompt(
+    source_text: str,
+    chapter_inputs: list[dict],
+    overall_source_focus: dict | None = None,
+) -> list[dict]:
+    """2b-source: source 전체를 양식 chapter별로 분배할 range 결정 prompt.
+
+    한 호출에 모든 chapter의 range 한 번에 결정 (chapter 사이 일관성 보장).
+    범위는 char idx 기준 (source_text의 char position).
+    겹침 OK 명시 — 한 chapter에 필요한 내용 다 담는 게 우선.
+
+    Args:
+        source_text: 전체 source text
+        chapter_inputs: [{idx, adapted_title, original_title}, ...]
+        overall_source_focus: chapter set 전체의 source 중심 주제 (참고)
+
+    Returns: messages list
+    """
+    import json as _json
+
+    _ch_brief = []
+    for ch in chapter_inputs:
+        _ch_brief.append({
+            "idx": ch.get("idx"),
+            "adapted_title": ch.get("adapted_title", ""),
+            "original_title": ch.get("original_title", ""),
+        })
+
+    _focus_str = ""
+    if isinstance(overall_source_focus, dict) and overall_source_focus.get("topic"):
+        _focus_str = (
+            "\n[overall_source_focus]\n"
+            f"topic: {overall_source_focus.get('topic')}\n"
+            f"reason: {overall_source_focus.get('reason', '')}\n\n"
+        )
+
+    system_msg = (
+        "당신은 양식 chapter 구조에 맞춰 source 본문 영역을 분배하는 도구입니다.\n"
+        "각 chapter에 들어갈 만한 source 내용 영역(char idx 범위)을 결정합니다.\n"
+        "JSON으로만 응답하세요."
+    )
+
+    user_msg = (
+        "[chapters]\n"
+        f"{_json.dumps(_ch_brief, ensure_ascii=False, indent=2)}\n\n"
+        f"{_focus_str}"
+        f"[source_text] (총 {len(source_text):,}자)\n"
+        "```\n"
+        f"{source_text}\n"
+        "```\n\n"
+        "각 chapter에 들어갈 source 영역을 char idx 범위(start, end)로 결정하세요.\n\n"
+        "**핵심 원칙 (강제)**:\n"
+        "- **chapter 사이 source 범위는 겹쳐도 OK**. 같은 source 문장이 여러 chapter에 들어가도 정상.\n"
+        "- **한 chapter에 필요한 모든 내용을 다 담는 게 겹침 회피보다 우선**.\n"
+        "- **겹침 피하려고 chunk 잘라내지 마세요**. 분배가 아니라 '필요한 영역 식별'.\n"
+        "- 애매하면 무조건 범위에 포함 (널널 룰). 빠뜨리는 것보다 포함하는 게 안전.\n"
+        "- chunk가 chapter 경계에서 애매하면 양쪽 chapter에 다 포함.\n"
+        "- 한 chapter가 source 여러 위치에 흩어져 있으면 ranges에 여러 range로.\n\n"
+        "범위 결정 기준:\n"
+        "- adapted_title의 의미와 source 영역의 내용이 맞으면 그 영역 포함.\n"
+        "- adapted_title이 양식 원본 그대로면 source의 어디든 chapter role에 맞는 곳 식별.\n"
+        "- chapter set 전체로 보면 overall_source_focus 안에서 sub-evidence 분배.\n\n"
+        "JSON 출력:\n"
+        "{\n"
+        '  "chapter_ranges": [\n'
+        '    {\n'
+        '      "chapter_idx": int,\n'
+        '      "ranges": [{"start": int, "end": int}, ...]  // char idx, 여러 개 OK, 겹침 OK\n'
+        '    },\n'
+        "    ...\n"
+        "  ]\n"
+        "}\n\n"
+        "- chapter_idx는 input과 정확히 일치 (모든 chapter 포함).\n"
+        "- start/end는 source_text의 char idx (0-based). end >= start.\n"
+        "- ranges는 list — 한 chapter당 여러 range 가능.\n"
+        "- range가 source 전체에 가까우면 [{start:0, end:전체길이}] 도 OK.\n"
+    )
+
+    return [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_source_ranges_from_llm(
+    llm_raw_response: str,
+    expected_chapter_indices: list[int],
+    source_length: int,
+) -> dict:
+    """2b-source LLM 응답 parse.
+
+    Returns:
+        {
+          "chapter_ranges": {chapter_idx: [(start, end), ...]},
+          "_validation": {"ok", "errors", "missing_indices", "raw_response_len"}
+        }
+    """
+    import json as _json
+    import re as _re
+
+    _raw = (llm_raw_response or "").strip()
+    _result = {
+        "chapter_ranges": {},
+        "_validation": {
+            "ok": False,
+            "errors": [],
+            "missing_indices": list(expected_chapter_indices),
+            "raw_response_len": len(_raw),
+        },
+    }
+
+    if not _raw:
+        _result["_validation"]["errors"].append("empty_response")
+        return _result
+
+    _stripped = _raw
+    _m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", _raw, _re.DOTALL)
+    if _m:
+        _stripped = _m.group(1)
+    else:
+        _m2 = _re.search(r"(\{.*\})", _raw, _re.DOTALL)
+        if _m2:
+            _stripped = _m2.group(1)
+
+    try:
+        _parsed = _json.loads(_stripped)
+    except Exception as e:
+        _result["_validation"]["errors"].append(f"json_parse_failed: {e}")
+        return _result
+
+    _items = _parsed.get("chapter_ranges")
+    if not isinstance(_items, list):
+        _result["_validation"]["errors"].append("chapter_ranges_not_list")
+        return _result
+
+    _seen = set()
+    for it in _items:
+        if not isinstance(it, dict):
+            continue
+        idx = it.get("chapter_idx")
+        if not isinstance(idx, int):
+            continue
+        ranges_raw = it.get("ranges") or []
+        if not isinstance(ranges_raw, list):
+            continue
+        clean = []
+        for r in ranges_raw:
+            if not isinstance(r, dict):
+                continue
+            s = r.get("start")
+            e = r.get("end")
+            if not isinstance(s, int) or not isinstance(e, int):
+                continue
+            s = max(0, min(s, source_length))
+            e = max(0, min(e, source_length))
+            if e < s:
+                continue
+            clean.append((s, e))
+        if clean:
+            _result["chapter_ranges"][idx] = clean
+            _seen.add(idx)
+
+    _result["_validation"]["missing_indices"] = [
+        i for i in expected_chapter_indices if i not in _seen
+    ]
+    _result["_validation"]["ok"] = (
+        not _result["_validation"]["errors"]
+        and not _result["_validation"]["missing_indices"]
+    )
+    return _result
+
+
+def apply_source_ranges_with_safety(
+    source_text: str,
+    chapter_ranges: dict,
+    expand_chars: int = 5000,
+) -> dict:
+    """LLM 결정 range에 안전망 ±expand_chars 적용 + chunk 텍스트 추출.
+
+    - 각 range start/end에 ±expand_chars 확장 (chapter 경계 너무 좁게 자르는 것 방지)
+    - 같은 chapter의 여러 range 합쳐 chunk 추출
+    - 빈 chapter는 전체 source fallback
+
+    Returns:
+        {chapter_idx: chunk_text}
+    """
+    out: dict = {}
+    src_len = len(source_text or "")
+    if src_len == 0:
+        return out
+    for ch_idx, ranges in (chapter_ranges or {}).items():
+        if not ranges:
+            out[ch_idx] = source_text  # fallback: 전체
+            continue
+        # 안전망 ± expand
+        expanded = []
+        for (s, e) in ranges:
+            s2 = max(0, s - expand_chars)
+            e2 = min(src_len, e + expand_chars)
+            expanded.append((s2, e2))
+        # 겹치는 range 합치기
+        expanded.sort()
+        merged = [expanded[0]]
+        for s, e in expanded[1:]:
+            ls, le = merged[-1]
+            if s <= le:
+                merged[-1] = (ls, max(le, e))
+            else:
+                merged.append((s, e))
+        # chunk 추출
+        chunks = [source_text[s:e] for s, e in merged]
+        out[ch_idx] = "\n...\n".join(chunks) if len(chunks) > 1 else chunks[0]
+    return out
+
+
 def validate_adaptation_decision(decision: dict) -> dict:
     """13.7e: title/content 분리 + preserve 제거 schema의 validation.
 
