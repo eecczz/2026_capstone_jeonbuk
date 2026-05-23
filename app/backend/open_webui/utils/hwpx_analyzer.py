@@ -12535,13 +12535,22 @@ def build_adaptation_plan_prompt(
     chapter_inputs: list[dict],
     broad_source_preview: str = "",
     max_source_preview_chars: int = 0,
+    header_roles: list[dict] | None = None,
 ) -> list[dict]:
-    """13.7e: chapter mapping batch prompt (template-flow / source-surface 원칙).
+    """13.7c (=신 2a) chapter mapping + header batch prompt.
 
+    chapter route 전용. 양식 chapter set 전체에 대해 한 번에 결정:
+    - overall_source_focus (chapter set 일관성)
+    - chapter별 adapted_title
+    - header 슬롯 (제목/날짜/기관 등) — 옛 2a에서 흡수
     - chapter의 역할/순서/깊이는 template이 결정 (Roman numeral 위치로 고정 X)
-    - adapted_title은 '먼저 같게 vs 다르게' 분류 없이 자연스럽게 결정 (결과 같든 다르든 OK)
+    - adapted_title은 '먼저 같게 vs 다르게' 분류 없이 자연스럽게 결정
     - source는 main_headings / available_topics / evidence_samples / preview에서 선택
     - chapter set은 동일한 overall_source_focus 공유 (multi-agenda source 대응)
+
+    Args:
+        header_roles: 양식 header role 목록 [{"role": ..., "description": ...}].
+                      비어있으면 header 추출 skip.
     """
     import json as _json
 
@@ -12601,11 +12610,28 @@ def build_adaptation_plan_prompt(
         "- JSON 객체로만 응답하세요. 다른 텍스트 없이 JSON만 출력합니다."
     )
 
+    # header role 정보 — 옛 2a에서 흡수. 비어있으면 header 추출 skip.
+    _header_brief = []
+    for _h in (header_roles or []):
+        if isinstance(_h, dict):
+            _header_brief.append({
+                "role": _h.get("role", ""),
+                "description": _h.get("description", ""),
+            })
+        elif isinstance(_h, str):
+            _header_brief.append({"role": _h, "description": ""})
+    _header_block = (
+        "[header_roles]\n"
+        f"{_json.dumps(_header_brief, ensure_ascii=False, indent=2)}\n\n"
+        if _header_brief else ""
+    )
+
     user_msg = (
         "[chapters]\n"
         f"{_json.dumps(_ch_brief, ensure_ascii=False, indent=2)}\n\n"
         "[source_inventory]\n"
         f"{_json.dumps(_inv_brief, ensure_ascii=False, indent=2)}\n\n"
+        + _header_block
         + (f"[broad_source_preview]\n```\n{_src_preview}\n```\n\n" if _src_preview else "")
         + "Step 0 — overall_source_focus 결정 (먼저 결정)\n\n"
         "chapter별 결정을 시작하기 전에, 이 chapter set 전체가 사용할 source 중심 주제를 정합니다.\n"
@@ -12790,8 +12816,17 @@ def build_adaptation_plan_prompt(
         '      "adaptation_degree": "small|medium|large",\n'
         '      "confidence": "high|medium|low"\n'
         "    }\n"
-        "  ]\n"
+        "  ],\n"
+        '  "header": {\n'
+        '    "<header_role_name>": "source에서 이 슬롯에 들어갈 값 (제목/날짜/기관 등). [header_roles]의 각 role에 대해 채움. 없으면 빈 문자열."\n'
+        "  }\n"
         "}\n\n"
+        "header 추출 규칙 (옛 2a에서 흡수):\n"
+        "- 위 [header_roles]에 명시된 role만 key로 사용 (목록에 없는 role 만들지 X).\n"
+        "- 각 role의 description을 읽고 source에서 그 의미에 맞는 값을 추출 (예: 문서 제목, 발표일자, 작성기관).\n"
+        "- 보안등급/분류표시(예: 대외비)는 제목·날짜·기관 슬롯에 넣지 X.\n"
+        "- source에 해당 슬롯에 맞는 값이 없으면 빈 문자열 \"\" (양식 원본 보존).\n"
+        "- [header_roles]가 비어있거나 입력에 없으면 \"header\": {} 빈 객체로 출력.\n\n"
         "판단 원칙:\n"
         "1. **template-flow가 source-fit보다 우선.** chapter role/순서/깊이는 template이 결정.\n"
         "2. **chapter role은 위치가 아니라 original_title과 패턴으로 결정.**\n"
@@ -12928,6 +12963,7 @@ def parse_adaptation_plan_from_llm(
     _result = {
         "chapter_decisions": [],
         "overall_source_focus": None,  # 13.7e v2: top-level focus
+        "header": {},  # 옛 2a 흡수: header 슬롯 값
         "_validation": {
             "ok": False,
             "errors": [],
@@ -12971,6 +13007,13 @@ def parse_adaptation_plan_from_llm(
             "topic": None,
             "reason": "missing_from_llm_output",
         }
+
+    # 옛 2a 흡수: header 슬롯 추출
+    _hdr = _parsed.get("header")
+    if isinstance(_hdr, dict):
+        _result["header"] = {str(k): ("" if v is None else str(v)) for k, v in _hdr.items()}
+    else:
+        _result["header"] = {}
 
     _decisions = _parsed.get("chapter_decisions")
     if not isinstance(_decisions, list):
