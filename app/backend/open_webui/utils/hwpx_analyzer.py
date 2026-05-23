@@ -6742,6 +6742,8 @@ def extract_paragraph_emphasis_map(
 
     # paragraph idx → cluster_id (structure 기준; 1a paragraph.idx — 재할당된 0~N sequential)
     idx_to_cluster = {p.get("idx"): p.get("role", "") for p in paragraphs if p.get("role")}
+    # paragraph idx → parent_idx — sample에 부모 정보 명시 (LLM의 마커 reset 인식)
+    idx_to_parent = {p.get("idx"): p.get("parent_idx") for p in paragraphs if p.get("idx") is not None}
     _dbg["idx_to_cluster_count"] = len(idx_to_cluster)
     _dbg["distinct_cluster_count"] = len(set(idx_to_cluster.values()))
     _dbg["paragraphs_sample"] = [
@@ -6904,6 +6906,7 @@ def extract_paragraph_emphasis_map(
                 annotated_parts.append(f"[[{layer}]]{text}[[/{layer}]]")
             sample_paragraphs.append({
                 "paragraph_idx": pidx,
+                "parent_idx": idx_to_parent.get(pidx),
                 "segments": seg_list,
                 "annotated_text": "".join(annotated_parts),
             })
@@ -16253,12 +16256,29 @@ def build_section_style_prompt(
                 pem = paragraph_emphasis_map.get(role_name) or {}
                 samples = pem.get("sample_paragraphs") or []
                 if samples:
-                    em_lines.append("- 양식 본래 sample (원본 — 마커 + 강조 markup 그대로):")
-                    for sp in samples[:3]:
+                    # 여러 부모의 sample을 골고루 보여줘 마커 reset 패턴이 잘 보이도록.
+                    # parent_idx별로 그룹화해서 부모 변화가 sample에 포함되게.
+                    from collections import OrderedDict
+                    _by_parent = OrderedDict()
+                    for sp in samples:
+                        pkey = sp.get("parent_idx")
+                        _by_parent.setdefault(pkey, []).append(sp)
+                    # 부모별로 최대 2개씩, 부모 3개까지
+                    _picked = []
+                    for pkey, pl in list(_by_parent.items())[:3]:
+                        _picked.extend(pl[:2])
+                    em_lines.append("- 양식 본래 sample (원본 — 마커 + 강조 markup + 부모 정보):")
+                    for sp in _picked:
                         ann = (sp.get("annotated_text") or "").strip()
+                        pidx_v = sp.get("parent_idx")
                         if ann:
-                            em_lines.append(f"    - {ann}")
-                    em_lines.append("    ↑ 위 분할 패턴(단편 수·길이·base/강조 분포)을 모방하세요.")
+                            em_lines.append(f"    - parent={pidx_v}: {ann}")
+                    em_lines.append(
+                        "    ↑ 위 분할 패턴(단편 수·길이·base/강조 분포)을 모방하세요.\n"
+                        "    **마커 시퀀스는 parent가 바뀌면 새로 1번부터 시작합니다** "
+                        "(예: parent=A 아래 󰊱, 󰊲, 󰊳 → parent=B 아래 다시 󰊱, 󰊲, ...). "
+                        "양식 sample의 parent 그룹을 보고 reset 패턴을 그대로 따라가세요."
+                    )
         if em_lines:
             emphasis_text = (
                 "## 강조 layer 가이드 (role별)\n"
