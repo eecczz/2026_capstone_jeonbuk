@@ -12386,7 +12386,7 @@ ADAPTATION_DEGREES_LEGACY = ("none", "small", "medium", "large")  # 호환
 
 def build_source_inventory_prompt(
     broad_source: str,
-    max_source_chars: int = 30000,
+    max_source_chars: int = 0,
 ) -> list[dict]:
     """13.7c: source inventory 추출 prompt 생성.
 
@@ -12399,11 +12399,13 @@ def build_source_inventory_prompt(
 
     Returns: messages list (system + user)
     """
-    _truncated = (broad_source or "")[:max_source_chars]
-    _truncated_note = (
-        f"\n\n(주의: source가 길어 앞 {max_source_chars}자만 표시)"
-        if len(broad_source or "") > max_source_chars else ""
-    )
+    # max_source_chars 0/None이면 자르지 않음 — source 전체 사용
+    if max_source_chars and len(broad_source or "") > max_source_chars:
+        _truncated = (broad_source or "")[:max_source_chars]
+        _truncated_note = f"\n\n(주의: source가 길어 앞 {max_source_chars}자만 표시)"
+    else:
+        _truncated = broad_source or ""
+        _truncated_note = ""
 
     system_msg = (
         "당신은 source 문서에서 사용 가능한 evidence inventory를 정리하는 도구입니다. "
@@ -12532,7 +12534,7 @@ def build_adaptation_plan_prompt(
     source_inventory: dict,
     chapter_inputs: list[dict],
     broad_source_preview: str = "",
-    max_source_preview_chars: int = 10000,
+    max_source_preview_chars: int = 0,
 ) -> list[dict]:
     """13.7e: chapter mapping batch prompt (template-flow / source-surface 원칙).
 
@@ -12559,7 +12561,12 @@ def build_adaptation_plan_prompt(
             "local_catalog_summary": ch.get("local_catalog_summary", ""),
         })
 
-    _src_preview = (broad_source_preview or "")[:max_source_preview_chars]
+    # max_source_preview_chars 0/None이면 자르지 않음 — source 전체 사용
+    _src_preview = (
+        (broad_source_preview or "")[:max_source_preview_chars]
+        if max_source_preview_chars
+        else (broad_source_preview or "")
+    )
 
     system_msg = (
         "당신은 template chapter 구조에 source 내용을 배치하고, "
