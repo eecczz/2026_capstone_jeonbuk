@@ -1117,16 +1117,13 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
     return {"xml": result, "removed_indices": removed_indices, "idx_map": idx_map}
 
 
-def pdf_to_text(pdf_path: str, max_chars: int = 50000) -> str:
+def pdf_to_text(pdf_path: str, max_chars: int = 0) -> str:
     """
     pdftotext를 사용하여 PDF에서 텍스트를 추출합니다.
 
     Args:
         pdf_path: PDF 파일 경로
-        max_chars: 최대 반환 문자 수
-
-    Returns:
-        추출된 텍스트 (max_chars 초과 시 잘림)
+        max_chars: 최대 반환 문자 수. 0 또는 None이면 자르지 않음.
     """
     import subprocess
 
@@ -1140,13 +1137,78 @@ def pdf_to_text(pdf_path: str, max_chars: int = 50000) -> str:
         raise RuntimeError(f"pdftotext 실패: {result.stderr}")
 
     text = result.stdout.strip()
-    if len(text) > max_chars:
+    if max_chars and len(text) > max_chars:
         text = text[:max_chars] + f"\n\n... (총 {len(result.stdout):,}자 중 {max_chars:,}자만 포함)"
         log.info(f"PDF 텍스트 축소: {len(result.stdout):,}자 → {max_chars:,}자")
     else:
         log.info(f"PDF 텍스트 추출: {len(text):,}자")
 
     return text
+
+
+def hwpx_to_text(hwpx_path: str, max_chars: int = 0) -> str:
+    """
+    HWPX 파일에서 paragraph 텍스트만 추출합니다 (XML/스타일 제외).
+
+    소스로 사용할 HWPX를 본문 흐름 텍스트로 환원. 표 셀 안의 paragraph도
+    별도 줄로 포함. lineBreak는 줄바꿈, tab은 탭으로 변환.
+
+    Args:
+        hwpx_path: HWPX 파일 경로
+        max_chars: 최대 반환 문자 수. 0 또는 None이면 자르지 않음.
+    """
+    paragraphs: list[str] = []
+    buf: list[str] = []
+
+    def _flush():
+        s = "".join(buf).strip()
+        if s:
+            paragraphs.append(s)
+        buf.clear()
+
+    def _walk(elem):
+        tag = elem.tag
+        if not isinstance(tag, str):
+            for ch in elem:
+                _walk(ch)
+            return
+        if tag == f"{NS_HP}p":
+            _flush()
+            for ch in elem:
+                _walk(ch)
+            _flush()
+            return
+        if tag == f"{NS_HP}t":
+            if elem.text:
+                buf.append(elem.text)
+        elif tag == f"{NS_HP}lineBreak":
+            buf.append("\n")
+        elif tag == f"{NS_HP}tab":
+            buf.append("\t")
+        for ch in elem:
+            _walk(ch)
+
+    with zipfile.ZipFile(hwpx_path, "r") as zf:
+        section_names = sorted(
+            n for n in zf.namelist()
+            if "section" in n.lower() and n.endswith(".xml")
+        )
+        for name in section_names:
+            try:
+                root = etree.fromstring(zf.read(name))
+            except etree.XMLSyntaxError as e:
+                log.warning(f"HWPX 텍스트 추출 — {name} 파싱 실패: {e}")
+                continue
+            _walk(root)
+            _flush()
+
+    full = "\n".join(paragraphs)
+    if max_chars and len(full) > max_chars:
+        truncated = full[:max_chars] + f"\n\n... (총 {len(full):,}자 중 {max_chars:,}자만 포함)"
+        log.info(f"HWPX 텍스트 축소: {len(full):,}자 → {max_chars:,}자")
+        return truncated
+    log.info(f"HWPX 텍스트 추출: {len(full):,}자 (paragraph {len(paragraphs)}개)")
+    return full
 
 
 def split_source_by_chapters(
@@ -6611,6 +6673,7 @@ def extract_paragraph_emphasis_map(
     hwpx_source,
     paragraphs: list[dict],
     idx_full_texts: dict | None = None,
+    debug_trace: dict | None = None,
 ) -> dict:
     """
     Stage 11.2b 보조 (code only — AI 호출 X):
@@ -6659,38 +6722,67 @@ def extract_paragraph_emphasis_map(
     from hwpx.document import HwpxDocument
     import io as _io
 
-    if isinstance(hwpx_source, str):
-        doc = HwpxDocument.open(hwpx_source)
-    elif isinstance(hwpx_source, (bytes, bytearray)):
-        doc = HwpxDocument.open(_io.BytesIO(hwpx_source))
-    else:
-        doc = HwpxDocument.open(hwpx_source)
+    _dbg = debug_trace if isinstance(debug_trace, dict) else {}
+    _dbg["input_paragraphs_count"] = len(paragraphs) if paragraphs else 0
+    _dbg["input_idx_full_texts_count"] = len(idx_full_texts) if idx_full_texts else 0
+    _dbg["hwpx_source_type"] = type(hwpx_source).__name__
+
+    try:
+        if isinstance(hwpx_source, str):
+            doc = HwpxDocument.open(hwpx_source)
+        elif isinstance(hwpx_source, (bytes, bytearray)):
+            doc = HwpxDocument.open(_io.BytesIO(hwpx_source))
+        else:
+            doc = HwpxDocument.open(hwpx_source)
+        _dbg["open_ok"] = True
+    except Exception as _open_e:
+        _dbg["open_ok"] = False
+        _dbg["open_error"] = f"{type(_open_e).__name__}: {_open_e}"
+        return {}
 
     # paragraph idx → cluster_id (structure 기준; 1a paragraph.idx — 재할당된 0~N sequential)
     idx_to_cluster = {p.get("idx"): p.get("role", "") for p in paragraphs if p.get("role")}
+    _dbg["idx_to_cluster_count"] = len(idx_to_cluster)
+    _dbg["distinct_cluster_count"] = len(set(idx_to_cluster.values()))
+    _dbg["paragraphs_sample"] = [
+        {"idx": p.get("idx"), "role": p.get("role", "")}
+        for p in (paragraphs or [])[:3]
+    ]
 
     # 양식 zip top-level p 수집 (raw — charPr 보존)
     xml_p_elements: list = []
     xml_p_texts: list = []
+    _sec_count = 0
+    _sec_attr_err = 0
     for section in doc.sections:
+        _sec_count += 1
         try:
             sec_elem = section.element
         except AttributeError:
+            _sec_attr_err += 1
             continue
         for p_elem in sec_elem.findall(f"{NS_HP}p"):
             xml_p_elements.append(p_elem)
             text = "".join(t.text or "" for t in p_elem.iter(f"{NS_HP}t"))
             xml_p_texts.append(text)
+    _dbg["section_count"] = _sec_count
+    _dbg["section_attr_error_count"] = _sec_attr_err
+    _dbg["xml_top_p_count"] = len(xml_p_elements)
+    _dbg["xml_top_p_text_samples"] = [t[:60] for t in xml_p_texts[:5]]
 
     # 1a paragraph.idx → xml top-level p index 매핑 (13.7b 검증 helper 활용)
     if idx_full_texts:
         ai_to_xml = _build_1a_to_xml_p_idx_mapping(idx_full_texts, xml_p_texts)
+        _dbg["mapping_path"] = "by_idx_full_texts"
     else:
         # idx_full_texts 미제공 fallback — sequential 가정 (정확도 떨어짐)
         log.warning("[11.2b] idx_full_texts not provided — using sequential fallback (idx mismatch 위험)")
         ai_to_xml = {i: i for i in range(min(len(paragraphs), len(xml_p_elements)))}
+        _dbg["mapping_path"] = "sequential_fallback"
     # 역방향 매핑 (xml idx → 1a idx)
     xml_to_ai = {xml_idx: ai_idx for ai_idx, xml_idx in ai_to_xml.items()}
+    _dbg["ai_to_xml_count"] = len(ai_to_xml)
+    _dbg["ai_to_xml_samples"] = dict(list(ai_to_xml.items())[:5])
 
     # cluster별 통계 + per-paragraph segment list
     cluster_charpr_seg_count: dict = defaultdict(Counter)   # cluster → cp → seg_count
@@ -6700,12 +6792,22 @@ def extract_paragraph_emphasis_map(
     cluster_multi_para_count = Counter()
     cluster_paragraph_segments: dict = defaultdict(list)  # cluster → list of (ai_idx, [(cp, text), ...])
 
+    _n_xml_visited = 0
+    _n_no_ai_idx = 0
+    _n_no_cluster = 0
+    _n_no_segments = 0
+    _n_kept = 0
+    _n_multi_para = 0
+    _n_single_para = 0
     for xml_idx, p_elem in enumerate(xml_p_elements):
+        _n_xml_visited += 1
         ai_idx = xml_to_ai.get(xml_idx)
         if ai_idx is None:
+            _n_no_ai_idx += 1
             continue  # 1a 분석 제외된 paragraph
         cluster_id = idx_to_cluster.get(ai_idx, "")
         if not cluster_id:
+            _n_no_cluster += 1
             continue
         cluster_total_para[cluster_id] += 1
 
@@ -6723,9 +6825,15 @@ def extract_paragraph_emphasis_map(
             segments.append((cp, text))
 
         if not segments:
+            _n_no_segments += 1
             continue
+        _n_kept += 1
 
         distinct_cps = set(cp for cp, _ in segments)
+        if len(distinct_cps) >= 2:
+            _n_multi_para += 1
+        else:
+            _n_single_para += 1
 
         # 통계 (모든 paragraph 반영 — 단일 cp paragraph도 base 판정 hint)
         for cp, text in segments:
@@ -6739,6 +6847,22 @@ def extract_paragraph_emphasis_map(
             cluster_paragraph_segments[cluster_id].append(
                 (ai_idx, segments)
             )
+
+    _dbg["xml_visited_count"] = _n_xml_visited
+    _dbg["skipped_no_ai_idx"] = _n_no_ai_idx
+    _dbg["skipped_no_cluster"] = _n_no_cluster
+    _dbg["skipped_no_segments"] = _n_no_segments
+    _dbg["kept_paragraph_count"] = _n_kept
+    _dbg["multi_charpr_paragraph_count"] = _n_multi_para
+    _dbg["single_charpr_paragraph_count"] = _n_single_para
+    _dbg["cluster_charpr_distribution"] = {
+        cid: {"distinct_charpr_count": len(cnt), "total_segments": sum(cnt.values())}
+        for cid, cnt in cluster_charpr_seg_count.items()
+    }
+    _n_gate_pass = sum(1 for cnt in cluster_charpr_seg_count.values() if len(cnt) >= 2)
+    _n_gate_skip = sum(1 for cnt in cluster_charpr_seg_count.values() if len(cnt) < 2)
+    _dbg["gate_pass_cluster_count"] = _n_gate_pass
+    _dbg["gate_skip_cluster_count"] = _n_gate_skip
 
     # cluster 안 글꼴 종류 1종뿐인 cluster는 entry 생략 (강조 없음)
     result: dict = {}
@@ -6790,6 +6914,7 @@ def extract_paragraph_emphasis_map(
             "sample_paragraphs": sample_paragraphs,
         }
 
+    _dbg["result_cluster_count"] = len(result)
     return result
 
 
@@ -15912,11 +16037,17 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 - **양식 마커 그대로 사용** — sample 단어가 chapter·본문 의미와 어울릴 때.
   예: 양식 `□`, 양식 `Ⅰ.`, 양식 `[전략1]`을 그대로 둘지.
-- **단어 변경** — 양식 sample 단어가 chapter 의미와 부조화면 같은 형식(괄호·띄어쓰기) 유지하고 단어만 chapter 의미에 맞게 바꿈.
-  예: chapter 제목이 "...핵심 보완과제"인데 양식 마커가 `[전략1]`이면 `[보완과제1]`로 변경.
+- **단어 변경** — 양식 sample 단어가 chapter·본문 의미와 부조화일 때만 같은 형식(괄호·띄어쓰기) 유지하고 단어만 chapter 의미에 맞게 바꿈. 자연스러우면 그대로 두는 게 우선.
   주의: 같은 cluster의 모든 instance는 같은 단어로 통일.
-- **시퀀스 번호** — 같은 cluster의 같은 부모 아래 N번째 instance면 N 부여.
-  양식 sample이 1~3번 보였더라도 출력이 5개면 4·5번도 같은 패턴으로 생성.
+- **시퀀스 번호 — 반드시 부모 단위로 카운트 (강제 룰)**:
+  - 트리에서 자기 `parent_id`가 같은 형제(sibling)들 중에서만 카운트.
+  - 같은 cluster여도 `parent_id`가 다르면 **새로 1부터 시작**.
+  - **위반 금지**: 트리 전체로 통합 카운트 금지. cluster 단위 통합 카운트 금지.
+  - 카운트 절차:
+    1. 자기 `parent_id` 확인.
+    2. 그 `parent_id`를 부모로 가진 같은 cluster 형제들 나열.
+    3. 그 형제 목록에서 자기가 몇 번째인지 = 시퀀스 번호.
+  - 양식 sample 시퀀스가 1~3번만 보였더라도 같은 패턴으로 4·5번 만들어 사용.
 - **마커 없음** — 양식 sample에 마커 없는 cluster는 마커 추가하지 마세요.
 - **이미 마커가 있으면** — text 앞에 마커 비슷한 게 이미 있으면: 적절하면 그대로 유지, 양식 형식과 다르면 양식 형식으로 교체, 마커가 두 개 보이면 하나만 남김.
 
@@ -15931,8 +16062,14 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 - **cluster에 정의되지 않은 layer 사용 금지**.
 - 강조 layer 가이드 없는 role은 markup 안 함.
 
-### 3. 본문 의미 보존
-- text 단어·문장은 의미상 거의 그대로. 마커·강조만 입힘.
+### 3. 들여쓰기 (마커처럼 양식 sample 그대로)
+- 양식 sample의 **앞 공백·탭(들여쓰기)을 그대로 복제**해서 text 머리에 포함.
+- 예: 양식 sample이 `"    1) 토론..."`이면 본문도 `"    "` 4공백으로 시작.
+- 같은 cluster여도 paragraph마다 들여쓰기 다를 수 있음 — 각 paragraph의 본보기 들여쓰기를 봐.
+- 조립 단계는 자식 도구 출력 들여쓰기를 그대로 박음. 코드가 따로 들여쓰기 추가/제거 X.
+
+### 4. 본문 의미 보존
+- text 단어·문장은 의미상 거의 그대로. 마커·강조·들여쓰기만 입힘.
 - 띄어쓰기·구두점 등 양식 형식상 자연스러운 미세 조정만 허용.
 - 새 내용 추가 금지. 단어 의미 변경 금지.
 
@@ -15966,6 +16103,8 @@ def build_section_style_prompt(
     style_profiles: dict | None = None,
     emphasis_layers: dict | None = None,
     paragraph_emphasis_map: dict | None = None,
+    chapter_position: int | None = None,
+    total_chapters: int | None = None,
 ) -> list[dict]:
     """
     2c 호출: 2b 본문 트리 → 마커 + 강조 markup 입힌 트리.
@@ -16112,9 +16251,19 @@ def build_section_style_prompt(
         indent=2,
     )
 
+    # chapter 위치 힌트 (시퀀스 마커 정확성 위해)
+    _pos_hint = ""
+    if chapter_position is not None and total_chapters is not None:
+        _pos_hint = (
+            f"\n**이 chapter는 전체 {total_chapters}개 chapter 중 "
+            f"{chapter_position + 1}번째입니다 (0-based index: {chapter_position}).**\n"
+            f"chapter 시퀀스 마커(Ⅰ/Ⅱ/Ⅲ, 1./2./3., (1)/(2) 등) 부여 시 이 위치 번호를 사용하세요.\n"
+        )
+
     user_text = (
         f"## chapter 의미\n"
-        f"**{chapter_title}** (타입: {chapter_type_name})\n\n"
+        f"**{chapter_title}** (타입: {chapter_type_name})\n"
+        f"{_pos_hint}\n"
         f"## 본문 트리 (2b 결과 — 마커·강조 없음)\n"
         f"```json\n{items_json}\n```\n\n"
         f"## 사용 role 양식 sample (원본 — 마커 + 강조 markup 포함)\n"
@@ -16144,6 +16293,8 @@ async def apply_section_style_to_items(
     paragraph_emphasis_map: dict | None = None,
     ch_idx_for_log: int = 0,
     title_role: str | None = None,
+    chapter_position: int | None = None,
+    total_chapters: int | None = None,
 ) -> tuple[list[dict], str]:
     """2b items + chapter title → 2c 호출 → 마커/강조 입힌 items + 변경된 chapter title.
 
@@ -16214,6 +16365,8 @@ async def apply_section_style_to_items(
             style_profiles=style_profiles,
             emphasis_layers=emphasis_layers,
             paragraph_emphasis_map=paragraph_emphasis_map,
+            chapter_position=chapter_position,
+            total_chapters=total_chapters,
         )
         _dump("prompt_built", {
             "messages_count": len(messages_2c),
@@ -16222,7 +16375,7 @@ async def apply_section_style_to_items(
         llm_content_2c = await call_llm_fn(messages_2c, f"hwpx_section_style_{ch_idx_for_log}")
         _dump("llm_returned", {
             "raw_len": len(llm_content_2c) if llm_content_2c else 0,
-            "raw_preview": (llm_content_2c or "")[:300],
+            "raw_full": (llm_content_2c or ""),
         })
         items_2c = parse_section_style_from_llm(llm_content_2c)
         _dump("parsed", {
@@ -16772,6 +16925,8 @@ async def process_section_fill_result(
     style_profiles: dict | None = None,
     emphasis_layers: dict | None = None,
     paragraph_emphasis_map: dict | None = None,
+    chapter_position: int | None = None,
+    total_chapters: int | None = None,
 ) -> dict:
     """
     2b LLM 응답을 처리합니다: parse → normalize → validate → fallback → grammar validation.
@@ -16842,6 +16997,8 @@ async def process_section_fill_result(
                 paragraph_emphasis_map=paragraph_emphasis_map,
                 ch_idx_for_log=ch_idx,
                 title_role=title_role,
+                chapter_position=chapter_position,
+                total_chapters=total_chapters,
             )
         except Exception as _2c_e:
             log.warning(f"[2c ch_idx={ch_idx}] 적용 실패 — 2b text 그대로: {_2c_e}")
@@ -17004,6 +17161,7 @@ async def process_section_fill_result(
             _grammar_result.success if _grammar_result else True
         ),
         "items_count": len(debug_body_items),
+        "chapter_title": ch_title,  # 2c가 마커/강조 입혀 변경했을 수 있음
     }
 
 
