@@ -15627,6 +15627,43 @@ def _format_pattern_tree(
     return "\n".join(lines)
 
 
+def extract_chapter_template_tree(
+    paragraphs: list[dict],
+    chapter_id: int,
+    include_markers: bool = False,
+) -> str:
+    """양식 paragraphs에서 특정 chapter의 instance 트리를 문자열로 추출.
+
+    텍스트 내용 제외 — cluster role + parent 관계만 표시. 2b prompt에 넣어
+    LLM이 양식의 실제 instance 분포(부모마다 자식 갯수 다른 패턴)를 모방
+    할 수 있게 함.
+
+    Args:
+        paragraphs: structure["paragraphs"]
+        chapter_id: 추출할 chapter id (paragraph.chapter_id 기준)
+        include_markers: True면 marker도 같이 표시 (예: " □")
+
+    Returns:
+        들여쓰기된 트리 문자열 (chapter 안 paragraph 없으면 빈 문자열)
+    """
+    in_chapter = [p for p in paragraphs if p.get("chapter_id") == chapter_id]
+    if not in_chapter:
+        return ""
+    # idx → paragraph
+    by_idx = {p.get("idx"): p for p in in_chapter}
+    # depth 계산 (chapter 안 paragraph 기준 최소 level을 root level로)
+    levels = [p.get("level", 0) for p in in_chapter]
+    base_level = min(levels) if levels else 0
+    lines = []
+    for p in in_chapter:
+        depth = p.get("level", 0) - base_level
+        indent = "  " * max(depth, 0)
+        role = p.get("role", "?")
+        marker = (" " + p.get("marker", "").strip()) if include_markers and p.get("marker") else ""
+        lines.append(f"{indent}- {role}{marker}")
+    return "\n".join(lines)
+
+
 def build_section_fill_prompt(
     chapter_title: str,
     chapter_type_name: str,
@@ -15648,6 +15685,7 @@ def build_section_fill_prompt(
     emphasis_layers: dict | None = None,
     paragraph_emphasis_map: dict | None = None,
     marker_policy_1f: dict | None = None,
+    template_chapter_tree: str = "",
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -15865,12 +15903,25 @@ def build_section_fill_prompt(
     # emphasis_layers / paragraph_emphasis_map 인자는 호환성 위해 받지만 사용 안 함.
     emphasis_text = ""
 
+    # 양식 실제 instance 트리 (chapter 안 paragraph 순서 + parent 관계, 텍스트 X)
+    template_tree_text = ""
+    if template_chapter_tree and template_chapter_tree.strip():
+        template_tree_text = (
+            "## 양식 실제 instance 트리 (이 chapter)\n"
+            "양식의 실제 paragraph 분포입니다. **각 instance마다 자식 갯수가 다를 수 있으니**\n"
+            "양식의 분포 그대로 모방하세요 (cluster 단위 평균이 아니라 instance별 패턴).\n\n"
+            "```\n"
+            f"{template_chapter_tree}\n"
+            "```\n\n"
+        )
+
     user_parts = []
     text_block = (
         f"## 대제목\n"
         f"**{chapter_title}** (타입: {chapter_type_name})\n\n"
         f"## 이 섹션의 role 패턴\n"
         f"아래 패턴에 따라 내용을 배치하세요:\n{pattern_text}\n\n"
+        f"{template_tree_text}"
         f"{format_text}"
         f"{exclusive_text}"
         f"## 사용 가능한 role 상세\n"
