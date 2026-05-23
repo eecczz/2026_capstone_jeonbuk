@@ -15428,19 +15428,6 @@ source는 양식과 다른 도메인일 가능성이 큽니다. source의 자연
 2. source의 관련 내용을 그 갯수만큼 묶거나 나눠서 각 instance에 배치
 3. **source 갯수에 맞춰 양식 갯수(min~max)를 어기는 것 금지**
 
-## role의 성격: 제목 vs 본문
-
-**children이 있는 role = 짧은 제목** (한 줄, 20~40자 내외)
-**children이 없는 말단 role = 실제 본문** (한 문장~여러 문장)
-
-예를 들어 패턴이 task_title → task_detail → sub_detail 이면:
-- task_title: "과제 제목" (짧은 제목)
-- task_detail: "세부 과제 제목" (짧은 한 줄 제목)
-- sub_detail: "실제 실행 내용 상세 설명" (본문)
-
-**하나의 role에 여러 계층의 내용을 합치지 마세요.**
-소스에서 상위 내용과 하위 내용이 함께 있으면, 상위는 부모 role에, 하위는 children role에 분리하세요.
-
 ## ⚠️ chapter title 답습 금지 — 트리 단계 의미 분리
 
 당신이 작성하는 모든 item의 텍스트는 **자기 부모 item의 텍스트와 의미적으로
@@ -15492,24 +15479,10 @@ section_header
 소스에서 ※로 시작하더라도 내용이 주제 설명이면 detail_item일 수 있고,
 소스에서 ㅇ로 시작하더라도 내용이 보충 설명이면 note일 수 있습니다.
 
-## 마커 — 후처리에서 처리
-
-**marker (➊, ➋, ◈, 과제 N, [전략N], □ 등)는 본문에 넣지 마세요.**
-후처리 단계(2c)에서 양식 형식 보고 마커를 입힙니다.
-AI는 marker 없이 **본문 내용만** 출력하세요.
-
-강조 표시(글꼴 색·굵기 등)도 후처리 단계에서 입히니 신경 쓰지 마세요.
-
-## 들여쓰기 — 신경 쓰지 마세요
-
-출력 text에 **앞 공백/탭 넣지 마세요**. 조립 단계에서 자동 부착됩니다.
-
-text 구성: **본문 내용만** (marker, 공백, 들여쓰기 모두 코드가 자동 처리)
-
 ## 텍스트 작성 규칙
 - **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요**
-- **marker(➊, ◈, □, ※, ⇒, *, - 등)도 텍스트에 넣지 마세요** — 코드가 자동 부착
 - 소스의 실제 내용만 작성하세요
+- **양식 sample의 본문 시작 형태(괄호·키워드·문장 시작 등)와 문체·길이를 그대로 모방하세요** — sample이 "`(분석)` ..."로 시작하면 출력도 그 형태로
 
 ## 출력 형식
 
@@ -15545,8 +15518,6 @@ text 구성: **본문 내용만** (marker, 공백, 들여쓰기 모두 코드가
 ## 중요
 - **소스에 없는 내용을 만들어내지 마세요**
 - **하나의 role 항목에는 하나의 계층 내용만** — 여러 계층을 합치지 마세요
-- 양식 샘플과 비슷한 길이/문체를 유지하세요
-- **양식 갯수(min~max)는 source 자연 갯수와 무관하게 지키세요**
 - 반드시 JSON만 출력. 다른 설명 포함 금지
 """
 
@@ -15899,9 +15870,8 @@ def build_section_fill_prompt(
                 + "\n\n"
             )
 
-    # 2c 분리 (2026-05-22): 강조 markup 생성은 2c 책임 — 2b에서는 강조 가이드 박지 않음.
-    # emphasis_layers / paragraph_emphasis_map 인자는 호환성 위해 받지만 사용 안 함.
-    emphasis_text = ""
+    # 2c 분리 (2026-05-22): 강조 markup 생성은 2c 책임 — 2b prompt에 강조 가이드 박지 않음.
+    # emphasis_layers / paragraph_emphasis_map 인자는 호환성 위해 받지만 prompt에 박지 않음.
 
     # 양식 실제 instance 트리 (chapter 안 paragraph 순서 + parent 관계, 텍스트 X)
     template_tree_text = ""
@@ -15927,7 +15897,6 @@ def build_section_fill_prompt(
         f"## 사용 가능한 role 상세\n"
         f"{catalog_text}\n\n"
         f"{style_text}"
-        f"{emphasis_text}"
         f"## 소스 자료\n"
         f"아래 소스에서 **\"{chapter_title}\"** 섹션에 해당하는 내용을 찾아 배치하세요.\n\n"
     )
