@@ -6864,10 +6864,12 @@ def extract_paragraph_emphasis_map(
     _dbg["gate_pass_cluster_count"] = _n_gate_pass
     _dbg["gate_skip_cluster_count"] = _n_gate_skip
 
-    # cluster 안 글꼴 종류 1종뿐인 cluster는 entry 생략 (강조 없음)
+    # 글꼴 종류 1종 cluster도 entry 생성 — base layer 정보(em1)만 채움.
+    # 2c가 base에도 markup 박는 기본 동작으로 변경되어 모든 cluster에 base 정보 필요.
+    # AI batch는 multi_charpr_paragraph_count=0 cluster를 skip (호출자에서 처리).
     result: dict = {}
     for cluster_id, seg_counter in cluster_charpr_seg_count.items():
-        if len(seg_counter) < 2:
+        if not seg_counter:
             continue
 
         # layer 부여 (빈도 내림차순, 동률 시 charpr id 사전순 — 결정적)
@@ -16054,13 +16056,13 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 ### 2. 강조 markup 입히기 (item마다)
 그 role의 강조 layer 가이드 + 양식 sample 분할 패턴 보고:
 
-- **base layer**는 markup 안 함 — 일반 텍스트로 작성.
-- **강조 layer**는 `[[emN]]segment[[/emN]]`로 감쌈. 적용 조건(가이드의 rule)에 맞는 segment에만.
-- **짝 맞춤 강제** — 여는 `[[emN]]`과 닫는 `[[/emN]]`은 반드시 같은 N. 다른 N으로 닫지 마세요.
+- **모든 segment는 markup으로 감쌈** — base든 강조든 예외 없음.
+  - **base layer**도 `[[base_layer_id]]segment[[/base_layer_id]]`로 감쌉니다 (가이드의 base layer id 사용).
+  - **강조 layer**는 `[[emN]]segment[[/emN]]`로 감쌉니다.
+- **짝 맞춤 강제** — 여는 `[[emN]]`과 닫는 `[[/emN]]`은 반드시 같은 N. 다른 N으로 닫지 마세요. 짝 없는 단독 marker 출력 금지.
 - **양식 분할 패턴 모방** — sample이 `[[em1]]X[[/em1]] [[em2]]Y[[/em2]] [[em1]]Z[[/em1]]` 같이 다중 단편이면 본문도 비슷한 단편 수·길이·base/강조 분포로.
-- 본문 전체를 단일 `[[em]]...[[/em]]`로 감싸지 마세요 (sample이 단일 묶음일 때만).
+- 본문 전체를 단일 `[[base_layer_id]]...[[/base_layer_id]]`로 감싸도 OK — cluster가 단일 글꼴이면 자연스럽게 그 형태.
 - **cluster에 정의되지 않은 layer 사용 금지**.
-- 강조 layer 가이드 없는 role은 markup 안 함.
 
 ### 3. 들여쓰기 (마커처럼 양식 sample 그대로)
 - 양식 sample의 **앞 공백·탭(들여쓰기)을 그대로 복제**해서 text 머리에 포함.
@@ -16179,11 +16181,12 @@ def build_section_style_prompt(
         for role_name in sorted(used_roles):
             em = emphasis_layers.get(role_name) or {}
             ems_list = em.get("emphasis_layers") or []
-            if not ems_list:
-                continue
             base_lid = em.get("base_layer_id", "")
+            # 글꼴 1종 cluster (강조 없음)도 base 정보 명시 — 2c가 base에도 markup 박도록.
+            if not base_lid and not ems_list:
+                continue
             em_lines.append(f"\n### {role_name}")
-            em_lines.append(f"- base: `{base_lid}` (markup 안 함, 일반 텍스트)")
+            em_lines.append(f"- base layer: `{base_lid}` — 이 layer로 base segment 감쌈 (`[[{base_lid}]]...[[/{base_lid}]]`)")
             for layer in ems_list:
                 lid = layer.get("layer_id", "")
                 rules = layer.get("rules_for_generation") or []

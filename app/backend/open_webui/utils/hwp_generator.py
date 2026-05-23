@@ -1725,12 +1725,41 @@ def assemble_hwpx_hybrid(
                                 _anchor_el.append(_new_run)
                             _exemplar_run_swap_applied = True
 
-                    # 2c output 그대로 박음 (마커/강조 이미 입혀짐)
-                    _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
+                    # 2c output 박기 — 강조 markup 있으면 본문 path와 동일 매커니즘
+                    # (markup 파싱 + 양식 글꼴 적용). 없으면 단일 텍스트.
+                    _ct_em_data = (emphasis_layers or {}).get(_title_role_for_anchor) or {}
+                    _ct_charpr_map: dict = {}
+                    _ct_valid_layers: set = set()
+                    if _ct_em_data:
+                        _base_cp_ct = _ct_em_data.get("base_charpr_id", "") or ""
+                        _base_lid_ct = _ct_em_data.get("base_layer_id", "") or ""
+                        _ct_charpr_map["base"] = _base_cp_ct
+                        # 2c가 base에도 markup 박는 기본 동작 — base_layer_id도 valid_layers에 추가
+                        if _base_lid_ct and _base_cp_ct:
+                            _ct_charpr_map[_base_lid_ct] = _base_cp_ct
+                            _ct_valid_layers.add(_base_lid_ct)
+                        for _el in (_ct_em_data.get("emphasis_layers") or []):
+                            _lid = _el.get("layer_id", "") or ""
+                            _cp = _el.get("charpr_id", "") or ""
+                            if _lid and _cp:
+                                _ct_charpr_map[_lid] = _cp
+                                _ct_valid_layers.add(_lid)
+                    _ct_segments = (
+                        _parse_emphasis_markup(_ad_text_with_marker, _ct_valid_layers)
+                        if _ct_valid_layers else []
+                    )
+                    _ct_has_em = any(s[0] is not None for s in _ct_segments)
+                    if _ct_valid_layers and _ct_has_em:
+                        _replace_text_with_emphasis_segments(
+                            _anchor_el, "", _ct_segments, _ct_charpr_map, NS,
+                        )
+                    else:
+                        _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
                     _adapted_title_applied = True
                     log.info(
                         f"[chapter title body-path-unified ci={ci}] applied "
-                        f"(action={_ad_action}, exemplar_swap={_exemplar_run_swap_applied}): "
+                        f"(action={_ad_action}, exemplar_swap={_exemplar_run_swap_applied}, "
+                        f"em_segments={len(_ct_segments)}, has_em={_ct_has_em}): "
                         f"'{_anchor_text_preview[:50]}' → '{_ad_text_with_marker[:50]}'"
                     )
                 except Exception as _adapt_e:
@@ -2647,20 +2676,12 @@ def assemble_hwpx_hybrid(
                         section_elem.append(_blank_copy)
                         _elem_to_section[_blank_copy] = section_elem
 
-        # ── format_rules 적용: AI 앞공백 제거 후 indent_parts로 재구성 ──
-        fmt = format_rules.get(role, {})
-        indent_parts = fmt.get("indent_parts", [])
-        clean_text = text.lstrip(" \t")
-
-        # 공백은 t.text에 prepend, tab은 <hp:tab/> 요소로 삽입
-        space_prefix = ""
-        num_tabs = 0
-        for part in indent_parts:
-            ptype = part.get("type") if isinstance(part, dict) else None
-            if ptype == "tab":
-                num_tabs += 1
-            elif ptype == "space":
-                space_prefix += " " * int(part.get("count", 0) or 0)
+        # 2c가 들여쓰기까지 책임 (2026-05-22): 자식 도구가 양식 sample 들여쓰기
+        # 그대로 따라 출력. 조립은 그 들여쓰기를 보존만 함. format_rules.indent_parts
+        # 강제 무시 — cluster 단위 평균/첫값이 paragraph 다양성과 안 맞는 문제 해결.
+        clean_text = text  # lstrip 안 함 — 자식 도구 들여쓰기 보존
+        space_prefix = ""  # 코드 들여쓰기 추가 안 함
+        num_tabs = 0       # tab 추가 안 함
 
         # exemplar 복제
         new_elem = deepcopy(exemplars[role])
@@ -2686,7 +2707,13 @@ def assemble_hwpx_hybrid(
                 _body_charpr_map: dict = {}
                 _body_valid_layers: set = set()
                 if _body_cluster_em:
-                    _body_charpr_map["base"] = _body_cluster_em.get("base_charpr_id", "") or ""
+                    _base_cp_body = _body_cluster_em.get("base_charpr_id", "") or ""
+                    _base_lid_body = _body_cluster_em.get("base_layer_id", "") or ""
+                    _body_charpr_map["base"] = _base_cp_body
+                    # 2c가 base에도 markup 박는 기본 동작 — base_layer_id도 valid_layers에 추가
+                    if _base_lid_body and _base_cp_body:
+                        _body_charpr_map[_base_lid_body] = _base_cp_body
+                        _body_valid_layers.add(_base_lid_body)
                     for _el in (_body_cluster_em.get("emphasis_layers") or []):
                         _lid = _el.get("layer_id", "") or ""
                         _cp = _el.get("charpr_id", "") or ""
@@ -3330,6 +3357,14 @@ def _parse_emphasis_markup(text: str, valid_layer_ids: set | None = None) -> lis
     if cursor < len(text):
         segments.append((None, text[cursor:]))
 
+    # 안전망: None segment 안에 남은 단독 [[emN]] / [[/emN]] strip
+    # (LLM이 open/close 짝을 안 맞춰 출력한 경우 markup 문자가 본문에 박히는 것 방지)
+    _orphan_marker = _re.compile(r'\[\[/?em\d+\]\]')
+    segments = [
+        (layer, (_orphan_marker.sub('', t) if layer is None and t else t))
+        for layer, t in segments
+    ]
+
     # 빈 segment 제거 (단 segments 비면 None entry 1개 유지)
     segments = [s for s in segments if s[1]]
     if not segments:
@@ -3423,13 +3458,10 @@ def _replace_text_with_emphasis_segments(
                     new_t.text = seg_text
                     run_parent.insert(insert_idx, new_run)
                     insert_idx += 1
-        # 나머지 t 비움 — content_t 앞 공백/탭 only는 들여쓰기 자리로 보존
-        c_idx = t_elems.index(content_t)
-        for i, t in enumerate(t_elems):
+        # 나머지 t 모두 비움 — 자식 도구가 들여쓰기까지 출력하므로 본보기 들여쓰기 자리
+        # 보존하면 중복 발생. 들여쓰기 책임이 자식 도구한테 일임된 상태.
+        for t in t_elems:
             if t is content_t:
-                continue
-            is_ws_only = not (t.text or "").strip()
-            if is_ws_only and i < c_idx:
                 continue
             t.text = ""
             for child in list(t):
