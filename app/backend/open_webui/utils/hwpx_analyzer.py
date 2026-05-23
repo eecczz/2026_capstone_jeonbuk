@@ -12620,11 +12620,16 @@ def build_adaptation_plan_prompt(
     _header_brief = []
     for _h in (header_roles or []):
         if isinstance(_h, dict):
-            _header_brief.append({
+            _entry = {
                 "role": _h.get("role", ""),
                 "description": _h.get("description", ""),
                 "template_sample": _h.get("template_sample", ""),
-            })
+            }
+            # 양식 paragraph의 t별 charPr+text 분포 (있으면 LLM이 폰트 보존하며 text 결정)
+            _tp = _h.get("template_parts")
+            if isinstance(_tp, list) and _tp:
+                _entry["template_parts"] = _tp
+            _header_brief.append(_entry)
         elif isinstance(_h, str):
             _header_brief.append({"role": _h, "description": "", "template_sample": ""})
     _header_block = (
@@ -12831,7 +12836,10 @@ def build_adaptation_plan_prompt(
         "    }\n"
         "  ],\n"
         '  "header": {\n'
-        '    "<header_role_name>": "source에서 이 슬롯에 들어갈 값 (제목/날짜/기관 등). [header_roles]의 각 role에 대해 채움. 없으면 빈 문자열."\n'
+        '    "<header_role_name>": "값 (두 형태 중 하나):\\n'
+        '      - 단일 문자열: \\"새 텍스트\\" (template_parts 없는 경우)\\n'
+        '      - parts list: [{\\"charPrIDRef\\": \\"양식 charPr 그대로\\", \\"text\\": \\"새 텍스트\\"}, ...]\\n'
+        '        (template_parts 있는 경우 — 같은 parts 수 + 같은 charPrIDRef 순서로 출력)"\n'
         "  },\n"
         '  "toc_replacements": [\n'
         '    {"from": "양식 TOC text의 원본 substring", "to": "교체할 새 텍스트"}\n'
@@ -12849,7 +12857,14 @@ def build_adaptation_plan_prompt(
         "- **그 외 role** (날짜·기관 등): source에서 정확한 값을 그대로 추출. 양식 형식 모방 X.\n"
         "- 보안등급/분류표시(예: 대외비)는 제목·날짜·기관 슬롯에 넣지 X.\n"
         "- source에 해당 슬롯에 맞는 값이 없으면 빈 문자열 \"\" (양식 원본 보존).\n"
-        "- [header_roles]가 비어있거나 입력에 없으면 \"header\": {} 빈 객체로 출력.\n\n"
+        "- [header_roles]가 비어있거나 입력에 없으면 \"header\": {} 빈 객체로 출력.\n"
+        "- **template_parts (t별 폰트 분포) 처리**:\n"
+        "  - template_parts가 있으면 각 part가 양식의 다른 글꼴 영역 (예: 큰 제목 vs 부제).\n"
+        "  - 출력은 같은 parts 갯수 + 같은 charPrIDRef 순서로 list 형태.\n"
+        "  - 각 part의 text는 그 글꼴 영역에 맞는 새 텍스트 (양식 sample의 의미·구조 유지).\n"
+        "  - 예: template_parts=[{charPrIDRef:13, text:'2024년 추진계획'}, {charPrIDRef:20, text:'- 부제 -'}]\n"
+        "    → output: [{charPrIDRef:'13', text:'2025년 새계획'}, {charPrIDRef:'20', text:'- 새 부제 -'}]\n"
+        "  - template_parts 없으면 단일 문자열로 출력.\n\n"
         "toc_replacements 규칙:\n"
         "- [template_toc_text] 가 입력에 있으면 양식 TOC text 안 substring 교체 list를 만드세요.\n"
         "- **chapter title 부분** (양식 chapter 원본 제목과 매칭): adapted_title로 교체.\n"
@@ -13045,9 +13060,29 @@ def parse_adaptation_plan_from_llm(
         }
 
     # 옛 2a 흡수: header 슬롯 추출
+    # value는 두 형태:
+    #   - str: 단일 텍스트 (template_parts 없는 경우)
+    #   - list[{charPrIDRef, text}]: t별 분배 (template_parts 있는 경우)
     _hdr = _parsed.get("header")
     if isinstance(_hdr, dict):
-        _result["header"] = {str(k): ("" if v is None else str(v)) for k, v in _hdr.items()}
+        _clean_hdr = {}
+        for _k, _v in _hdr.items():
+            _key = str(_k)
+            if isinstance(_v, list):
+                # parts list
+                _parts = []
+                for _p in _v:
+                    if isinstance(_p, dict):
+                        _parts.append({
+                            "charPrIDRef": str(_p.get("charPrIDRef") or ""),
+                            "text": "" if _p.get("text") is None else str(_p.get("text")),
+                        })
+                _clean_hdr[_key] = _parts
+            elif _v is None:
+                _clean_hdr[_key] = ""
+            else:
+                _clean_hdr[_key] = str(_v)
+        _result["header"] = _clean_hdr
     else:
         _result["header"] = {}
 
@@ -14733,6 +14768,57 @@ def build_chapter_local_exemplars(
             chapter_obj_idx += 1
 
     return result
+
+
+def extract_paragraph_run_parts(
+    hwpx_source,
+    paragraph_real_idx: int,
+) -> list:
+    """양식 paragraph의 run/t 분포를 (charPrIDRef + text) parts list로 분해.
+
+    header 영역(예: 표지 제목 박스)이 양식에서 여러 charPr로 분리된 경우
+    이 분해 결과를 LLM에 보내 t별 폰트 보존하면서 새 텍스트 생성.
+
+    Args:
+        hwpx_source: 양식 파일 경로 또는 bytes
+        paragraph_real_idx: doc.paragraphs 기준 idx (양식 raw XML top-level p 순번)
+
+    Returns:
+        [{"charPrIDRef": str, "text": str}, ...] (text 비어있는 t는 제외)
+        paragraph 없거나 추출 실패 시 빈 list.
+    """
+    import zipfile as _zf
+    parts: list = []
+    try:
+        if isinstance(hwpx_source, str):
+            with open(hwpx_source, "rb") as f:
+                data = f.read()
+        elif isinstance(hwpx_source, bytes):
+            data = hwpx_source
+        else:
+            data = hwpx_source.read()
+        with _zf.ZipFile(io.BytesIO(data)) as zf:
+            section_names = sorted(
+                n for n in zf.namelist()
+                if "section" in n.lower() and n.endswith(".xml")
+            )
+            all_top_ps = []
+            for s in section_names:
+                root = etree.fromstring(zf.read(s))
+                for p in root.findall(f"{NS_HP}p"):
+                    all_top_ps.append(p)
+            if paragraph_real_idx < 0 or paragraph_real_idx >= len(all_top_ps):
+                return []
+            p_elem = all_top_ps[paragraph_real_idx]
+            for run in p_elem.findall(f"{NS_HP}run"):
+                cp = run.get("charPrIDRef", "0")
+                text = "".join(t.text or "" for t in run.findall(f"{NS_HP}t"))
+                if text:
+                    parts.append({"charPrIDRef": cp, "text": text})
+    except Exception as e:
+        log.warning(f"extract_paragraph_run_parts 실패 (idx={paragraph_real_idx}): {e}")
+        return []
+    return parts
 
 
 def extract_section_xml_paragraph_texts(hwpx_path: str, section_name: str) -> list:

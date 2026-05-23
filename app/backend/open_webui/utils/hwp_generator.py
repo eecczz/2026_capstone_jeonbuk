@@ -1330,8 +1330,8 @@ def assemble_hwpx_hybrid(
             role_to_first_idx[role] = _to_real_idx(p.get("idx", -1))
 
     header_indices = set()
-    for role_name, text in header_data.items():
-        if not text:
+    for role_name, val in header_data.items():
+        if not val:
             continue
         real_idx = role_to_first_idx.get(role_name, -1)
         if real_idx < 0 or real_idx >= len(doc.paragraphs):
@@ -1339,8 +1339,50 @@ def assemble_hwpx_hybrid(
             continue
         header_indices.add(real_idx)
         try:
-            _set_element_text(doc.paragraphs[real_idx], text, NS)
-            success_count += 1
+            if isinstance(val, list):
+                # parts list — 양식 t별 charPr 보존하면서 텍스트만 교체
+                _p_elem = doc.paragraphs[real_idx].element
+                _runs = _p_elem.findall(f"{NS}run")
+                # 각 part의 charPrIDRef와 일치하는 run의 t.text 교체
+                # 매칭 순서: parts 순서대로 + run 순서대로. charPr 매칭 시도 후 fallback 순서.
+                _used_runs = set()
+                for _pi, _part in enumerate(val):
+                    if not isinstance(_part, dict):
+                        continue
+                    _cp = str(_part.get("charPrIDRef") or "")
+                    _text = str(_part.get("text") or "")
+                    # 1) charPr 매칭되는 run (아직 안 쓴 거)
+                    _target_run = None
+                    for _ri, _run in enumerate(_runs):
+                        if _ri in _used_runs:
+                            continue
+                        if _run.get("charPrIDRef", "") == _cp:
+                            _target_run = _run
+                            _used_runs.add(_ri)
+                            break
+                    # 2) fallback: 순서대로 안 쓴 run
+                    if _target_run is None and _pi < len(_runs) and _pi not in _used_runs:
+                        _target_run = _runs[_pi]
+                        _used_runs.add(_pi)
+                    if _target_run is None:
+                        continue
+                    # run 안 t들 — 첫 t에 text 박고 나머지 t 비움
+                    _ts = _target_run.findall(f"{NS}t")
+                    if _ts:
+                        _ts[0].text = _text
+                        for _t in _ts[1:]:
+                            _t.text = ""
+                # 사용 안 된 run들의 t 비우기 (양식 잔여 텍스트 제거)
+                for _ri, _run in enumerate(_runs):
+                    if _ri in _used_runs:
+                        continue
+                    for _t in _run.findall(f"{NS}t"):
+                        _t.text = ""
+                success_count += 1
+            else:
+                # 단일 문자열 — 기존 동작
+                _set_element_text(doc.paragraphs[real_idx], str(val), NS)
+                success_count += 1
         except Exception as e:
             errors.append(f"header({role_name}, idx={real_idx}): {e}")
 
@@ -1391,8 +1433,9 @@ def assemble_hwpx_hybrid(
 
     # header role indices (header_data에서 text 배정된 role의 real idx)
     _header_role_indices: set[int] = set()
-    for rn, txt in header_data.items():
-        if txt:
+    for rn, val in header_data.items():
+        # val은 str 또는 list (parts) — 둘 다 truthy면 포함
+        if val:
             ridx = role_to_first_idx.get(rn, -1)
             if 0 <= ridx < len(doc.paragraphs):
                 _header_role_indices.add(ridx)
