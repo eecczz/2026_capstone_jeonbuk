@@ -3090,115 +3090,114 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 ## 핵심 목적
 
 이 단계는 **grammar/rule extraction (1f) 용 structural node type clustering** 입니다.
-의미 분류(semantic taxonomy) 가 아닙니다.
-
-같은 cluster의 paragraph들은 1f에서 grammar/rule 추출 시 **같은 노드 종류**로 취급됩니다. 따라서:
-- **다른 노드 종류**가 필요할 때만 split
-- 같은 구조 기능이면 semantic sub-genre 가 달라도 merge
 
 ## 임무
 
 확정된 parent_first tree 위에서, 각 paragraph에 **cluster_id (numerical 0, 1, 2, ...)** 를 할당하라.
 
-## 판단 기준 — 구조 패턴
+## 같은 cluster 기준
 
-다음 신호를 종합해서 판단:
+cluster 는 **structural role 단위로 나눈다.**
 
-- **부모 패턴** (강한 신호): 같은 부모 role을 가지는 paragraph 는 같은 cluster 후보. **부모 role이 다르면 hard constraint로 다른 cluster** (자식이 다른 cluster의 부모로 등장하는 일 자체가 불가).
-- **자식 패턴** (약한 hint, 단독 split 금지): 자식 구성이 비슷하면 같은 cluster 후보 가능성 ↑. **단 자식 구성 차이만으로 cluster 분리 X**. optional/repeatable child 때문에 인스턴스마다 자식 수·종류 다른 게 정상. 부모/마커/위계가 같으면 자식 차이 무시하고 통합.
-- **반복 위치 패턴**: 같은 부모 아래에서 **반복적으로 같은 위치/순서/기능**으로 나타나는 paragraph 는 같은 cluster 후보
-  - ⚠️ 단순히 같은 부모를 공유한다는 이유만으로 같은 cluster X
-  - 같은 부모 아래에서도 서로 다른 구조 슬롯이 있을 수 있음 (예: 시퀀스 본체 vs trailing summary)
-- **위계**: tree 위 같은 위계의 같은 역할 paragraph 는 같은 cluster
-- **description**: 의미 보조 신호 (정답 아님)
+paragraph 두 개는 다음 조건을 **모두** 만족할 때만 같은 cluster:
 
-### 서식 신호
+1. **normalized marker** 가 같다 (마커 정규화 후).
+2. **level** 이 같다.
+3. **chapter_partition** 이 같다 (chapter_id).
+4. **부모 paragraph 의 marker / level / structural role** 이 모두 같다.
+5. **같은 부모 구조 안에서 같은 반복 위치 / 기능** 을 가진다.
 
-- **마커 없음 + level 0 + 자식 없음 + 그룹 내 paraPrIDRef가 서로 모두 다름** → 각각 고유 서식의 고정 슬롯이므로 **반드시 별도 클러스터로 분리** (예: 표지의 제목/날짜/기관명은 각각 다른 서식·역할)
-- 그 외: paraPrIDRef가 다르더라도 마커가 같거나 반복 패턴이 보이면 같은 클러스터 가능.
+다음 중 **하나라도 다르면** 다른 cluster:
 
-### 자식 유무·구성 — 단독 split 절대 금지 (hard constraint)
+1. normalized marker
+2. level
+3. chapter_partition
+4. 부모 paragraph 의 marker / level / structural role 중 하나
 
-- ❌ "자식 보유한 인스턴스 vs 자식 없는 인스턴스" 만 보고 다른 cluster 로 split **절대 금지**
-- ❌ "자식 종류·개수가 다르다"만 보고 다른 cluster 로 split **절대 금지** — 같은 역할의 paragraph도 양식 인스턴스마다 자식 다양성 자연스러움 (optional, repeatable, content variability)
-- ✅ optional child 누락으로 인스턴스마다 자식 수 다를 수 있음 — 정상
-- ✅ 자식 종류가 다른 sub-tree 양상이라도 부모 role / marker family / 위계가 같으면 같은 cluster 통합
-- 자식 신호는 **부모/마커/위계가 같은데도 명백히 다른 구조 슬롯**임이 다른 hard 신호(부모 다름 등)로 증명될 때만 split 보조 신호로 쓰임. 단독 X.
+## 처리 순서 — level 낮은 것부터 (parent_first)
+
+cluster 결정은 **양식 트리의 root 부터 자식 순서로** 진행하세요. 즉 level 낮은 paragraph 부터 cluster 결정.
+
+이유: 부모의 cluster 결정이 자식 cluster 결정의 힌트가 됨. 같은 cluster 의 부모 그룹 아래에서 같은 marker / level / 역할을 가진 자식들은 같은 cluster.
+
+순서:
+1. level 0 paragraph 들의 cluster 결정 (대분류 — chapter title 등).
+2. level 1 paragraph 들의 cluster 결정. 부모의 cluster + marker + level + role 확인.
+3. 자식 level 로 내려가면서 동일하게 결정.
+
+**자기 cluster 결정 시 부모 paragraph 의 marker / level / role 비교** — 부모가 같은 구조 (marker/level/role 다 같음) 면 자기는 같은 cluster 후보. 부모 구조 다르면 자기도 다른 cluster.
+
+**보조 신호 (단독으로 split X)**:
+- paraPrIDRef / charPrIDRef
+- child 개수
+- description 의미 차이
+
+→ 위 보조 신호 차이만으로는 분리 X. **단 sibling 위치 / 반복 패턴 / visible style 차이와 함께 안정적으로 나타나면** 다른 structural role 로 보고 split.
+
+## 보조 신호 (분리 결정 시 보조 — 단독으로 분리 X)
+
+- **paraPrIDRef / charPrIDRef** = structural evidence (hard constraint X). 단순 ID 차이 ≠ 구조 차이. 다음 경우만 분리 후보:
+  - paraPrIDRef 차이가 **같은 sibling 위치 / 같은 기능 슬롯에서 반복적으로 결합** 하면 구조 슬롯 신호.
+  - paraPrIDRef 차이가 한두 instance 에만 우연히 나타나면 작성 실수 / 미세 조정 — 통합 가능.
+- **description (의미)** — 형식 신호만 있으면 같은 cluster 라도 description 흐름이 명백히 다른 슬롯 (예: chapter 안 본문 vs trailing summary) 이면 분리 후보. 단 description 만으로 분리 X — 다른 신호와 결합 시.
+- **자식 구성** — 같은 부모/마커/chapter 면 자식 수·종류 차이 무시 (optional/repeatable 정상). 단 자식 구성 + 다른 신호 결합 시 분리 후보.
+
+## 절대 금지
+
+- ❌ 마커 / 부모 / chapter 가 다른데 같은 cluster 로 묶기 — hard 위반.
+- ❌ 단순 paraPrIDRef ID 차이만 보고 분리 — 그 차이가 반복 / 위치 / 기능과 결합 안 되면 잡음.
+- ❌ description 의미 차이만 보고 분리 — 형식 / 위치 / 마커가 같으면 통합.
+- ❌ 1b/1c 가 준 role 이름이 같다고 무조건 같은 cluster, 다르다고 무조건 다른 cluster.
+- ❌ 외부 convention (한국 문서 등) 정답으로 가정.
 
 ## 마커 정규화 규칙 (마커 비교 시 반드시 적용)
 
-- *, **, *** → 모두 같은 마커 "*" (반복 횟수는 depth 표현일 뿐)
-- ➊, ➋, ➌, ➍ → 같은 마커 "➊" (순번만 다름)
+- *, **, *** → 같은 마커 "*"
+- ➊, ➋, ➌ → 같은 마커 "➊"
 - ①, ②, ③ → 같은 마커 "①"
 - 1), 2), 3) → 같은 마커 "1)"
 - 󰊱, 󰊲, 󰊳 → 같은 마커 "󰊱"
-- 마커의 "종류"가 같으면 같은 마커. 번호/반복횟수 차이는 무시.
+- 종류가 같으면 같은 마커. 번호/반복횟수 차이는 무시.
 
-## 절대 원칙 — 양식 무관
+## 표지 / header 특수 슬롯
 
-- ✓ **마커가 다르면 반드시 다른 클러스터** (정규화 후 비교! hard constraint) — *, **는 정규화 후 같은 마커이므로 같은 클러스터 가능. *와 ①는 정규화 후에도 다르므로 반드시 다른 클러스터.
-- ❌ marker 이름이나 marker_family를 cluster 정답으로 보지 말 것 — 단, 정규화 후 마커가 다른 paragraph를 같은 cluster에 넣으면 안 됨
-- ❌ 1b/1c가 준 role 이름이 같다고 같은 cluster, 다르다고 다른 cluster 라고 단정 X
-- ❌ "이 marker 는 보통 X 의미"라는 외부 convention 사전 가정 X
-- ❌ 특정 도메인(한국 문서 등) convention 을 정답으로 보지 말 것
-- ❌ **의미 차이만으로 split 금지** — 같은 구조 기능이면 semantic sub-genre 달라도 merge. 단, 마커가 다르면 이 규칙 적용 불가 (마커 분리가 우선)
-- ✓ 이 양식 자체의 paragraph 데이터 + tree 구조 패턴 에서만 추론
+- **마커 없음 + level 0 + 자식 없음 + 그룹 내 paraPrIDRef 가 서로 모두 다름** → 각각 고유 서식의 고정 슬롯이므로 **반드시 별도 cluster 로 분리** (예: 표지의 제목/날짜/기관명은 각각 다른 서식·역할).
 
-## chapter_id 기준 분리 (chapter 내부 paragraph에만 적용)
+## chapter_id 분리 (자세히)
 
-각 paragraph entry에 `ch=N`이 표시되어 있습니다.
+각 paragraph entry에 `ch=N` 표시:
 - `ch=0, 1, 2, ...`: 양식의 N번째 chapter 안의 paragraph
-- `ch=-1`: chapter 밖 (표지/header/footer/TOC/container/preserve 등)
+- `ch=-1`: chapter 밖 (표지/header/footer/TOC/container/preserve)
 
-### 기본 룰 (chapter **내부** body paragraph)
+각 paragraph entry 에 `is_chapter_root` flag 도 있음 (chapter title paragraph 면 true).
 
-**chapter 내부 body paragraph는 같은 marker / 같은 family / 같은 tree 위치라도 chapter_id가 다르면 다른 cluster로 분리하세요.**
+### 기본 — chapter 내부 body paragraph
+- 다른 chapter_id 면 **다른 cluster** (hard, singleton 생겨도 무조건 분리).
+- chapter 안 body paragraph 와 ch=-1 (표지/header) 끼리도 같은 marker 라도 다른 cluster.
 
-이유: 다른 chapter에 등장하는 body paragraph는 양식 안에서 서로 다른 의미 역할일 수 있습니다.
-- chapter 0의 ◈와 chapter 2의 ◈는 다른 의미 (intro vs strategy 박스 등).
-- chapter 안 body paragraph와 ch=-1 paragraph (표지/header)는 같은 marker라도 다른 cluster.
-
-### 예외 — chapter root (장 제목 paragraph)
-
-각 chapter의 root paragraph (= 그 chapter_id의 첫 paragraph, level 0, 부모가 ch=-1 container 또는 root)는 chapter 경계를 **정의**하는 paragraph입니다. 이런 chapter root끼리는 다음 조건을 모두 만족하면 **chapter_id 다르더라도 한 cluster로 통합**:
-
+### 예외 — chapter root (is_chapter_root=true)
+각 chapter 의 chapter title paragraph 만 예외. 다음 모두 충족 시 chapter_id 무관 통합 가능:
 - 같은 marker family (정규화 후)
-- 같은 부모 role (예: TOC/표지 container)
-- 같은 위계 (level 0)
+- 같은 부모 role (TOC / 표지 container)
+- 같은 위계 (level 1 또는 양식상 chapter title 위계)
 
-이유: chapter root는 의미상 같은 역할(장 제목). chapter_id로 분리하면 N개 chapter에 대해 N개 singleton cluster가 생기고, 1f marker policy / chapter_types / chapter title marker 부착이 N개 cluster로 파편화되어 chapter title 처리가 깨짐 (예: 4번째 chapter의 마커 부착 실패).
+이유: 모든 chapter title 이 같은 marker 정책 / 같은 grammar 노드로 처리되어야 일관 작동.
 
-판단 방식:
-- **chapter root끼리** (각 chapter 첫 paragraph, level 0, 같은 부모 role): chapter_id 무관 통합 가능 (marker family + 부모 role 같으면)
-- **chapter 내부 body paragraph**: 같은 marker + 같은 chapter_id → 같은 cluster, 같은 marker + 다른 chapter_id → 다른 cluster
-- ch=-1 paragraph끼리: marker/패턴 같으면 같은 cluster 가능
-
-chapter root 예외는 **chapter 경계를 정의하는 paragraph에만 적용**. 일반 body paragraph는 위 기본 룰 유지.
-
-## Cluster 개수 — 경제성
-
-- 의미 있는 노드 종류 단위로 cluster. semantic taxonomy 만들지 말 것 (description 의미 차이로 cluster 늘리지 X).
-- 다만 grammar 상 다른 노드 종류로 구분 필요한 경우 (예: 시퀀스 본체 vs trailing summary, 다른 위계 chapter root) 는 split.
-
-### ⚠️ singleton 회피보다 우선하는 분리 룰
-
-- **chapter_id 가 다르면 다른 cluster** (위 chapter root 예외 제외) — singleton 생겨도 무조건 분리.
-- "singleton 남발 금지" 는 위 chapter_id 분리 룰 충족한 다음에 그래도 묶을 수 있는 경우만 적용. chapter_id 룰 위반 통합 금지.
-
-### paraPrIDRef 는 분리 보조 신호 (무조건 분리 X)
-
-- paraPrIDRef 가 다른 paragraph 끼리는 **분리 후보**. 다만 단독으로 무조건 분리 X.
-- **같은 마커 + 같은 위계 + 같은 의미 역할 + 같은 chapter** 면 paraPrIDRef 미세 차이는 통합 가능 (양식 작성자의 미세 조정 / 실수일 가능성).
-- paraPrIDRef + 의미 차이가 함께 있으면 분리. paraPrIDRef 만 다르고 의미 같으면 통합.
+**chapter root 예외는 is_chapter_root=true 인 paragraph 에만 적용**. 일반 body paragraph 는 chapter_id 분리 룰 그대로.
 
 ## 입력
 
 각 paragraph 에 대해 다음 정보가 주어집니다:
 - idx, level, marker, marker_family, description
 - parent_idx, children_idxs, sibling_idxs (tree 구조)
+- **ch** (chapter_id): 0, 1, 2, ... 또는 -1 (chapter 밖)
+- **is_chapter_root** (bool): chapter title paragraph 면 true. chapter root 예외 적용 대상.
+- **parent_marker, parent_level, parent_role**: 부모 paragraph 의 정보 (부모 구조 비교용)
 - 1b role_candidates (참고용, 정답 X)
 - 1c selected_role, parent_hint_idx (참고용)
-- paraPrIDRef, charPrIDRef (weak formatting signal)
+- paraPrIDRef, charPrIDRef (보조 신호 — 단독 분리 X)
+
+※ **자기 paragraph 의 cluster 는 출력이라 입력에 없음**. 부모의 cluster 도 결정 중. parent_role / marker / level 만 비교.
 
 ## 출력 형식 (JSON 만)
 
@@ -3254,13 +3253,33 @@ def build_canonical_clustering_prompt(
     for p in paragraphs:
         parent_to_kids[p.get("parent_idx")].append(p.get("idx"))
 
+    # idx → paragraph lookup (부모 정보 + chapter root 식별용)
+    idx_to_p = {p.get("idx"): p for p in paragraphs}
+
+    # chapter root paragraphs 식별 — 각 chapter_id 의 첫 paragraph
+    # (level 1 + 부모가 ch=-1 container or root)
+    chapter_id_to_root: dict = {}
+    for p in paragraphs:
+        cid = p.get("chapter_id", -1)
+        if cid is None or cid < 0:
+            continue
+        parent_p = idx_to_p.get(p.get("parent_idx"))
+        parent_cid = parent_p.get("chapter_id", -1) if parent_p else -1
+        if parent_cid == -1 or parent_p is None:
+            if cid not in chapter_id_to_root:
+                chapter_id_to_root[cid] = p.get("idx")
+
     table_lines = []
     table_lines.append(
-        "# Paragraph table — idx | L | ch | marker | family | parent | children | siblings | "
-        "1b_top | 1c_selected | hint | description | paraPr | charPr"
+        "# Paragraph table — idx | L | ch | root | marker | family | parent | "
+        "parent_marker | parent_L | parent_role | kids | sibs | "
+        "1b_top | 1c_sel | hint | description | paraPr | charPr"
     )
     table_lines.append(
-        "# ch = chapter_id (양식의 chapter 번호, 0-based). ch=-1은 chapter 밖 (표지/header/TOC 등)."
+        "# ch = chapter_id (0-based, -1=chapter 밖). root = is_chapter_root (true 면 chapter title — chapter root 예외 적용 대상)."
+    )
+    table_lines.append(
+        "# parent_marker / parent_L / parent_role = 부모 paragraph 정보. 같은 cluster 기준 (마커+부모구조+chapter+level) 비교에 사용."
     )
     for p in paragraphs:
         idx = p.get("idx")
@@ -3269,9 +3288,16 @@ def build_canonical_clustering_prompt(
         marker = p.get("marker", "") or ""
         family = p.get("marker_family", "") or ""
         parent = p.get("parent_idx")
+        is_root = idx == chapter_id_to_root.get(chapter_id) if chapter_id is not None and chapter_id >= 0 else False
         kids = parent_to_kids.get(idx, [])
         all_sibs = parent_to_kids.get(parent, [])
         sibs = [s for s in all_sibs if s != idx]
+
+        # 부모 paragraph 정보
+        parent_p = idx_to_p.get(parent) if parent is not None else None
+        parent_marker = (parent_p.get("marker") or "") if parent_p else ""
+        parent_level = parent_p.get("level") if parent_p else None
+        parent_role = (parent_p.get("role") or "") if parent_p else ""
 
         # 1b candidates (top 2)
         cands = role_candidates.get(idx) or role_candidates.get(str(idx)) or []
@@ -3302,8 +3328,10 @@ def build_canonical_clustering_prompt(
         sibs_str = str(sibs[:6]) if len(sibs) <= 6 else f"{sibs[:6]}+{len(sibs)-6}"
 
         line = (
-            f"{idx} | L{level} | ch={chapter_id} | {marker!r} | {family} | "
-            f"parent={parent} | kids={kids_str} | sibs={sibs_str} | "
+            f"{idx} | L{level} | ch={chapter_id} | root={str(is_root).lower()} | "
+            f"{marker!r} | {family} | parent={parent} | "
+            f"pmarker={parent_marker!r} | pL={parent_level} | prole={parent_role} | "
+            f"kids={kids_str} | sibs={sibs_str} | "
             f"{top_cands} | sel={selected_role} | hint={hint_idx} | "
             f"{desc!r} | pp={paraPr} | cp={charPr}"
         )
@@ -3343,17 +3371,46 @@ CANONICAL_CLUSTERING_REPAIR_PROMPT = """당신은 이전 1e structural clusterin
 
 ## 판단 원칙 (1e 와 동일)
 
-- 같은 부모 + 같은 위치/순서/기능 = 같은 cluster
-- 의미 sub-genre 차이로 split 금지
-- 자식 유무만으로 단독 split 금지
-- marker 이름·1b/1c role 이름을 정답으로 보지 말 것
-- 데이터에서 추론, 외부 convention 가정 X
+cluster 는 **structural role 단위로 나눈다.**
+
+**repair 단계의 입력 차이**: 1e 와 달리 repair 는 **이전 1e 의 cluster 결과를 입력으로 받음**. 따라서 부모 paragraph 의 cluster 도 입력으로 알 수 있고, **부모 cluster 가 가장 강한 비교 기준**.
+
+**같은 cluster 조건 (모두 충족)**:
+1. normalized marker 같다.
+2. level 같다.
+3. chapter_partition 같다 (chapter_id, chapter root 예외 — is_chapter_root=true 일 때만 chapter_id 무관 통합 가능).
+4. **부모 paragraph 의 cluster** 가 같다 (이전 1e 결과 기준 — 가장 강한 기준).
+5. 부모 paragraph 의 marker / level / structural role 도 모두 같다.
+6. 같은 부모 구조 안에서 같은 반복 위치 / 기능.
+
+**다른 cluster 조건 (하나라도 다르면)**:
+1. normalized marker
+2. level
+3. chapter_partition
+4. **부모 paragraph 의 cluster** (가장 강한 신호)
+5. 부모 paragraph 의 marker / level / structural role 중 하나
+
+cluster 결정도 **level 낮은 것부터 (parent_first)** — 부모 cluster 가 자식 cluster 결정의 힌트.
+
+**보조 신호 (단독 분리 X)**:
+- paraPrIDRef / charPrIDRef
+- child 개수
+- description 의미 차이
+
+위 보조 신호 차이만으로는 분리 X. **sibling 위치 / 반복 패턴 / visible style 차이와 함께 안정적으로 나타나면** 다른 structural role 로 split.
+
+**금지**:
+- 마커 / level / chapter_partition / parent_structural_role 중 하나라도 다른데 같은 cluster 묶기.
+- 보조 신호 단독으로 분리.
+- 1b/1c role 이름 / 외부 convention 정답 가정.
 
 ## 입력
 
-- 전체 paragraph 데이터 (1e 와 동일 형식)
-- 이전 1e cluster 출력 (cluster_id 별 paragraph_idxs)
+- 전체 paragraph 데이터 (1e 와 동일 형식 — parent_marker / parent_level / parent_role 포함)
+- **이전 1e cluster 출력** (cluster_id 별 paragraph_idxs) — 이게 가장 강한 비교 기준. 각 paragraph 의 부모 cluster 는 이 출력의 parent_idx 의 cluster_id 로 확인.
 - 발견된 issues (어떤 idx 가 missing/duplicate/extra 인지)
+
+※ repair 단계에서는 자기 paragraph 의 cluster 와 부모의 cluster 모두 이전 1e 출력에서 알 수 있음. **부모 cluster 가 같은지 비교** 가 가장 강한 검증.
 
 ## 출력 형식 (JSON 만)
 
