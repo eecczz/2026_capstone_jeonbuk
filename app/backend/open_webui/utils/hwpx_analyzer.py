@@ -12632,35 +12632,51 @@ def extract_toc_t_list(
     except Exception:
         return []
 
-    _xml_paras = _re_local.findall(r'<hp:p\b[^>]*>.*?</hp:p>', _xml, _re_local.DOTALL)
+    # ElementTree 로 파싱 — 직계 children 만. regex 매칭은 table cell 안
+    # nested hp:p 까지 잡아서 doc.paragraphs idx 와 어긋남 (2026-05-25 fix).
+    import xml.etree.ElementTree as _ET
+    _NS_P = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
+    try:
+        _root = _ET.fromstring(_xml)
+    except Exception:
+        return []
 
-    def _extract_ts(_p):
-        return _re_local.findall(r'<hp:t\b[^>]*>(.*?)</hp:t>', _p, _re_local.DOTALL)
+    # section element 의 직계 hp:p children — doc.paragraphs 와 idx 일치
+    _xml_paras_elems = [c for c in _root if c.tag == f"{_NS_P}p"]
 
-    def _decode_t(_t):
-        # hp:t 안 self-closing sub-tag (hp:tab 등) 제거. 그래야 page number / 마커
-        # 매칭 시 tag 가 노이즈로 안 들어감.
-        _no_tags = _re_local.sub(r'<[^>]+/>', '', _t)
-        return (_no_tags.replace("&lt;", "<").replace("&gt;", ">")
-                        .replace("&amp;", "&").replace("&quot;", '"')
-                        .replace("&apos;", "'"))
+    def _extract_ts_from_elem(_p_elem):
+        # paragraph 안 모든 hp:t 의 (text, has_tab) 추출.
+        # iter() 사용 — paragraph 안 hp:run > hp:t 구조 처리.
+        _result = []
+        for _t in _p_elem.iter(f"{_NS_P}t"):
+            # hp:t 의 text + child element (hp:tab 등) 후 text
+            _full_text = (_t.text or "")
+            # hp:t 안 child element (hp:tab 등) 의 tail 도 포함
+            for _child in _t:
+                _full_text += (_child.tail or "")
+            _result.append(_full_text)
+        return _result
+
+    def _has_tab_in_p(_p_elem):
+        # paragraph 안 hp:tab 존재 여부 (차례 행 식별용)
+        for _el in _p_elem.iter():
+            if _el.tag.endswith("}tab") or _el.tag == "tab":
+                return True
+        return False
 
     # 1. tab + 페이지번호 패턴 paragraph 식별 (양식 표준 차례 행)
-    # 페이지번호는 마지막 t 안에 단독으로 있거나 (예: t='1'), 마지막 t 의 텍스트
-    # 끝에 묶여있을 수 있음 (예: t='󰊱 민생경제 ... 4'). 양식마다 다르므로 paragraph
-    # 의 모든 t 를 합친 후 마지막 토큰 (공백 분리) 이 1~3자리 숫자면 차례 행.
     _toc_rows: list[int] = []
-    for _i, _p in enumerate(_xml_paras):
-        if '<hp:tab' not in _p:
+    for _i, _p_elem in enumerate(_xml_paras_elems):
+        if not _has_tab_in_p(_p_elem):
             continue
-        _ts = _extract_ts(_p)
+        _ts = _extract_ts_from_elem(_p_elem)
         if not _ts:
             continue
-        _combined = ''.join(_decode_t(_t) for _t in _ts).strip()
+        _combined = "".join(_ts).strip()
         _tokens = _combined.split()
         if not _tokens:
             continue
-        if _re_local.match(r'^\d{1,3}$', _tokens[-1]):
+        if _re_local.match(r"^\d{1,3}$", _tokens[-1]):
             _toc_rows.append(_i)
 
     if not _toc_rows:
@@ -12673,27 +12689,26 @@ def extract_toc_t_list(
         if _c - _toc_end <= 3:
             _toc_end = _c
         else:
-            break  # 차례 영역 끝
+            break
 
     # 3. 직전의 짧은 라벨 paragraph 흡수 (있으면)
     if _toc_start > 0:
-        _prev = _xml_paras[_toc_start - 1]
-        _prev_ts = _extract_ts(_prev)
-        _prev_text = ''.join(_decode_t(_t) for _t in _prev_ts).strip()
+        _prev_ts = _extract_ts_from_elem(_xml_paras_elems[_toc_start - 1])
+        _prev_text = "".join(_prev_ts).strip()
         if 0 < len(_prev_text) <= 15:
-            if any(_kw in _prev_text for _kw in ('순', '목', '차', '례', 'Contents', 'CONTENTS')):
+            if any(_kw in _prev_text for _kw in ("순", "목", "차", "례", "Contents", "CONTENTS")):
                 _toc_start = _toc_start - 1
 
     # 4. 영역 전체 paragraph 의 t element 모으기
     _result: list = []
     for _p_idx in range(_toc_start, _toc_end + 1):
-        _p = _xml_paras[_p_idx]
-        _ts = _extract_ts(_p)
+        _p_elem = _xml_paras_elems[_p_idx]
+        _ts = _extract_ts_from_elem(_p_elem)
         for _t_idx, _t_text in enumerate(_ts):
             _result.append({
                 "p_idx": _p_idx,
                 "t_idx": _t_idx,
-                "text": _decode_t(_t_text),
+                "text": _t_text,
             })
     return _result
 

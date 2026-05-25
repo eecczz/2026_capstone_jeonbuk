@@ -2773,6 +2773,23 @@ def assemble_hwpx_hybrid(
                 # 정의된 cluster 의 markup 이 split path 로 빠져 [[emN]] 글자 그대로 박힘.
                 _role_for_em_lookup = role.split("__ci")[0] if "__ci" in role else role
                 _body_cluster_em = (emphasis_layers or {}).get(_role_for_em_lookup) or {}
+                # 진단: emphasis lookup fail 시 stderr log + debug 파일 (2026-05-25)
+                # 텍스트에 [[em..]] markup 있는데 cluster lookup fail 하면 본문에
+                # markup 그대로 박힘. 어떤 role/lookup key 가 fail 하는지 추적.
+                if not _body_cluster_em and "[[em" in (text or ""):
+                    try:
+                        import os as _em_diag_os, json as _em_diag_json
+                        _em_diag_os.makedirs("/tmp/hwpx_debug", exist_ok=True)
+                        with open("/tmp/hwpx_debug/em_lookup_fail.jsonl", "a", encoding="utf-8") as _em_f:
+                            _em_f.write(_em_diag_json.dumps({
+                                "role_raw": role,
+                                "role_lookup": _role_for_em_lookup,
+                                "available_keys": sorted((emphasis_layers or {}).keys())[:10],
+                                "available_count": len(emphasis_layers or {}),
+                                "text_preview": (text or "")[:200],
+                            }, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
                 _body_charpr_map: dict = {}
                 _body_valid_layers: set = set()
                 if _body_cluster_em:
