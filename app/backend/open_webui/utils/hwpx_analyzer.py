@@ -3817,8 +3817,8 @@ marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **
 
 `➊/1)/①` 같은 enumeration 의 **첫 항목** (block 의 시작) 은 자기보다 앞의 가장 가까운 heading / 박스 / 요약 paragraph 중 그 enumeration 전체를 포괄하는 paragraph 를 parent 로 잡는다.
 
-- heading 과 첫 항목 사이에 보조 설명 paragraph (다른 marker family — `*`, `**`, `ㅇ`, `▪` 등) 가 있어도 enumeration block 은 끊기지 않는다.
-- 예: heading X 아래 보조 설명 paragraph 들이 먼저 나오고, 이후 enumeration (`➊/➋/➌` 등) 이 시작되면 enumeration 의 첫 항목 parent 는 heading X.
+- heading 과 첫 항목 사이에 보조 설명 paragraph (다른 marker family — `*`, `**`, `ㅇ`, `▪` 등) 가 있어도, **그 보조 설명이 heading 의 범위 안이면** enumeration block 은 끊기지 않는다.
+- 예: heading X 아래 **heading X 의 보조 설명 paragraph** 들이 먼저 나오고, 이후 enumeration (`➊/➋/➌` 등) 이 시작되면 enumeration 의 첫 항목 parent 는 heading X.
 
 → 모든 경우 공통: **B 가 A 를 포괄, A 가 B 를 설명**.
 
