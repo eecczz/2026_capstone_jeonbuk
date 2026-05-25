@@ -3099,7 +3099,7 @@ CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural clu
 
 확정된 parent_first tree 위에서, 각 paragraph에 **cluster_id (numerical 0, 1, 2, ...)** 를 할당하라.
 
-## 같은 cluster 기준
+## 같은 cluster 기준 (강제 — hard constraint)
 
 cluster 는 **structural role 단위로 나눈다.**
 
@@ -3111,12 +3111,23 @@ paragraph 두 개는 다음 조건을 **모두** 만족할 때만 같은 cluster
 4. **부모 paragraph 의 marker / level / structural role** 이 모두 같다.
 5. **같은 부모 구조 안에서 같은 반복 위치 / 기능** 을 가진다.
 
-다음 중 **하나라도 다르면** 다른 cluster:
+## 다른 cluster 강제 (예외 없음 — hard)
 
-1. normalized marker
-2. level
-3. chapter_partition
-4. 부모 paragraph 의 marker / level / structural role 중 하나
+다음 중 **하나라도 다르면 반드시 다른 cluster. 절대 통합 금지**:
+
+1. **normalized marker** 가 다름 (정규화 후) — 같은 패밀리만 통합 (*, **, *** 는 같은 마커. ➊ ➋ ➌ 도 같은 마커). **`*` 와 `ㅇ` 는 절대 다른 cluster. `*` 와 `①` 도 절대 다른 cluster. `*` 와 `1)` 도 절대 다른 cluster. `▪` 와 `①` 도 절대 다른 cluster.** 마커 family 가 다르면 무조건 분리.
+2. **level** 이 다름
+3. **chapter_partition** 이 다름 (chapter_id)
+4. **부모 paragraph 의 marker / level / structural role** 중 하나가 다름
+
+위 4가지는 **제안 X. 강제 X. hard constraint**. 보조 신호 (paraPrIDRef / description / 자식 수) 가 일치해도 위 4가지 중 하나 다르면 무조건 분리.
+
+⚠️ **자주 발생하는 wrong (절대 X)**:
+- `*` + `**` 통합 = OK (같은 마커 family 정규화)
+- `*` + `ㅇ` 통합 = **wrong** (다른 마커 family — 절대 다른 cluster)
+- `*` + `①` 통합 = **wrong** (다른 마커 family)
+- `▪` + `1)` + `①` 통합 = **wrong** (3개 다 다른 마커 family — 각각 다른 cluster)
+- `➊` + `▪` 통합 = **wrong** (다른 마커 family)
 
 ## 처리 순서 — level 낮은 것부터 (parent_first)
 
@@ -3142,12 +3153,26 @@ cluster 결정은 **양식 트리의 root 부터 자식 순서로** 진행하세
 - **description (의미)** — 형식 신호 같으면 통합. description 만 다른 슬롯 (시퀀스 본체 vs trailing summary 등) 이면 다른 신호와 함께 분리 후보.
 - **자식 구성** — 같은 부모 / 마커 / chapter 면 자식 수·종류 차이 무시 (optional / repeatable 정상). 자식 구성 차이 + 다른 신호 결합 시만 분리 후보.
 
-## 절대 금지
+## 절대 금지 (위반 시 cluster 결과 전체 무효)
 
-- ❌ marker / level / chapter_partition / 부모 (marker/level/role) 중 하나라도 다른데 같은 cluster 묶기.
+- ❌ **marker family 다른데 같은 cluster** (`*` vs `ㅇ` / `*` vs `①` / `▪` vs `1)` / `➊` vs `*` 등) — **무조건 분리**. 같은 부모 / 같은 level / 같은 chapter 라도 마커 family 다르면 다른 cluster.
+- ❌ **level 다른데 같은 cluster**.
+- ❌ **chapter_partition 다른데 같은 cluster** (chapter root 예외만).
+- ❌ **부모 marker / level / role 다른데 같은 cluster**.
 - ❌ 보조 신호 단독으로 분리.
 - ❌ 1b/1c 가 준 role 이름을 cluster 정답으로 가정.
 - ❌ 외부 convention (한국 문서 등) 정답으로 가정.
+
+## 마지막 자기 점검 (출력 직전 필수)
+
+JSON 출력 만든 직후 자기 출력을 다시 훑어서:
+
+1. 각 cluster 안 paragraph 들의 marker 가 정규화 후 **모두 같은 family** 인가? 다른 family 가 섞여있으면 즉시 분리.
+2. 각 cluster 안 level 이 **모두 같은가**? 다르면 분리.
+3. 각 cluster 안 chapter_id 가 **모두 같은가** (chapter root 예외 제외)? 다르면 분리.
+4. 각 cluster 안 parent marker / level / role 이 **모두 같은가**? 다르면 분리.
+
+위 4 가지 점검 거치지 않은 출력은 wrong. 한 cluster 안에 다른 marker family 가 한 글자라도 섞여있으면 batch 전체 실패로 처리됩니다.
 
 ## 마커 정규화 규칙 (마커 비교 시 반드시 적용)
 
@@ -3383,14 +3408,27 @@ cluster 는 **structural role 단위로 나눈다.**
 5. 부모 paragraph 의 marker / level / structural role 도 모두 같다.
 6. 같은 부모 구조 안에서 같은 반복 위치 / 기능.
 
-**다른 cluster 조건 (하나라도 다르면)**:
-1. normalized marker
-2. level
-3. chapter_partition
-4. **부모 paragraph 의 cluster** (가장 강한 신호)
-5. 부모 paragraph 의 marker / level / structural role 중 하나
+**다른 cluster 강제 (예외 없음 — hard constraint)**:
+
+다음 중 **하나라도 다르면 반드시 다른 cluster. 절대 통합 금지**:
+
+1. **normalized marker** — 정규화 후 family 다르면 무조건 분리. **`*` 와 `ㅇ` / `*` 와 `①` / `▪` 와 `1)` / `➊` 와 `*` 절대 다른 cluster**.
+2. **level**
+3. **chapter_partition** (chapter_id, chapter root 예외 외)
+4. **부모 paragraph 의 cluster** (이전 1e 결과 기준 — 가장 강한)
+5. **부모 paragraph 의 marker / level / structural role** 중 하나
 
 cluster 결정도 **level 낮은 것부터 (parent_first)** — 부모 cluster 가 자식 cluster 결정의 힌트.
+
+## 마지막 자기 점검 (출력 직전 필수)
+
+JSON 출력 후 자기 출력을 다시 훑어서 각 cluster 안:
+1. marker 가 모두 같은 family 인가? (정규화 후)
+2. level 이 모두 같은가?
+3. chapter_id 가 모두 같은가? (chapter root 예외 제외)
+4. 부모 cluster / marker / level / role 이 모두 같은가?
+
+위 4 가지 한 가지라도 위반하면 즉시 분리. 다른 family marker 가 한 cluster 안에 한 글자라도 섞여있으면 wrong.
 
 **보조 신호 (단독 분리 X)**:
 - paraPrIDRef / charPrIDRef
