@@ -532,29 +532,11 @@
         try {
           const msg = JSON.parse(ev.data);
           if (msg && msg.type === "transcription") {
-            // 진짜 사용자 발화 (노이즈 필터 통과) — 정식 barge-in.
-            // suspend 된 audio context 다시 켜고 기존 source 정리.
-            if (pcAudioCtx && pcAudioCtx.state === "suspended") {
-              pcAudioCtx.resume().catch(()=>{});
-            }
-            _clearPipecatPlayback();
             pcAcceptAudio = false;
             pcDroppedAudioChunks = 0;
             setVoiceCaption(msg.text || "", null);
+            // STT 도착 시점도 안전망으로 thinking 유지 (vad stop 이 먼저 와도 OK)
             if (typeof setMode === "function") setMode("thinking", "", "");
-          }
-          else if (msg && msg.type === "audio_pause") {
-            // backend VAD started — audio 잠깐 중지 (suspend). STT 결과 도착
-            // 후 노이즈 판정이면 resume, 진짜 발화면 정식 clear+새 generation.
-            if (pcAudioCtx && pcAudioCtx.state === "running") {
-              pcAudioCtx.suspend().catch(()=>{});
-            }
-          }
-          else if (msg && msg.type === "audio_resume") {
-            // STT 가 노이즈로 판정 — 잠시 멈췄던 audio 그대로 재개.
-            if (pcAudioCtx && pcAudioCtx.state === "suspended") {
-              pcAudioCtx.resume().catch(()=>{});
-            }
           }
           else if (msg && msg.type === "vad") {
             if (msg.text === "start") {

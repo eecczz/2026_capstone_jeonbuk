@@ -159,85 +159,6 @@ def _int_to_sino(n: int) -> str:
     return str(n)  # 1조 이상은 그대로
 
 
-_NOISE_FILLER_WORDS: set[str] = {
-    "어", "음", "아", "어어", "음음", "아아",
-    "잠깐", "잠깐만", "잠시만",
-    "아니", "아냐", "아니아니",
-    "그게", "그러니까", "그래서", "근데",
-    "네", "예", "응", "맞아", "맞아요", "맞습니다",
-    "어머", "와", "오", "헐", "하", "흠",
-}
-
-
-def _is_likely_noise(text: str, history: list[dict] | None = None) -> tuple[bool, str]:
-    """STT 결과가 주변 소음에서 잘못 잡힌 노이즈인지 판정.
-
-    노이즈 = 한국어 평서문 형태로 보이지만 사용자 의도가 아닌 잡음/배경음.
-
-    판정 기준 (하나라도 hit 시 노이즈):
-    1) 길이 1~2자
-    2) 추임새 단어 1개 + 매우 짧음
-    3) 한국어 비율 매우 낮음 (외국어 STT — _looks_like_korean 보다 더 강함)
-    4) 길이 3~8자 + 도청 도메인 키워드 0 + history 의 최근 단어와도 교집합 0
-
-    반환: (is_noise, reason)
-    """
-    s = (text or "").strip()
-    if not s:
-        return True, "empty"
-
-    # 1) 너무 짧음
-    if len(s) <= 2:
-        return True, f"too_short({len(s)})"
-
-    # 2) 추임새 단독 또는 추임새 비율 매우 높음 + 짧음
-    import re as _re
-    tokens = [t for t in _re.split(r"[\s,.\?!]+", s) if t]
-    if tokens:
-        filler_n = sum(1 for t in tokens if t in _NOISE_FILLER_WORDS)
-        if filler_n / max(len(tokens), 1) >= 0.6 and len(s) <= 10:
-            return True, "filler_dominant"
-
-    # 3) 한국어 비율 매우 낮음 — _looks_like_korean 의 threshold(0.5) 보다 엄격
-    hangul = sum(1 for ch in s if "가" <= ch <= "힣")
-    letters = sum(1 for ch in s if ch.isalpha())
-    if letters > 0:
-        ratio = hangul / letters
-        if ratio < 0.3:
-            return True, f"low_korean({ratio:.2f})"
-
-    # 4) 짧고 도청 도메인 키워드도 history 단어와도 무관 — 노이즈 가능성 높음.
-    # 단 사용자가 일반 인사 또는 일반 질문 형식이면 통과 (대화 의도 명확).
-    if len(s) <= 8:
-        domain_kw = {
-            "전북", "도청", "전주", "익산", "군산", "정읍", "김제", "남원",
-            "완주", "진안", "무주", "장수", "임실", "순창", "고창", "부안",
-            "청년", "노인", "농민", "신청", "지원", "안내", "위치", "전화",
-            "민원", "예산", "사업", "정책", "기관",
-        }
-        # 일반 인사·요청 화이트리스트 — "안녕하세요", "감사합니다", "도와줘",
-        # "알려줘", "뭐예요", "어떻게" 등은 짧아도 정상 발화.
-        general_intent = {
-            "안녕", "감사", "고마", "도와", "알려", "뭐예", "뭐야",
-            "어떻", "어디", "언제", "왜", "무엇", "누구", "얼마",
-            "있나", "있어", "있을", "되나", "되는", "할까", "해주",
-        }
-        has_kw = any(kw in s for kw in domain_kw) or any(kw in s for kw in general_intent)
-        if not has_kw:
-            # history 의 최근 user/assistant content 와 단어 교집합 확인
-            hist_words: set[str] = set()
-            if history:
-                for msg in history[-4:]:
-                    c = msg.get("content") or ""
-                    for w in _re.findall(r"[가-힣]{2,}", c):
-                        hist_words.add(w)
-            user_words = set(_re.findall(r"[가-힣]{2,}", s))
-            if not (user_words & hist_words):
-                return True, "no_keyword_no_context"
-
-    return False, "ok"
-
-
 def _tts_text_postprocess(text: str) -> str:
     """TTS 입력 텍스트 후처리 — 자막은 원본 그대로, TTS 만 한국어 발음으로 변환.
 
@@ -751,13 +672,21 @@ def _build_rag_processor(request: Request, websocket=None):
             # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
             if isinstance(frame, VADUserStartedSpeakingFrame):
                 log.info("[voice_ws] VAD: user started speaking")
-                # 사용자 발화 시작 → frontend audio 잠깐 pause (suspend) +
-                # orb 라벨 reset. backend generation 은 그대로 진행 — STT 결과
-                # 도착 후 노이즈/실제 판정에 따라 cancel 또는 resume.
+                # 사용자 발화 시작 → frontend orb 기본 (검은 원) 으로
                 await _send_caption("vad", "start")
-                await _send_caption("audio_pause", "")
+                # 사용자가 끼어들면 STT 결과 도착 전에 진행 중 generation 을 먼저 멈춘다.
+                # 짧은 발화 (LLM stream 이 1.5s 내 done) 케이스에서 cancel 못 잡는 문제 보강.
+                # 단 history pop 은 _restart_generation 에서 — 여기선 in-flight 만 정리.
+                if self._generation_task and not self._generation_task.done():
+                    self._generation_id += 1  # in-flight stream 의 stale 체크가 즉시 False
+                    log.info(
+                        "[voice_ws] barge-in detected, bumping generation_id=%s and stopping",
+                        self._generation_id,
+                    )
+                    await self._stop_current_generation()
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 log.info("[voice_ws] VAD: user stopped speaking")
+                # 사용자 발화 끝 → frontend orb thinking + 단계 라벨
                 await _send_caption("vad", "stop")
                 await _send_caption("phase_label", "발화 정리 중")
 
@@ -765,37 +694,21 @@ def _build_rag_processor(request: Request, websocket=None):
                 user_text = (frame.text or "").strip()
                 log.info(f"[voice_ws] STT transcript: {user_text!r}")
                 if not user_text:
-                    await _send_caption("audio_resume", "")  # 빈 transcript — 노이즈, 재생 재개
                     return
 
-                # STT 가 한국어가 아닌 외국어/영문 비스무리하게 transcribe 한 결과
+                # STT 가 한국어가 아닌 외국어/영문 비스무리하게 transcribe 한 결과는
+                # 노이즈로 drop — LLM 컨텍스트 오염을 막아 응답 품질과 TTS 발음
+                # 안정성 보장. 도청 챗봇은 한국어 발화 가정.
                 from open_webui.routers.public_chatbot import _looks_like_korean
                 if not _looks_like_korean(user_text, threshold=0.5):
-                    log.info(f"[voice_ws] non-Korean STT dropped (noise): {user_text!r}")
-                    await _send_caption("audio_resume", "")
-                    return
-
-                # 도메인/맥락 무관 노이즈 판정 (감탄사·짧은 무의미 발화·외국어 흔적 등)
-                is_noise, reason = _is_likely_noise(user_text, self._history)
-                if is_noise:
                     log.info(
-                        f"[voice_ws] noise transcript ignored ({reason}): {user_text!r}"
+                        f"[voice_ws] non-Korean STT transcript dropped (noise): {user_text!r}"
                     )
-                    # 자막 안 띄움 + restart 호출 X. frontend audio 재생 재개.
-                    await _send_caption("audio_resume", "")
+                    await _send_caption("clear", "")
                     return
 
-                # 진짜 사용자 발화 — barge-in 의도. 자막 + restart.
+                # 사용자 발화 자막 즉시 push
                 await _send_caption("transcription", user_text)
-                # 진짜 발화 시 진행 중 generation 이 있으면 cancel — 짧은 LLM stream
-                # 케이스 보강. 그 다음 정식 restart_generation.
-                if self._generation_task and not self._generation_task.done():
-                    self._generation_id += 1
-                    log.info(
-                        "[voice_ws] real STT → cancel in-flight id=%s",
-                        self._generation_id,
-                    )
-                    await self._stop_current_generation()
                 await self._restart_generation(user_text)
                 return
 
