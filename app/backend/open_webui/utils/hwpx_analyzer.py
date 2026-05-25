@@ -3749,7 +3749,7 @@ marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **
 **예외**: **같은 local enumeration block 안의 같은 series 직전 항목은 local_anchor 후보에서 제외**한다.
 - 예: 같은 block 안에서 ➋ 의 local_anchor 는 직전 ➊ 이 **아니라**, ➊ 과 ➋ 를 함께 묶는 상위 paragraph.
 - 즉 같은 block 안 ➊ 의 parent 가 󰊳 이면, ➋ 의 local_anchor 도 󰊳.
-- **local enumeration block** = 같은 series 항목들이 **중간에 상위 heading 없이** 같은 상위 부모 아래 함께 등장하는 영역. 중간에 더 상위 heading 또는 다른 묶음 heading 나오면 새 block.
+- **local enumeration block** = 같은 series 항목들이 **중간에 더 상위 heading / 다른 묶음 heading 없이** 같은 주제 흐름 안에서 연속적으로 등장하는 영역. 중간에 더 상위 heading 또는 다른 묶음 heading 나오면 새 block.
 
 ## cluster_id 의 의미 (중요)
 
@@ -3796,7 +3796,7 @@ marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **
    - 적용 대상 (명확한 순번 묶음): `➊/➋/➌/➍`, `1)/2)/3)`, `가)/나)/다)`, `(1)/(2)/(3)`, `①/②/③`, `1./2./3.`, `ⅰ/ⅱ/ⅲ`.
    - 특수 기호형 순번 (`󰊱/󰊲/󰊳` 등): 같은 local enumeration block 안에서 순번으로 쓰인 게 명확할 때만 적용.
    - 적용 제외: `*`/`**`/`***`, `□/◇/◈`, `ㅇ/▪` 같은 비순번 마커.
-   - **local enumeration block** = 같은 series 항목들이 중간에 더 상위 heading / 다른 묶음 heading 없이 같은 상위 부모 아래 함께 등장하는 영역.
+   - **local enumeration block** = 같은 series 항목들이 중간에 더 상위 heading / 다른 묶음 heading 없이 같은 주제 흐름 안에서 연속적으로 등장하는 영역.
    - 같은 block 안 현재 paragraph 의 `parent_idx` 는 직전 같은 series 항목의 `parent_idx` 와 **같다**.
    - 같은 block 안 현재 paragraph 의 `level` 은 직전 같은 series 항목의 `level` 과 **같다**.
    - 예: 같은 block 안 `➊` 의 parent 가 `󰊳` 이면, `➋` 의 parent 도 `󰊳`. `➋` 는 `➊` 의 자식이 **아니다**.
