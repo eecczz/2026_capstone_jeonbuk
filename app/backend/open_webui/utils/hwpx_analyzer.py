@@ -3183,8 +3183,13 @@ chapter root 예외는 **chapter 경계를 정의하는 paragraph에만 적용**
 ### ⚠️ singleton 회피보다 우선하는 분리 룰
 
 - **chapter_id 가 다르면 다른 cluster** (위 chapter root 예외 제외) — singleton 생겨도 무조건 분리.
-- **paraPrIDRef 가 다르면 다른 cluster** — 양식 작성자가 다른 박스 모양 / 다른 글꼴로 박은 것이므로 의미상 다른 노드 종류. singleton 생겨도 무조건 분리.
-- "singleton 남발 금지" 는 위 두 분리 룰 충족한 다음에 그래도 묶을 수 있는 경우만 적용. 위 두 룰 위반 통합 금지.
+- "singleton 남발 금지" 는 위 chapter_id 분리 룰 충족한 다음에 그래도 묶을 수 있는 경우만 적용. chapter_id 룰 위반 통합 금지.
+
+### paraPrIDRef 는 분리 보조 신호 (무조건 분리 X)
+
+- paraPrIDRef 가 다른 paragraph 끼리는 **분리 후보**. 다만 단독으로 무조건 분리 X.
+- **같은 마커 + 같은 위계 + 같은 의미 역할 + 같은 chapter** 면 paraPrIDRef 미세 차이는 통합 가능 (양식 작성자의 미세 조정 / 실수일 가능성).
+- paraPrIDRef + 의미 차이가 함께 있으면 분리. paraPrIDRef 만 다르고 의미 같으면 통합.
 
 ## 입력
 
