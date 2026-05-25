@@ -3809,7 +3809,16 @@ marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **
 1. **B 가 헤딩 / 번호 제목** ("1 업무추진", "Ⅱ . ...", "[전략 1]" 등) 이고 A 가 그 본문 / 부연 / 설명 / 예시.
 2. **B 가 박스 / 요약 paragraph** 이고 A 가 그 박스의 세부 내용.
 3. **B 가 도입 / 개요** 이고 A 가 그 안에서 다루는 항목.
-4. **A 가 B 직후 enumeration item** (1, 2, 3 / ➊, ➋, ➌ / * 등) 인데 B 가 그 enumeration 을 묶는 헤딩.
+4. **A 가 B 의 enumeration item** (1, 2, 3 / ➊, ➋, ➌ / * 등) 이고 B 가 그 enumeration 을 묶는 헤딩.
+   - A 가 B 바로 다음에 오지 않아도 된다.
+   - B 와 A 사이에 B 의 **보조 설명 paragraph** (다른 marker family — `*`, `**`, `ㅇ`, `▪` 등 비순번 marker) 가 끼어있어도, 그 내용이 B 의 범위 안이면 A 는 여전히 B 의 자식.
+
+### local enumeration block 의 첫 항목 parent 결정
+
+`➊/1)/①` 같은 enumeration 의 **첫 항목** (block 의 시작) 은 자기보다 앞의 가장 가까운 heading / 박스 / 요약 paragraph 중 그 enumeration 전체를 포괄하는 paragraph 를 parent 로 잡는다.
+
+- heading 과 첫 항목 사이에 보조 설명 paragraph (다른 marker family — `*`, `**`, `ㅇ`, `▪` 등) 가 있어도 enumeration block 은 끊기지 않는다.
+- 예: heading X 아래 보조 설명 paragraph 들이 먼저 나오고, 이후 enumeration (`➊/➋/➌` 등) 이 시작되면 enumeration 의 첫 항목 parent 는 heading X.
 
 → 모든 경우 공통: **B 가 A 를 포괄, A 가 B 를 설명**.
 
@@ -3835,7 +3844,7 @@ A 와 B 가 형제 (같은 parent) 인 조건:
 2. parent_idx 가 자기보다 작은 정수 or null.
 3. level 룰 만족: parent_idx=null → level=0. parent_idx 있음 → level=parent.level+1.
 4. 각 paragraph 의 parent_idx 가 **가장 가까운 의미상 직접 부모** 인가? 더 가까운 후보 건너뛰고 오래된 heading 에 붙이지 않았는가?
-5. 같은 cluster_id paragraph 인데 parent 가 다른 경우 — **local_anchor 가 다른 반복 구조** 인지 확인 (다르면 OK, 같은데 parent 다르면 재검토).
+5. 같은 cluster_id paragraph 인데 parent 가 다른 경우 — **local_anchor 가 다른 반복 구조** 인지 확인 (다르면 OK, 같은데 parent 다르면 재검토). **단, 이 점검은 parent 를 바꾸기 위한 근거가 아니다. cluster_id 일관성은 local_anchor / 텍스트 의미 / 가까운 heading 판단을 이길 수 없다**.
 6. cycle 없음.
 7. chapter_id 다른 paragraph 를 parent 로 잡지 않음 (chapter root 예외).
 8. **같은 local enumeration block 안 같은 series 항목끼리 parent-child 로 연결되지 않음**. 예: 같은 block 안 `➋` 의 parent 가 `➊` 이면 wrong → `➊` 의 parent 로 정정.
