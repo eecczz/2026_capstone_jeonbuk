@@ -1654,10 +1654,11 @@ LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 **level 판단** 전문가�
    - 기본은 0 (1순위 채택)
    - 위치·구조상 다른 후보가 더 맞으면 1, 2 등 선택
    - **0이 아니면 `selection_reason_code` 필수**
-3. **parent_hint** (debug-only, 사고 유도용): 이 문단이 의미상 어느 문단의 자식인지 idx 로 표기. 최상위면 `null`.
-   - **이 값은 코드가 안 씁니다.** level 결정 직전에 "이 문단이 무엇의 자식인가" 를 명시적으로 생각하면 level 정확도가 올라가서 추가하는 항목.
+3. **parent_hint_idx** (사고 유도용): 이 문단이 의미상 어느 문단의 자식인지 idx 로 표기. 최상위면 `null`.
+   - level 결정 직전에 "이 문단이 무엇의 자식인가" 를 명시적으로 생각하면 level 정확도가 올라가는 효과.
    - 직전 형제가 부모라고 보이면 그 idx. 더 위 단락이 부모면 그 idx.
-   - level 과 parent_hint 가 mismatch (코드 알고리즘이 parent_hint 와 다른 부모 매핑) 면 둘 다 의심 — 재검토.
+   - 항상 자기 idx 보다 작은 정수 (forward reference 금지). self-loop 금지.
+   - level 과 parent_hint_idx 가 mismatch (코드 알고리즘이 parent_hint_idx 와 다른 부모 매핑) 면 둘 다 의심 — 재검토.
 
 ## 결정 원칙
 
@@ -1671,11 +1672,10 @@ LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 **level 판단** 전문가�
 
 **의미 흐름** (description 보고 판단):
 - 단락 description 을 읽고 의미상 "이 단락이 무엇의 정리 / 요약 / 보충 / 자식인가" 를 판단.
-- **구조 신호와 의미 흐름이 어긋나면 둘 다 의심**. 자동으로 한 쪽 우선 X — parent_hint 로 의미상 부모를 명시한 뒤 level 을 그에 맞게 결정.
-- 예: paraPrIDRef 같아도 의미상 직전 단락의 정리 / 보충 / 자식이면 level+1. 형식만 보고 같은 level 로 두지 X.
-- 예: 같은 paraPrIDRef 연속이라도 description 이 "장 시작부 서두 박스" / "전략 개요 박스" 같이 직전 단락의 정리 성격이면 자식 (level+1) 후보.
+- **구조 신호와 의미 흐름이 어긋나면 둘 다 의심**. 자동으로 한 쪽 우선 X — parent_hint_idx 로 의미상 부모를 명시한 뒤 level 을 그에 맞게 결정.
+- 예: paraPrIDRef 같아도 의미상 직전 단락의 정리 / 보충 / 자식 성격이면 level+1. 형식만 보고 같은 level 로 두지 X.
 
-**구조 + 의미 둘 다 같은 결론** → 안정. 어긋나면 parent_hint 가 가리키는 부모에 맞게 level 결정.
+**구조 + 의미 둘 다 같은 결론** → 안정. 어긋나면 parent_hint_idx 가 가리키는 부모에 맞게 level 결정.
 
 ### B. level 일관성 체크 (코드 알고리즘 이해)
 
@@ -1718,20 +1718,20 @@ parent = 현재 문단보다 앞에 나온 문단 중,
       "idx": 0,
       "level": 0,
       "selected_role_candidate_index": 0,
-      "parent_hint": null
+      "parent_hint_idx": null
     },
     {
       "idx": 5,
       "level": 2,
       "selected_role_candidate_index": 1,
       "selection_reason_code": "marker_family_fit",
-      "parent_hint": 4
+      "parent_hint_idx": 4
     },
     {
       "idx": 10,
       "level": 3,
       "selected_role_candidate_index": 0,
-      "parent_hint": 6
+      "parent_hint_idx": 6
     }
   ]
 }
@@ -1739,9 +1739,9 @@ parent = 현재 문단보다 앞에 나온 문단 중,
 
 ## 중요
 - **모든 idx 출력**
-- 필수 필드: level, selected_role_candidate_index, **parent_hint**
+- 필수 필드: level, selected_role_candidate_index, **parent_hint_idx**
 - selected_role_candidate_index != 0이면 selection_reason_code 필수
-- parent_hint 는 의미상 부모 idx (코드 안 씀 — level 결정 사고 유도용). 최상위면 null.
+- parent_hint_idx 는 의미상 부모 idx (사고 유도용). 최상위면 null. forward reference 금지.
 - parent_idx, sibling_group_id 출력 금지 (있어도 코드가 무시)
 - 반드시 JSON만 출력
 """
@@ -3118,36 +3118,31 @@ paragraph 두 개는 다음 조건을 **모두** 만족할 때만 같은 cluster
 
 cluster 결정은 **양식 트리의 root 부터 자식 순서로** 진행하세요. 즉 level 낮은 paragraph 부터 cluster 결정.
 
-이유: 부모의 cluster 결정이 자식 cluster 결정의 힌트가 됨. 같은 cluster 의 부모 그룹 아래에서 같은 marker / level / 역할을 가진 자식들은 같은 cluster.
+이유: 부모 cluster 가 같은 paragraph 들의 자식들은 같은 부모 구조 — cluster 결정 힌트.
 
 순서:
 1. level 0 paragraph 들의 cluster 결정 (대분류 — chapter title 등).
-2. level 1 paragraph 들의 cluster 결정. 부모의 cluster + marker + level + role 확인.
-3. 자식 level 로 내려가면서 동일하게 결정.
+2. 다음 level 로 내려가면서 동일하게 결정.
 
-**자기 cluster 결정 시 부모 paragraph 의 marker / level / role 비교** — 부모가 같은 구조 (marker/level/role 다 같음) 면 자기는 같은 cluster 후보. 부모 구조 다르면 자기도 다른 cluster.
+**자기 cluster 결정 시 부모 paragraph 의 marker / level / role 비교** — 부모 marker / level / role 모두 같으면 자기는 같은 cluster 후보. 하나라도 다르면 자기도 다른 cluster.
 
-**보조 신호 (단독으로 split X)**:
-- paraPrIDRef / charPrIDRef
-- child 개수
-- description 의미 차이
+(※ 1e 단계에서는 부모의 cluster 자체는 아직 결정 안 된 상태로 입력에 없음. parent_marker / parent_level / parent_role 만 비교.)
 
-→ 위 보조 신호 차이만으로는 분리 X. **단 sibling 위치 / 반복 패턴 / visible style 차이와 함께 안정적으로 나타나면** 다른 structural role 로 보고 split.
+## 보조 신호 (단독으로 split X)
 
-## 보조 신호 (분리 결정 시 보조 — 단독으로 분리 X)
+다음 신호들은 **단독으로 분리 X**. 위 4가지 (marker / level / chapter / 부모 구조) 와 함께 안정적 결합 시만 다른 structural role 신호:
 
-- **paraPrIDRef / charPrIDRef** = structural evidence (hard constraint X). 단순 ID 차이 ≠ 구조 차이. 다음 경우만 분리 후보:
-  - paraPrIDRef 차이가 **같은 sibling 위치 / 같은 기능 슬롯에서 반복적으로 결합** 하면 구조 슬롯 신호.
-  - paraPrIDRef 차이가 한두 instance 에만 우연히 나타나면 작성 실수 / 미세 조정 — 통합 가능.
-- **description (의미)** — 형식 신호만 있으면 같은 cluster 라도 description 흐름이 명백히 다른 슬롯 (예: chapter 안 본문 vs trailing summary) 이면 분리 후보. 단 description 만으로 분리 X — 다른 신호와 결합 시.
-- **자식 구성** — 같은 부모/마커/chapter 면 자식 수·종류 차이 무시 (optional/repeatable 정상). 단 자식 구성 + 다른 신호 결합 시 분리 후보.
+- **paraPrIDRef / charPrIDRef** — 단순 ID 차이 ≠ 구조 차이.
+  - 차이가 같은 sibling 위치 / 같은 기능 슬롯에서 반복 결합 → 구조 슬롯 신호 (분리 후보)
+  - 한두 instance 에만 우연히 나타남 → 작성 실수 / 미세 조정 (통합 가능)
+- **description (의미)** — 형식 신호 같으면 통합. description 만 다른 슬롯 (시퀀스 본체 vs trailing summary 등) 이면 다른 신호와 함께 분리 후보.
+- **자식 구성** — 같은 부모 / 마커 / chapter 면 자식 수·종류 차이 무시 (optional / repeatable 정상). 자식 구성 차이 + 다른 신호 결합 시만 분리 후보.
 
 ## 절대 금지
 
-- ❌ 마커 / 부모 / chapter 가 다른데 같은 cluster 로 묶기 — hard 위반.
-- ❌ 단순 paraPrIDRef ID 차이만 보고 분리 — 그 차이가 반복 / 위치 / 기능과 결합 안 되면 잡음.
-- ❌ description 의미 차이만 보고 분리 — 형식 / 위치 / 마커가 같으면 통합.
-- ❌ 1b/1c 가 준 role 이름이 같다고 무조건 같은 cluster, 다르다고 무조건 다른 cluster.
+- ❌ marker / level / chapter_partition / 부모 (marker/level/role) 중 하나라도 다른데 같은 cluster 묶기.
+- ❌ 보조 신호 단독으로 분리.
+- ❌ 1b/1c 가 준 role 이름을 cluster 정답으로 가정.
 - ❌ 외부 convention (한국 문서 등) 정답으로 가정.
 
 ## 마커 정규화 규칙 (마커 비교 시 반드시 적용)
@@ -3159,9 +3154,10 @@ cluster 결정은 **양식 트리의 root 부터 자식 순서로** 진행하세
 - 󰊱, 󰊲, 󰊳 → 같은 마커 "󰊱"
 - 종류가 같으면 같은 마커. 번호/반복횟수 차이는 무시.
 
-## 표지 / header 특수 슬롯
+## 표지 / header 특수 슬롯 (보조 신호 단독 분리 룰의 예외)
 
-- **마커 없음 + level 0 + 자식 없음 + 그룹 내 paraPrIDRef 가 서로 모두 다름** → 각각 고유 서식의 고정 슬롯이므로 **반드시 별도 cluster 로 분리** (예: 표지의 제목/날짜/기관명은 각각 다른 서식·역할).
+- 표지의 제목/날짜/기관명 같은 **고정 슬롯**: 마커 없음 + level 0 + 자식 없음 + 그룹 내 paraPrIDRef 가 서로 모두 다른 경우 — 각자 고유 서식의 고정 슬롯이므로 **반드시 별도 cluster 분리**.
+- 이건 일반 paraPrIDRef 단독 분리 X 룰의 예외 (표지 슬롯은 같은 marker 없음 + 같은 level + 같은 chapter 라 위 4가지 룰만으로는 분리 불가).
 
 ## chapter_id 분리 (자세히)
 
@@ -3177,9 +3173,9 @@ cluster 결정은 **양식 트리의 root 부터 자식 순서로** 진행하세
 
 ### 예외 — chapter root (is_chapter_root=true)
 각 chapter 의 chapter title paragraph 만 예외. 다음 모두 충족 시 chapter_id 무관 통합 가능:
-- 같은 marker family (정규화 후)
-- 같은 부모 role (TOC / 표지 container)
-- 같은 위계 (level 1 또는 양식상 chapter title 위계)
+- normalized marker 같음
+- 부모 paragraph 의 marker / level / role 같음 (TOC / 표지 container 같은 부모)
+- level 같음
 
 이유: 모든 chapter title 이 같은 marker 정책 / 같은 grammar 노드로 처리되어야 일관 작동.
 
@@ -12819,24 +12815,19 @@ def build_adaptation_plan_prompt(
     chapter route 전용. 양식 chapter set 전체에 대해 한 번에 결정:
     - overall_source_focus (chapter set 일관성)
     - chapter별 adapted_title
-    - header 슬롯 (제목/날짜/기관 등) — 옛 2a에서 흡수
-    - chapter의 역할/순서/깊이는 template이 결정 (Roman numeral 위치로 고정 X)
-    - adapted_title은 '먼저 같게 vs 다르게' 분류 없이 자연스럽게 결정
-    - source는 main_headings / available_topics / evidence_samples / preview에서 선택
-    - chapter set은 동일한 overall_source_focus 공유 (multi-agenda source 대응)
+    - header 슬롯 (제목/날짜/기관 등) — 옛 2a 에서 흡수
+    - chapter 의 역할/순서/깊이는 template 이 결정 (Roman numeral 위치로 고정 X)
+    - source 는 broad_source_preview (전체 source) 직접 보고 선택
+    - chapter set 은 동일한 overall_source_focus 공유
+
+    source_inventory 인자: 호환성 위해 받음 (현재 빈 dict 전달). prompt 안 사용 X.
+    (이전엔 source 정리 단계 결과 받았지만 source_inventory 제거됨 — 신 2a 가 source 직접 봄.)
 
     Args:
         header_roles: 양식 header role 목록 [{"role": ..., "description": ...}].
                       비어있으면 header 추출 skip.
     """
     import json as _json
-
-    _inv_brief = {
-        "summary": source_inventory.get("summary", ""),
-        "available_topics": source_inventory.get("available_topics", []),
-        "main_headings": source_inventory.get("main_headings", []),
-        "evidence_samples": source_inventory.get("evidence_samples", []),
-    }
     _ch_brief = []
     for ch in chapter_inputs:
         _ch_brief.append({
@@ -16966,7 +16957,7 @@ def build_section_style_prompt(
                         em_lines.append(f"        - {r}")
             else:
                 em_lines.append("- 규칙 있는 non-base layer 없음 → 본문 전체 base 하나로만 감싸기.")
-            # 본보기 sample — 외부 마커 + 분류 라벨 layer 확인용. 본문 안 layer 는 무시.
+            # 본보기 sample — 마커 / 분류 라벨 / 본문 내부 style 분할 규칙 확인용. sample 분할 패턴 우선 모방.
             if paragraph_emphasis_map:
                 pem = paragraph_emphasis_map.get(role_name) or {}
                 samples = pem.get("sample_paragraphs") or []
@@ -16999,8 +16990,9 @@ def build_section_style_prompt(
         if em_lines:
             emphasis_text = (
                 "## 글꼴 layer 가이드 (role 별)\n"
-                "위 정책 1~6 을 반드시 따릅니다. 본문 한가운데에 non-base layer 박지 마세요.\n"
-                "외부 마커 + 본문 시작 직후 짧은 괄호 분류 라벨만 non-base 허용. 그 외 base.\n"
+                "위 정책 1~7 을 반드시 따릅니다. 양식 sample 의 분할 패턴 (수·위치·순서) 을 우선 모방하세요.\n"
+                "외부 마커 + 분류 라벨 + 본보기 반복 분할 규칙 자리는 non-base 허용. "
+                "단 sample 보다 더 많은 non-base span 을 새로 만들지 X.\n"
                 "여는 태그와 닫는 태그는 반드시 같은 N (짝 강제).\n"
                 + "\n".join(em_lines)
                 + "\n\n"
