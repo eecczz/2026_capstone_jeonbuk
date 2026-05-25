@@ -2767,7 +2767,12 @@ def assemble_hwpx_hybrid(
                 # Sprint 3D: emphasis-aware body text 박기
                 # 매핑 정확성: emphasis_layers[role] lookup → cluster의 charpr_map 빌드.
                 # valid_layer_ids는 그 cluster에 정의된 layer만 허용 (AI 환각 markup 무시).
-                _body_cluster_em = (emphasis_layers or {}).get(role) or {}
+                # 13.7b §4 fix (2026-05-24): chapter-local / section_n_placeholder 사용 시
+                # role 이 "{원래role}__ci{N}__local" 또는 "{원래role}__ci{N}" 으로 rename 됨.
+                # emphasis_layers lookup 은 원래 role 사용 — 안 그러면 cluster_20 같이 emphasis
+                # 정의된 cluster 의 markup 이 split path 로 빠져 [[emN]] 글자 그대로 박힘.
+                _role_for_em_lookup = role.split("__ci")[0] if "__ci" in role else role
+                _body_cluster_em = (emphasis_layers or {}).get(_role_for_em_lookup) or {}
                 _body_charpr_map: dict = {}
                 _body_valid_layers: set = set()
                 if _body_cluster_em:
@@ -3039,67 +3044,55 @@ def assemble_hwpx_hybrid(
         log.warning(f"final id reassignment 실패: {_fri_e}")
         structure["_final_id_reassignment"] = {"error": str(_fri_e)}
 
-    # ── TOC 텍스트 교체 (신 2a가 결정한 toc_replacements 적용) ──
-    # 단일 t.text 안 substring 매칭이면 그 t에서만 replace (양식 글꼴 보존).
-    # 여러 t에 걸친 경우 시작 t에 to 박고 걸친 t들 비움.
-    if toc_replacements and toc_paragraph_idx is not None:
+    # ── TOC 텍스트 교체 (신 2a 가 결정한 toc_replacements 적용) ──
+    # multi-paragraph schema (2026-05-25): 각 entry = (p_idx, t_idx, new_text).
+    # p_idx 는 양식 xml top-level paragraph index — doc.paragraphs idx 와 동일.
+    # 코드는 그 (p_idx, t_idx) 의 .text 만 set — substring 매칭/공백 처리 없음.
+    if toc_replacements:
         try:
-            _toc_real_idx = _to_real_idx(toc_paragraph_idx)
-            if 0 <= _toc_real_idx < len(doc.paragraphs):
-                _toc_p_elem = doc.paragraphs[_toc_real_idx].element
-                _t_elems = list(_toc_p_elem.iter(f"{NS}t"))
-                _toc_applied = 0
-                _toc_skipped = 0
-                for _repl in toc_replacements:
-                    _from_s = _repl.get("from", "")
-                    _to_s = _repl.get("to", "")
-                    if not _from_s:
-                        continue
-                    # 1) 단일 t.text에 substring 발견되면 그 t에서만 replace
-                    _single_hit = False
-                    for _t in _t_elems:
-                        if _t.text and _from_s in _t.text:
-                            _t.text = _t.text.replace(_from_s, _to_s, 1)
-                            _single_hit = True
-                            _toc_applied += 1
-                            break
-                    if _single_hit:
-                        continue
-                    # 2) 여러 t에 걸친 경우 — 누적 위치 추적
-                    _full = "".join(_t.text or "" for _t in _t_elems)
-                    _pos = _full.find(_from_s)
-                    if _pos < 0:
+            # p_idx 별로 group — paragraph 한 번만 access 하도록 cache
+            _toc_applied = 0
+            _toc_skipped = 0
+            _p_elem_cache: dict = {}
+            for _repl in toc_replacements:
+                if not isinstance(_repl, dict):
+                    _toc_skipped += 1
+                    continue
+                _p_idx_repl = _repl.get("p_idx")
+                _t_idx = _repl.get("t_idx")
+                _new_text = _repl.get("new_text", "")
+                if not isinstance(_t_idx, int) or _t_idx < 0:
+                    _toc_skipped += 1
+                    continue
+                # p_idx 없으면 옛 schema — toc_paragraph_idx (1a idx) 로 fallback
+                if _p_idx_repl is None:
+                    if toc_paragraph_idx is None:
                         _toc_skipped += 1
                         continue
-                    _end = _pos + len(_from_s)
-                    _cum = 0
-                    _start_ti, _end_ti = -1, -1
-                    _start_offset, _end_offset = 0, 0
-                    for _ti, _t in enumerate(_t_elems):
-                        _ttext = _t.text or ""
-                        _new_cum = _cum + len(_ttext)
-                        if _start_ti < 0 and _new_cum > _pos:
-                            _start_ti = _ti
-                            _start_offset = _pos - _cum
-                        if _end_ti < 0 and _new_cum >= _end:
-                            _end_ti = _ti
-                            _end_offset = _end - _cum
-                            break
-                        _cum = _new_cum
-                    if _start_ti >= 0 and _end_ti >= 0:
-                        _prefix = (_t_elems[_start_ti].text or "")[:_start_offset]
-                        _suffix = (_t_elems[_end_ti].text or "")[_end_offset:]
-                        if _start_ti == _end_ti:
-                            _t_elems[_start_ti].text = _prefix + _to_s + _suffix
-                        else:
-                            _t_elems[_start_ti].text = _prefix + _to_s
-                            for _mi in range(_start_ti + 1, _end_ti):
-                                _t_elems[_mi].text = ""
-                            _t_elems[_end_ti].text = _suffix
-                        _toc_applied += 1
-                    else:
+                    _p_real_idx = _to_real_idx(toc_paragraph_idx)
+                else:
+                    if not isinstance(_p_idx_repl, int):
                         _toc_skipped += 1
-                log.info(f"TOC text 교체: applied={_toc_applied}, skipped={_toc_skipped}")
+                        continue
+                    # 양식 xml top-level p idx == doc.paragraphs idx 가정
+                    _p_real_idx = _p_idx_repl
+                if not (0 <= _p_real_idx < len(doc.paragraphs)):
+                    _toc_skipped += 1
+                    continue
+                # paragraph element 의 t_elems cache
+                if _p_real_idx not in _p_elem_cache:
+                    _p_elem = doc.paragraphs[_p_real_idx].element
+                    _p_elem_cache[_p_real_idx] = list(_p_elem.iter(f"{NS}t"))
+                _t_elems = _p_elem_cache[_p_real_idx]
+                if _t_idx >= len(_t_elems):
+                    _toc_skipped += 1
+                    continue
+                _t_elems[_t_idx].text = str(_new_text)
+                _toc_applied += 1
+            log.info(
+                f"TOC text 교체: applied={_toc_applied}, skipped={_toc_skipped}, "
+                f"touched_paragraphs={len(_p_elem_cache)}"
+            )
         except Exception as _toc_e:
             log.warning(f"TOC text 교체 실패: {_toc_e}")
 

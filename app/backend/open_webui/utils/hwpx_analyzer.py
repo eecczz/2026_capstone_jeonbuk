@@ -1528,6 +1528,11 @@ def build_hwpx_prompt(
 STRUCTURE_ANALYSIS_PROMPT = """당신은 HWPX 양식 구조 분석 전문가입니다.
 양식을 분석하여 각 필드의 **의미적 역할(role)**, 용도(description), 마커, 표 구조를 JSON으로 출력합니다.
 
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현 (description / 분석 / 추론 / 자연어 설명) 은 반드시 한국어.
+- 자체 표현에 한자 (`業務`, `行政`, `情報` 등) / 일본어 가나 (`付き`, `あり` 등) / 외국어 단어 (`cloud`, `system` 등) 사용 금지.
+- 양식 sample 글자 인용은 그대로 옮김 (sample 이 한자·영어 포함하면 보존) — 자체 표현과 인용 구분.
+
 **⚠️ level(계층 깊이)은 이 단계에서 결정하지 않습니다** — 별도 단계에서 처리합니다.
 
 ## 입력 포맷 (컴팩트 텍스트 — XML 아님)
@@ -1620,6 +1625,11 @@ rowCnt="1" colCnt="1"인 표는 **텍스트 상자/강조 박스**입니다.
 
 LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 **level 판단** 전문가입니다 (1c).
 1b가 제공한 role 후보 + features를 받아 **각 문단의 level과 후보 index**를 결정합니다.
+
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현 (분석 / 추론 / 자연어 설명) 은 반드시 한국어.
+- 자체 표현에 한자 (`業務`, `行政`) / 일본어 가나 (`付き`) / 외국어 단어 (`cloud`) 사용 금지.
+- 양식 sample 글자 인용은 그대로 옮김 — 자체 표현과 인용 구분.
 
 ## 역할 분담
 - 1b (이전): semantic_role 후보 + 점수 (per-paragraph)
@@ -3056,6 +3066,11 @@ def canonicalize_by_data(paragraphs: list[dict],
 
 CANONICAL_CLUSTERING_PROMPT = """당신은 양식 paragraph들에 structural cluster ID를 할당하는 전문가입니다 (1e).
 
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현 (분석 / 추론 / 자연어 설명 / cluster description) 은 반드시 한국어.
+- 자체 표현에 한자 (`業務`, `行政`) / 일본어 가나 (`付き`) / 외국어 단어 (`cloud`) 사용 금지.
+- 양식 sample 글자 인용은 그대로 옮김 — 자체 표현과 인용 구분.
+
 ## 핵심 목적
 
 이 단계는 **grammar/rule extraction (1f) 용 structural node type clustering** 입니다.
@@ -3283,6 +3298,10 @@ def build_canonical_clustering_prompt(
 
 
 CANONICAL_CLUSTERING_REPAIR_PROMPT = """당신은 이전 1e structural clustering 결과의 validation 오류를 수정하는 전문가입니다.
+
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 sample 글자 인용은 그대로 — 자체 표현과 인용 구분.
 
 ## 핵심 목적
 
@@ -3788,6 +3807,11 @@ def compute_parent_and_sibling_from_levels(paragraphs: list[dict]) -> list[dict]
 
 MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**과 **표 종류(table_kind)**를 판별하는 전문가입니다.
 
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현 (분석·추론·자연어 설명) 은 반드시 한국어.
+- 자체 표현에 한자·일본어 가나·외국어 단어 사용 금지.
+- 양식 sample 의 마커 글자 (예: `Ⅰ`, `□`, `①` 등) 와 sample 글자 인용은 그대로 옮김.
+
 ## 임무 1: marker_policy 판별
 
 각 role에 대해, 해당 role의 text samples를 보고 **일관된 leading marker가 있는지** 판별하세요.
@@ -4166,6 +4190,11 @@ def _validate_and_split(structure: dict) -> dict:
 
 ROLE_CLASSIFICATION_PROMPT = """당신은 양식 문단의 **role 분석** 전문가입니다 (1b).
 각 문단을 독립적으로 보고 가능한 **semantic_role 후보들**을 점수화합니다.
+
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현 (role 이름 / description / reason) 은 반드시 한국어.
+- 자체 표현에 한자 (`業務`, `行政`) / 일본어 가나 (`付き`) / 외국어 단어 (`cloud`) 사용 금지.
+- 양식 sample 글자 인용은 그대로 옮김 — 자체 표현과 인용 구분.
 
 ## 역할 분담
 - **1b (이 단계)**: semantic_role 후보 + 점수 (level·hierarchy 결정 안 함)
@@ -4717,6 +4746,10 @@ def compute_format_observations(
 
 FORMAT_ANALYSIS_PROMPT = """당신은 양식의 빈 줄·들여쓰기·마커 규칙을 추출하는 전문가입니다.
 
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 sample 글자 인용은 그대로 — 자체 표현과 인용 구분.
+
 코드가 양식을 파싱해 **원시 관측 데이터**를 제공합니다. 이 데이터를 보고 규칙을 판정하세요.
 
 ## 임무 1: format_rules (role별 포맷 규칙)
@@ -4900,6 +4933,10 @@ def parse_format_rules_from_llm(llm_response: str) -> dict:
 
 
 EXCLUSIVITY_ANALYSIS_PROMPT = """당신은 계층 구조의 형제 배타 관계를 판정하는 전문가입니다.
+
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 role 이름은 그대로 인용.
 
 아래 **각 부모 role의 인스턴스별 직계 자식 집합**을 보고,
 **한 번이라도 같은 인스턴스에서 공존한 자식 쌍**을 찾아 공존 규칙을 출력하세요.
@@ -6308,6 +6345,10 @@ def infer_semantic_tag(
 
 STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문가입니다.
 
+# ⚠️ 응답 언어 — 한국어 전용
+- rule 문장 (자체 표현) 은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 sample 인용은 그대로 — 자체 표현과 인용 구분.
+
 아래에 여러 role_cluster의 양식 paragraph sample이 주어집니다.
 각 cluster의 말투/문장 특징 패턴을 분석해 자연어 rule로 추출하세요.
 
@@ -6334,29 +6375,26 @@ STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문�
 
 ## rule이 너무 길어지거나 case별 분포가 다르면
 
-rule을 split (`case A는 X`, `case B는 Y`) 또는 `additional_observations`에 자연어 단락으로.
+rule을 split (`case A는 X`, `case B는 Y`) 으로 분리.
 
 ## 출력 형식
 
 반드시 아래 JSON만 출력하세요. **profiles 배열에 input cluster 수만큼 entry**.
 
+핵심 rule 3개 이하 — 가장 중요한 말투 패턴만 추출. 자유 자연어 / 추가 관찰 / 부수 분포 출력 금지.
+
 ```json
 {
   "profiles": [
     {
-      "role": "<role_cluster_N>",
-      "content_style_rules_for_generation": [
-        "<rule 1: 적용 조건 + (필요 시 비적용 조건) + [sN, sN] inline>",
-        ...
-      ],
-      "additional_observations": "<rules로 정형화 못 한 특이 패턴 / 분포 / case-by-case 변동 / 양식 고유 표현 / 예외. 자유 자연어. evidence inline [sN]. 없으면 빈 문자열.>"
-    },
-    ...
+      "role": "role_cluster_N",
+      "content_style_rules_for_generation": ["rule 1", "rule 2", "rule 3"]
+    }
   ]
 }
 ```
 
-각 cluster의 rules가 비어도(sample 부족 등) JSON 형식 유지하고 additional_observations에 사유 기술.
+각 cluster 의 rules 는 0~3 개. sample 부족 등으로 rule 없으면 빈 list. 다른 필드 추가 금지.
 """
 
 
@@ -6650,15 +6688,13 @@ def parse_style_profile_from_llm(
         if not role or role not in expected_roles:
             continue
         rules_raw = ai_p.get("content_style_rules_for_generation", []) or []
-        rules = [str(r).strip() for r in rules_raw if str(r).strip()]
-        obs = str(ai_p.get("additional_observations", "") or "").strip()
-        missing = sum(1 for r in rules if not _evidence_re.search(r))
+        rules = [str(r).strip() for r in rules_raw if str(r).strip()][:3]
         result[role] = {
             "role": role,
             "content_style_rules_for_generation": rules,
-            "additional_observations": obs,
+            "additional_observations": "",
             "_parse_status": "ok",
-            "_evidence_missing_rule_count": missing,
+            "_evidence_missing_rule_count": 0,
         }
 
     # AI가 빠뜨린 cluster 보전
@@ -6929,6 +6965,26 @@ def extract_paragraph_emphasis_map(
 
 EMPHASIS_LAYER_PROMPT = """당신은 한국 행정문서의 inline 강조 패턴 분석 전문가입니다.
 
+# ⚠️ 절대 규칙 1 — 양식 원문 글자 그대로 옮기기
+
+양식 sample 안의 인용부호는 **한국 문서 표준 유니코드 좌우 단일인용부호 (`‘ ’`)** 입니다. rule 문장에서 양식 표현을 인용할 때 **`‘ ’` 그대로 옮기세요**.
+
+- 맞는 예: `"분야 (‘교육·보건·의료’) 나 재고 (‘재고’) 에 적용."`
+- **틀린 예** (절대 X): `"분야 ('교육·보건·의료') 나 재고 ('재고') 에 적용."` — ASCII `'` 로 변환 금지.
+
+ASCII 작은따옴표 (`'`) 를 출력에 쓰지 마세요. 양식 원문 글자 그대로 옮기는 것이 일관성 + JSON 안전 양쪽에서 정답입니다.
+
+# ⚠️ 절대 규칙 2 — backslash (\\) 사용 금지
+
+**JSON 안에서 backslash 는 큰따옴표 (") 앞에만 붙입니다. 다른 어떤 글자 앞에도 절대 붙이지 마세요.**
+
+- 한글, 숫자, 괄호, 점, 쉼표, 유니코드 인용부호 (`‘ ’`) 앞 → backslash 금지.
+- 큰따옴표 (`"`) 앞에만 `\\"` 로 적습니다. 이게 backslash 쓰는 유일한 경우.
+
+규칙 1 + 2 한 글자라도 어기면 **batch 전체 분석 결과가 통째로 사라집니다**. 다른 모든 규칙보다 우선합니다.
+
+---
+
 여러 role_cluster의 양식 paragraph sample이 주어집니다. 각 sample은 글꼴 ID
 종류에 따라 [[em1]]...[[/em1]] / [[em2]]...[[/em2]] 등 markup으로 표시되어 있습니다.
 
@@ -6938,61 +6994,75 @@ base(일반 텍스트)이고 어느 layer가 강조인지는 판정하지 않았
 
 ## 결정 원칙
 
-1. **base 판정**: 보통 cluster 안에서 가장 많은 영역을 차지하는 layer가 base.
-   layer 통계(segment 수, char 수, paragraph 수)를 참고하되, sample 양상을
-   우선합니다 — 통계는 hint, 실제 의미는 sample 보고 판단.
-2. **강조 layer**: base 외 모든 layer. 각 강조 layer마다 적용 패턴 분석.
+1. **base 판정 — 의미가 결정한다. 통계는 보지 마세요**:
+   - sample paragraph를 읽고, **일반 본문 텍스트 (문장 골격: 주어·서술어·조사·연결어 등 본문 흐름을 잇는 부분)** 를 담당하는 layer 가 base.
+   - **강조가 base 보다 segment/char 통계가 많을 수 있습니다.** 양식이 핵심 명사구 위주로 화려하면 강조 layer 가 본문보다 길어집니다. **통계 최다 = base 가 절대 아닙니다.**
+   - 예시: sample 이 "[[em1]] ㅇ 정책목표 [[/em1]][[em2]]금융지원 확대[[/em2]][[em1]]를 통한 [[/em1]][[em2]]중소기업 경쟁력 강화[[/em2]]" 라면, em2 의 글자/segment 가 더 많아도 base 는 em1 (본문 골격: " ㅇ 정책목표 ", "를 통한 ").
+   - **판정 순서**: (1) sample 읽기 → (2) 본문 골격 담당 layer 식별 → (3) 그 layer = base.
+   - 통계는 보지도 마세요. sample 의미만 보세요.
+2. **강조 layer**: base 외 모든 layer. 각 강조 layer 마다 적용 패턴 분석.
 3. **양식 디자이너의 의도와 무관하게 다른 글꼴이면 강조로 본다** — 미적 이유든
    의미 강조든 상관 없이, 양식 원본의 시각적 차이를 그대로 재현.
-4. **layer_id / charpr_id는 input과 동일하게 유지**. 합치거나 분리 X.
+4. **layer_id 는 input 과 동일하게 유지**. 합치거나 분리 X.
 
 ## 각 강조 layer rule 작성 원칙
 
-1. **양식 sample에서 직접 관찰 가능한 패턴만**. 일반 행정문서 규칙 X.
-2. **rule 문장 안에 반드시 포함**:
-   - **적용 조건** (언제 이 layer 사용)
+1. **반드시 한국어로 작성** — 영어 문장 금지. 영어 단어 한 개도 X.
+2. **양식 sample 에서 직접 관찰 가능한 패턴만**. 일반 행정문서 규칙 X.
+3. **rule 문장 안에 반드시 포함**:
+   - **적용 조건** (이 layer 가 양식 sample 의 어디에 등장하는지 — 구체적 위치/형태)
+   - **적용 범위** (전체 paragraph / 일부 segment / 괄호 안 / 마커 직후 등 — 정확히 명시)
    - **비적용 조건** (필요 시; 예외)
-   - **근거 sample id** `[s2, s5, s8]` 형식 inline 인용 (필수)
-3. **의미 기반 패턴 OK** ("paragraph의 핵심 결론 명사구" 등). 결정적 위치 룰
-   아니어도 됨 — 2b가 generation 시점에 의미 판단해서 markup.
-4. **각 cluster의 sample_id는 해당 cluster 안에서만 유효** — 다른 cluster
-   sample_id 인용 X.
+4. **rule 안에 다음 셋 중 하나로 위치 명시 (필수)**:
+   - "전체 paragraph 통째" — paragraph 전체가 이 layer 인 경우
+   - "괄호 안 만" / "마커 직후 N 글자 만" / "특정 키워드 만" 같이 **paragraph 안 일부 segment 만** 인 경우
+   - "양식 sample 의 한 paragraph 단일 layer — 새 instance 도 통째 한 layer" — 단일 layer paragraph 인 경우
+5. **의미 기반 패턴 OK** ("paragraph 의 핵심 결론 명사구" 등). 다만 위치 정보 (괄호 안인지 본문 전체인지) 는 반드시 명시.
 
-## 좋은 rule 예시
+## 좋은 rule 예시 (한국어 + 위치 명시)
 
-> "em2: □ 마커 직후 첫 짧은 괄호 핵심어. 문장 중간의 보충 설명 괄호는 X.
->  근거: [s2, s5, s8]"
+> "em2: 괄호 안의 한국어 부제 만 (예: `(부제 텍스트)` 형태). 본문 전체 X, 괄호 밖 X."
+> "em5: 영어 괄호 부제 만 (예: `(English subtitle)` 형태). 한국어 본문 X."
+> "em1: 전체 paragraph 통째 단일 layer (양식 sample 에서 한 paragraph 가 한 layer 로만 구성)."
+
+## 나쁜 rule 예시 (절대 X)
+
+> "Subtitle for Strategy 1" — 영어 + 위치 모호. 2c 가 본문 전체에 박을 위험.
+> "강조 표시" — 위치 / 조건 명시 X. 모호함.
 
 ## 출력 형식
 
-반드시 아래 JSON만 출력. **clusters 배열에 input cluster 수만큼 entry**.
+반드시 아래 JSON 만 출력. **clusters 배열에 input cluster 수만큼 entry**.
 
 ```json
 {
   "clusters": [
     {
-      "role": "<role_cluster_N>",
-      "base_layer_id": "<input layer_id 중 하나 — base로 판정한 것>",
-      "base_judgement_reason": "<base를 그 layer로 판정한 근거 — sample 패턴 + 통계>",
+      "role": "role_cluster_N",
+      "base_layer_id": "input layer_id 중 하나",
       "emphasis_layers": [
         {
-          "layer_id": "<base 외 layer_id 그대로>",
-          "charpr_id": "<input charpr_id 그대로>",
-          "rules_for_generation": [
-            "<rule 1: 적용 조건 + (필요 시 비적용 조건) + [sN, sN] inline>",
-            ...
-          ]
-        },
-        ...
-      ],
-      "additional_observations": "<rules로 정형화 못 한 패턴 / 분포 / 예외. 자유 자연어. evidence inline [sN]. 없으면 빈 문자열.>"
-    },
-    ...
+          "layer_id": "base 외 layer_id",
+          "rules_for_generation": ["rule 1", "rule 2", ...]
+        }
+      ]
+    }
   ]
 }
 ```
 
-base 외 layer 없으면(sample이 모두 한 layer만) emphasis_layers는 빈 list.
+- base 외 layer 없으면 (sample 이 모두 한 layer 만) `emphasis_layers` 는 빈 list.
+- 다른 필드 추가 금지 — JSON 짧게 유지하세요. 출력 길이가 길어지면 응답이 끊겨 전체 batch 가 실패합니다.
+
+## 출력 마지막 검사 (반드시)
+
+JSON 출력 후, 자기 출력을 다시 훑어서 두 가지 확인:
+
+1. **ASCII 작은따옴표 (`'`) 가 있으면 양식 원문대로 유니코드 (`‘` 또는 `’`) 로 교체**. 양식에는 ASCII `'` 가 한 글자도 없으니, 응답에 ASCII `'` 가 나타나면 자기 멋대로 변환한 것입니다.
+2. **backslash (\\) 가 큰따옴표 앞 외에 있으면 모두 제거**. 한 개라도 남아있으면 batch 전체가 사라집니다.
+
+맞는 예: `"분야 (‘교육·보건·의료’) 나 재고 (‘재고’) 에 적용."`
+틀린 예: `"분야 ('교육·보건·의료') 나 재고 ('재고') 에 적용."` / `"분야 (\\'교육·보건·의료\\') 에 적용."`
 """
 
 
@@ -7016,13 +7086,8 @@ def build_emphasis_layer_prompt(
         total_para = em_entry.get("total_paragraphs_in_cluster", 0)
         multi_para = em_entry.get("multi_charpr_paragraph_count", 0)
 
-        layer_stats_lines = []
-        for ls in layer_stats:
-            layer_stats_lines.append(
-                f"  - {ls['layer_id']} (charpr_id={ls['charpr_id']}): "
-                f"segments={ls['segment_count']}, chars={ls['char_count']}, "
-                f"paragraphs={ls['paragraph_count']}"
-            )
+        # 통계는 layer_id 식별용으로만 노출. base 판정은 의미 우선.
+        layer_id_lines = [f"  - {ls['layer_id']}" for ls in layer_stats]
 
         sample_lines = []
         for si, sp in enumerate(sample_paragraphs):
@@ -7030,9 +7095,8 @@ def build_emphasis_layer_prompt(
 
         header = (
             f"## {cluster_id}\n"
-            f"총 paragraph: {total_para} (multi-charpr paragraph: {multi_para})\n"
-            f"layer 통계 (input과 동일하게 출력 필수):\n"
-            + "\n".join(layer_stats_lines)
+            f"layer 목록 (이 cluster 안에 존재하는 layer_id — base 판정용 후보):\n"
+            + "\n".join(layer_id_lines)
         )
         body = (
             f"{header}\n\n"
@@ -7042,12 +7106,11 @@ def build_emphasis_layer_prompt(
         user_parts.append(body)
 
     user_content = (
-        f"아래 {len(cluster_entries)}개 cluster를 batch로 분석. "
+        f"아래 {len(cluster_entries)}개 cluster를 batch 로 분석. "
         f"clusters 배열에 cluster 수만큼 entry 출력.\n\n"
         + "\n\n".join(user_parts)
-        + f"\n\n위 {len(cluster_entries)}개 cluster 각각에 대해 base_layer 판정 + "
-        "강조 layer rules를 JSON으로 출력. 각 rule에 적용 조건 + (필요 시) "
-        "비적용 조건 + 근거 [sN] inline 인용 필수. sample_id는 해당 cluster 내에서만 유효."
+        + f"\n\n위 {len(cluster_entries)}개 cluster 각각에 대해 base_layer 판정 (sample 의미 보고 본문 골격 담당 layer 선택) + "
+        "강조 layer rules 를 JSON 으로 출력. 각 rule 에 적용 조건 + (필요 시) 비적용 조건 포함."
     )
 
     return [
@@ -7107,7 +7170,8 @@ def parse_emphasis_layer_from_llm(
             "additional_observations": "",
             "_parse_status": status,
             "_evidence_missing_rule_count": 0,
-            "_raw_response_preview": raw[:1000] if raw else "",
+            "_raw_response_preview": raw[:50000] if raw else "",
+            "_raw_response_full_len": len(raw) if raw else 0,
         }
 
     entry_by_id = {cid: em for cid, em in cluster_entries}
@@ -7131,7 +7195,6 @@ def parse_emphasis_layer_from_llm(
     if not isinstance(ai_clusters, list):
         return {cid: _fallback_for_cluster(cid, entry_by_id[cid], "schema_violation", llm_response) for cid in expected_ids}
 
-    _evidence_re = _re.compile(r"\[s\d+(?:\s*,\s*s\d+)*\]")
     result: dict = {}
 
     for ai_c in ai_clusters:
@@ -7147,15 +7210,16 @@ def parse_emphasis_layer_from_llm(
         base_layer_id = ai_c.get("base_layer_id", "") or ""
         base_entry = layer_lookup.get(base_layer_id)
         if base_entry is None and layer_stats:
+            # AI가 무효한 layer_id 출력 — 사용자 정책: 코드는 base 결정 안 함.
+            # 다만 base가 없으면 downstream 깨지므로 첫 layer를 임시 채움 + reason 명시.
             base_entry = layer_stats[0]
             base_layer_id = base_entry["layer_id"]
-            base_reason = "AI base_layer_id invalid → fallback (segment 수 최다)"
+            base_reason = "AI base_layer_id invalid"
         else:
-            base_reason = str(ai_c.get("base_judgement_reason", "") or "").strip()
+            base_reason = ""
         base_charpr_id = (base_entry or {}).get("charpr_id", "")
 
         ai_layers = ai_c.get("emphasis_layers", []) or []
-        missing = 0
         emphasis_out = []
         seen = set()
         for al in ai_layers:
@@ -7167,9 +7231,6 @@ def parse_emphasis_layer_from_llm(
             base_l = layer_lookup[lid]
             rules_raw = al.get("rules_for_generation", []) or []
             rules = [str(r).strip() for r in rules_raw if str(r).strip()]
-            for r in rules:
-                if not _evidence_re.search(r):
-                    missing += 1
             emphasis_out.append({
                 "layer_id": lid,
                 "charpr_id": base_l["charpr_id"],
@@ -7189,16 +7250,15 @@ def parse_emphasis_layer_from_llm(
                 "rules_for_generation": [],
             })
 
-        obs = str(ai_c.get("additional_observations", "") or "").strip()
         result[cluster_id] = {
             "role": cluster_id,
             "base_layer_id": base_layer_id,
             "base_charpr_id": base_charpr_id,
             "base_judgement_reason": base_reason,
             "emphasis_layers": emphasis_out,
-            "additional_observations": obs,
+            "additional_observations": "",
             "_parse_status": "ok",
-            "_evidence_missing_rule_count": missing,
+            "_evidence_missing_rule_count": 0,
         }
 
     # AI 누락 cluster fallback
@@ -12427,7 +12487,6 @@ def build_source_inventory_prompt(
         '  "summary": "source가 다루는 영역의 간단한 description (1~2 문장, chapter intent를 결정짓지 않음)",\n'
         '  "available_topics": ["source가 다루는 영역의 영역/키워드 3~7개 (선택지로, 결정적 진술 X)"],\n'
         '  "main_headings": ["source의 주요 heading/section title 목록"],\n'
-        '  "confidence": "high|medium|low",\n'
         '  "evidence_samples": ["source에서 짧은 인용 2~5개 (검색 도구로 사용됨)"]\n'
         "}\n\n"
         "원칙:\n"
@@ -12435,7 +12494,6 @@ def build_source_inventory_prompt(
         "- source의 \"주제는 X\"라는 결정적 진술을 피합니다.\n"
         "- 이 inventory는 chapter need에 매칭될 도구이지 chapter need의 frame이 아닙니다.\n"
         "- evidence_samples는 source 원문 그대로 인용.\n"
-        "- confidence는 source inventory 정리의 명확도 기준.\n"
     )
 
     return [
@@ -12515,11 +12573,9 @@ def parse_source_inventory_from_llm(llm_raw_response: str) -> dict:
         _mh = []
     _result["main_headings"] = _mh
 
-    _conf = _parsed.get("confidence", "")
-    if _conf not in CONFIDENCE_LEVELS:
-        _result["_validation"]["errors"].append(f"confidence_invalid: {_conf!r}")
-        _conf = "low"
-    _result["confidence"] = _conf
+    # confidence 출력 제거 (2026-05-24): downstream 활용 미미 — AI 출력 부담 ↓.
+    # 호환성 위해 default "high" 만 채움 (downstream 코드가 기본값 의존 시 안전망).
+    _result["confidence"] = _parsed.get("confidence", "high")
 
     _es = _parsed.get("evidence_samples", [])
     if not isinstance(_es, list) or not all(isinstance(x, str) for x in _es):
@@ -12533,6 +12589,115 @@ def parse_source_inventory_from_llm(llm_raw_response: str) -> dict:
     return _result
 
 
+def extract_toc_t_list(
+    template_path: str,
+    toc_paragraph_idx: int,
+    idx_full_texts: dict,
+) -> list[dict]:
+    """양식 차례 영역 전체의 t element 리스트 추출 (multi-paragraph 확장 2026-05-25).
+
+    AI가 양식 t element 단위로 차례 교체를 결정하도록, 양식 차례 영역의 모든
+    paragraph 의 모든 t element 를 (p_idx, t_idx, text) 형태로 평면화하여 반환.
+
+    1a 가 차례 영역 multi-paragraph 를 1 paragraph 로 통합 저장한 가정과
+    양식 xml 이 차례를 multi-paragraph 로 두는 구조의 mismatch 를 해소하기 위해,
+    양식 xml 차원에서 차례 영역을 직접 식별:
+      1. 'tab + 페이지번호' 패턴 가진 paragraph (양식 표준 차례 행) 식별
+      2. 그 paragraph 들의 연속 영역 (gap <= 2) 잡기
+      3. 영역 직전의 짧은 라벨 paragraph ('순서' / '목차' / '차례' / 'Contents') 흡수
+
+    Args:
+        template_path: 양식 .hwpx 파일 경로
+        toc_paragraph_idx: 1a 가 잡은 차례 paragraph idx (fallback 으로만 사용)
+        idx_full_texts: 1a idx → text 매핑 (fallback mapping 용)
+
+    Returns:
+        [{"p_idx": int, "t_idx": int, "text": str}, ...] — 매칭 실패 시 빈 list
+        p_idx: 양식 xml top-level p index. t_idx: 그 p 안에서 hp:t 순서 index.
+    """
+    import zipfile as _zip
+    import re as _re_local
+
+    if not template_path:
+        return []
+    try:
+        with _zip.ZipFile(template_path) as _z:
+            _section_names = sorted(
+                n for n in _z.namelist()
+                if _re_local.match(r'Contents/section\d+\.xml$', n)
+            )
+            if not _section_names:
+                return []
+            _xml = _z.read(_section_names[0]).decode("utf-8")
+    except Exception:
+        return []
+
+    _xml_paras = _re_local.findall(r'<hp:p\b[^>]*>.*?</hp:p>', _xml, _re_local.DOTALL)
+
+    def _extract_ts(_p):
+        return _re_local.findall(r'<hp:t\b[^>]*>(.*?)</hp:t>', _p, _re_local.DOTALL)
+
+    def _decode_t(_t):
+        # hp:t 안 self-closing sub-tag (hp:tab 등) 제거. 그래야 page number / 마커
+        # 매칭 시 tag 가 노이즈로 안 들어감.
+        _no_tags = _re_local.sub(r'<[^>]+/>', '', _t)
+        return (_no_tags.replace("&lt;", "<").replace("&gt;", ">")
+                        .replace("&amp;", "&").replace("&quot;", '"')
+                        .replace("&apos;", "'"))
+
+    # 1. tab + 페이지번호 패턴 paragraph 식별 (양식 표준 차례 행)
+    # 페이지번호는 마지막 t 안에 단독으로 있거나 (예: t='1'), 마지막 t 의 텍스트
+    # 끝에 묶여있을 수 있음 (예: t='󰊱 민생경제 ... 4'). 양식마다 다르므로 paragraph
+    # 의 모든 t 를 합친 후 마지막 토큰 (공백 분리) 이 1~3자리 숫자면 차례 행.
+    _toc_rows: list[int] = []
+    for _i, _p in enumerate(_xml_paras):
+        if '<hp:tab' not in _p:
+            continue
+        _ts = _extract_ts(_p)
+        if not _ts:
+            continue
+        _combined = ''.join(_decode_t(_t) for _t in _ts).strip()
+        _tokens = _combined.split()
+        if not _tokens:
+            continue
+        if _re_local.match(r'^\d{1,3}$', _tokens[-1]):
+            _toc_rows.append(_i)
+
+    if not _toc_rows:
+        return []
+
+    # 2. 연속 영역 (gap <= 2 — 사이 빈 paragraph 흡수)
+    _toc_start = _toc_rows[0]
+    _toc_end = _toc_rows[0]
+    for _c in _toc_rows[1:]:
+        if _c - _toc_end <= 3:
+            _toc_end = _c
+        else:
+            break  # 차례 영역 끝
+
+    # 3. 직전의 짧은 라벨 paragraph 흡수 (있으면)
+    if _toc_start > 0:
+        _prev = _xml_paras[_toc_start - 1]
+        _prev_ts = _extract_ts(_prev)
+        _prev_text = ''.join(_decode_t(_t) for _t in _prev_ts).strip()
+        if 0 < len(_prev_text) <= 15:
+            if any(_kw in _prev_text for _kw in ('순', '목', '차', '례', 'Contents', 'CONTENTS')):
+                _toc_start = _toc_start - 1
+
+    # 4. 영역 전체 paragraph 의 t element 모으기
+    _result: list = []
+    for _p_idx in range(_toc_start, _toc_end + 1):
+        _p = _xml_paras[_p_idx]
+        _ts = _extract_ts(_p)
+        for _t_idx, _t_text in enumerate(_ts):
+            _result.append({
+                "p_idx": _p_idx,
+                "t_idx": _t_idx,
+                "text": _decode_t(_t_text),
+            })
+    return _result
+
+
 def build_adaptation_plan_prompt(
     source_inventory: dict,
     chapter_inputs: list[dict],
@@ -12540,6 +12705,7 @@ def build_adaptation_plan_prompt(
     max_source_preview_chars: int = 0,
     header_roles: list[dict] | None = None,
     template_toc_text: str = "",
+    template_toc_t_list: list[dict] | None = None,
 ) -> list[dict]:
     """13.7c (=신 2a) chapter mapping + header batch prompt.
 
@@ -12570,7 +12736,6 @@ def build_adaptation_plan_prompt(
             "idx": ch.get("idx"),
             "original_title": ch.get("original_title", ""),
             "description": ch.get("description", ""),
-            "local_pattern_summary": ch.get("local_pattern_summary", ""),
             "local_catalog_summary": ch.get("local_catalog_summary", ""),
         })
 
@@ -12589,7 +12754,7 @@ def build_adaptation_plan_prompt(
         "Template-flow 우선 원칙:\n"
         "- chapter의 **역할(role), 순서, 깊이**는 template이 결정합니다. source가 이걸 바꾸지 않습니다.\n"
         "- chapter role은 **Roman numeral 위치로 고정되지 않습니다.** Ⅱ장이라고 status가 아니고, Ⅲ장이라고 action이 아닙니다.\n"
-        "  original_title과 local_pattern_summary, local_catalog_summary를 우선 봐서 role을 판단합니다.\n"
+        "  original_title 과 local_catalog_summary 를 우선 봐서 role 을 판단합니다.\n"
         "- source의 heading/제목/표현이 좋아 보여도, template chapter role과 맞지 않으면 그대로 가져오지 않습니다.\n"
         "- chapter 제목 결정 원칙:\n"
         "  → 양식 제목의 모든 token은 sample. **chapter role 어휘만 양식 흐름 유지**.\n"
@@ -12638,11 +12803,21 @@ def build_adaptation_plan_prompt(
         f"{_json.dumps(_header_brief, ensure_ascii=False, indent=2)}\n\n"
         if _header_brief else ""
     )
-    _toc_block = (
-        "[template_toc_text]\n"
-        f"```\n{template_toc_text}\n```\n\n"
-        if template_toc_text and template_toc_text.strip() else ""
-    )
+    if template_toc_t_list:
+        _toc_block = (
+            "[template_toc_t_list]\n"
+            "양식 차례 영역 전체의 t element 분포 (multi-paragraph).\n"
+            "각 entry: {p_idx: 양식 paragraph index, t_idx: 그 paragraph 안 t index, text: 그 t 의 원문}.\n"
+            "**같은 차례 줄은 같은 p_idx 를 공유** — 여러 t 로 나뉘어 있어도 한 줄.\n"
+            f"```json\n{_json.dumps(template_toc_t_list, ensure_ascii=False, indent=2)}\n```\n\n"
+        )
+    elif template_toc_text and template_toc_text.strip():
+        _toc_block = (
+            "[template_toc_text]\n"
+            f"```\n{template_toc_text}\n```\n\n"
+        )
+    else:
+        _toc_block = ""
 
     user_msg = (
         "[chapters]\n"
@@ -12671,7 +12846,7 @@ def build_adaptation_plan_prompt(
         "  가장 자연스럽게 채울 수 있는 단일 패키지를 선택합니다.\n"
         "- focus를 정할 수 없거나 서로 다른 정책 패키지를 섞어야 하면 ambiguity_flags에\n"
         "  'multi_topic_source_mixing_risk' 기록.\n"
-        "- 결과를 overall_source_focus.topic과 overall_source_focus.reason에 기록합니다.\n\n"
+        "- 결과를 overall_source_focus.topic에 기록합니다 (한 단어 / 한 줄).\n\n"
         "Step 1 — chapter별 adapted_title 결정\n\n"
         "각 chapter의 original_title과 source 도메인을 보고 적합한 제목을 결정합니다.\n\n"
         "원칙:\n"
@@ -12690,8 +12865,7 @@ def build_adaptation_plan_prompt(
         "JSON schema:\n"
         "{\n"
         '  "overall_source_focus": {\n'
-        '    "topic": "이 chapter set이 사용하는 중심 source 주제.",\n'
-        '    "reason": "왜 이 topic을 선택했는지. template chapter 흐름과의 적합성 근거."\n'
+        '    "topic": "이 chapter set이 사용하는 중심 source 주제 (한 줄)."\n'
         "  },\n"
         '  "chapter_decisions": [\n'
         "    {\n"
@@ -12705,14 +12879,9 @@ def build_adaptation_plan_prompt(
         '      - parts list: [{\\"charPrIDRef\\": \\"양식 charPr 그대로\\", \\"text\\": \\"새 텍스트\\"}, ...]\\n'
         '        (template_parts 있는 경우 — 같은 parts 수 + 같은 charPrIDRef 순서로 출력)"\n'
         "  },\n"
-        '  "toc_replacements": {\n'
-        '    "chapter_titles": [\n'
-        '      {"chapter_idx": int, "from": "양식 TOC text의 원본 substring", "to": "adapted_title"}\n'
-        "    ],\n"
-        '    "child_items": [\n'
-        '      {"from": "양식 TOC text의 자식 항목 substring (마커 제외)", "to": "?"}\n'
-        "    ]\n"
-        "  }\n"
+        '  "toc_replacements": [\n'
+        '    {"p_idx": int, "t_idx": int, "new_text": "그 t element 에 들어갈 새 텍스트"}\n'
+        "  ]\n"
         "}\n\n"
         "header 추출 규칙 (옛 2a에서 흡수):\n"
         "- 위 [header_roles]에 명시된 role만 key로 사용 (목록에 없는 role 만들지 X).\n"
@@ -12730,24 +12899,28 @@ def build_adaptation_plan_prompt(
         "  - 출력은 같은 parts 갯수 + 같은 charPrIDRef 순서로 list 형태.\n"
         "  - 각 part의 text는 그 글꼴 영역에 맞는 새 텍스트 (양식 sample의 의미·구조 유지).\n"
         "  - template_parts 없으면 단일 문자열로 출력.\n\n"
-        "toc_replacements 규칙:\n"
-        "- [template_toc_text] 가 입력에 있으면 양식 TOC text 안 substring 교체를 두 그룹으로 만드세요.\n"
-        "- **from은 반드시 [template_toc_text] 안 실제 존재하는 substring** (코드가 TOC text에서 검색).\n"
-        "- **chapter_titles 그룹 (chapter_idx 매핑 강제)**:\n"
-        "  [chapters]의 모든 chapter에 대해 빠짐없이 1개씩 entry. chapter_idx 0, 1, 2, ... 다 포함.\n"
-        "  - chapter_idx: [chapters] input의 idx 그대로\n"
-        "  - from: 그 chapter의 original_title이 TOC text 안에 존재하는 깨끗한 substring 형태.\n"
-        "    original_title이 noisy해서 더 길면 TOC text 안 substring 부분만 사용.\n"
-        "  - to: 같은 chapter의 adapted_title\n"
-        "- **child_items 그룹 (자식 항목 ?)**:\n"
-        "  chapter title 아래 세부 항목들. chapter title 아닌 글자.\n"
-        "  - from: TOC text 안 자식 항목 본문 substring (마커 제외).\n"
-        "    자식 마커는 from에 포함하지 마세요. 양식 마커는 보존됩니다.\n"
-        "  - to: '?' 한 글자\n"
-        "- 교체하지 않는 것 (replacement 안 만듦):\n"
-        "  - TOC 라벨 ('순 서', '목차', 'Contents' 등) — 양식 그대로\n"
-        "  - 숫자 (페이지 번호) — 양식 자동 처리 영역\n"
-        "- [template_toc_text]가 비어있거나 입력에 없으면 \"toc_replacements\": {\"chapter_titles\": [], \"child_items\": []} 빈 객체로 출력.\n\n"
+        "toc_replacements 규칙 (multi-paragraph 차례 영역):\n"
+        "- [template_toc_t_list] 가 입력에 있으면, 양식 차례 영역의 어떤 t element 를 어떻게 바꿀지 결정합니다.\n"
+        "- 각 entry: {\"p_idx\": int, \"t_idx\": int, \"new_text\": str}\n"
+        "  - p_idx: [template_toc_t_list] 의 그 t 가 속한 paragraph index (양식 paragraph)\n"
+        "  - t_idx: 그 paragraph 안 t element index\n"
+        "  - new_text: 그 t element 의 text 를 통째로 교체할 새 텍스트\n"
+        "- **(p_idx, t_idx) 쌍은 [template_toc_t_list] 에 등장한 그대로** 사용. 임의 값 금지.\n"
+        "- **보존할 t 는 entry 를 만들지 마세요** (생략하면 양식 원본 그대로 유지):\n"
+        "  - 마커만 든 t (예: 'Ⅰ', 'Ⅱ', '◈', '□', 'ㅇ', '󰊱', '.', ' ')\n"
+        "  - TOC 라벨 ('순 서', '목차', 'Contents' 등)\n"
+        "  - 페이지 번호 / 탭 / 숫자만 있는 t\n"
+        "  - 빈 paragraph / 공백 t\n"
+        "- **chapter title 처리** (모든 chapter 1개씩 빠짐없이):\n"
+        "  - 각 chapter 의 차례 paragraph 를 찾고 (같은 p_idx 공유 t 모음), chapter 본문 텍스트가 들어있는 t 의 new_text = 그 chapter 의 adapted_title.\n"
+        "  - 마커가 별도 t 에 있으면 마커 t 는 보존 (entry 생략).\n"
+        "  - 마커와 chapter 본문이 한 t 에 묶여있으면 new_text 에 마커 보존하여 출력 (예: t.text='󰊳 추진성과 및 평가' → new_text='󰊳 새 chapter title').\n"
+        "  - **여러 t 에 chapter 본문이 분산된 경우** (예: t_idx=2='. 2024년 업무추진 여건 및 방향', t_idx=3=' 2 '): 본문 t 에 new_text 박고, 페이지번호 t 는 생략 (보존).\n"
+        "- **자식 항목 처리**:\n"
+        "  - 자식 본문 텍스트 t 의 new_text = '?'\n"
+        "  - 마커가 별도 t 면 보존, 묶여있으면 마커 보존하여 '󰊳 ?' 형태\n"
+        "- [chapters] 의 모든 chapter 에 대해 adapted_title 용 entry 가 반드시 있어야 합니다.\n"
+        "- [template_toc_t_list] 가 비어있거나 입력에 없으면 \"toc_replacements\": [] 빈 list 출력.\n\n"
         "**한 줄 정리: 제목은 source를 반영해야 하지만, chapter의 역할어와 문서 흐름은 template을 따라야 합니다.**\n"
         "**'먼저 같게 가져갈지 다르게 가져갈지'를 정하지 말고, source 적합성과 chapter role에 따라 자연스러운 제목을 정하면 됩니다.**\n"
     )
@@ -12813,18 +12986,12 @@ def parse_adaptation_plan_from_llm(
         _result["_validation"]["errors"].append("response_not_object")
         return _result
 
-    # 13.7e v2: top-level overall_source_focus 추출
+    # 13.7e v2: top-level overall_source_focus 추출 (topic 만 — reason 제거됨)
     _osf = _parsed.get("overall_source_focus")
     if isinstance(_osf, dict):
-        _result["overall_source_focus"] = {
-            "topic": _osf.get("topic"),
-            "reason": _osf.get("reason"),
-        }
+        _result["overall_source_focus"] = {"topic": _osf.get("topic")}
     else:
-        _result["overall_source_focus"] = {
-            "topic": None,
-            "reason": "missing_from_llm_output",
-        }
+        _result["overall_source_focus"] = {"topic": None}
 
     # 옛 2a 흡수: header 슬롯 추출
     # value는 두 형태:
@@ -12853,34 +13020,35 @@ def parse_adaptation_plan_from_llm(
     else:
         _result["header"] = {}
 
-    # TOC replacements 추출 — dict {chapter_titles, child_items} 또는 list (옛 호환)
+    # TOC replacements — (p_idx, t_idx) 단위 schema (multi-paragraph 확장 2026-05-25).
+    # AI 가 양식 차례 영역의 어떤 paragraph 의 어떤 t element 에 무엇을 박을지 결정.
+    # 코드는 그 (p_idx, t_idx) 의 .text 만 set — substring 매칭 없음.
     _tocr = _parsed.get("toc_replacements")
     _clean: list = []
-    if isinstance(_tocr, dict):
-        # 신 schema: chapter_titles (chapter_idx 매핑) + child_items
-        for _item in (_tocr.get("chapter_titles") or []):
-            if not isinstance(_item, dict):
-                continue
-            _from = str(_item.get("from") or "")
-            _to = str(_item.get("to") or "")
-            if _from:
-                _clean.append({"from": _from, "to": _to})
-        for _item in (_tocr.get("child_items") or []):
-            if not isinstance(_item, dict):
-                continue
-            _from = str(_item.get("from") or "")
-            _to = str(_item.get("to") or "")
-            if _from:
-                _clean.append({"from": _from, "to": _to})
-    elif isinstance(_tocr, list):
-        # 옛 호환: flat list
+    if isinstance(_tocr, list):
+        _seen_keys: set = set()
         for _item in _tocr:
             if not isinstance(_item, dict):
                 continue
-            _from = str(_item.get("from") or "")
-            _to = str(_item.get("to") or "")
-            if _from:
-                _clean.append({"from": _from, "to": _to})
+            _p_idx = _item.get("p_idx")
+            _t_idx = _item.get("t_idx")
+            _new_text = _item.get("new_text")
+            if not isinstance(_t_idx, int) or _t_idx < 0:
+                continue
+            if not isinstance(_new_text, str):
+                continue
+            # p_idx 가 없으면 옛 schema (단일 paragraph) — fallback 으로 받음
+            if _p_idx is not None and not isinstance(_p_idx, int):
+                continue
+            _key = (_p_idx, _t_idx)
+            # 중복 (p_idx, t_idx) 는 마지막 결정 우선
+            if _key in _seen_keys:
+                _clean = [r for r in _clean if (r.get("p_idx"), r.get("t_idx")) != _key]
+            _seen_keys.add(_key)
+            _entry = {"t_idx": _t_idx, "new_text": _new_text}
+            if _p_idx is not None:
+                _entry["p_idx"] = _p_idx
+            _clean.append(_entry)
     _result["toc_replacements"] = _clean
 
     _decisions = _parsed.get("chapter_decisions")
@@ -12942,15 +13110,13 @@ def build_source_range_prompt(
         _ch_brief.append({
             "idx": ch.get("idx"),
             "adapted_title": ch.get("adapted_title", ""),
-            "original_title": ch.get("original_title", ""),
         })
 
     _focus_str = ""
     if isinstance(overall_source_focus, dict) and overall_source_focus.get("topic"):
         _focus_str = (
             "\n[overall_source_focus]\n"
-            f"topic: {overall_source_focus.get('topic')}\n"
-            f"reason: {overall_source_focus.get('reason', '')}\n\n"
+            f"topic: {overall_source_focus.get('topic')}\n\n"
         )
 
     system_msg = (
@@ -12968,16 +13134,9 @@ def build_source_range_prompt(
         f"{source_text}\n"
         "```\n\n"
         "각 chapter에 들어갈 source 영역을 char idx 범위(start, end)로 결정하세요.\n\n"
-        "**핵심 원칙 (강제)**:\n"
-        "- **chapter 사이 source 범위는 겹쳐도 OK**. 같은 source 문장이 여러 chapter에 들어가도 정상.\n"
-        "- **한 chapter에 필요한 모든 내용을 다 담는 게 겹침 회피보다 우선**.\n"
-        "- **겹침 피하려고 chunk 잘라내지 마세요**. 분배가 아니라 '필요한 영역 식별'.\n"
-        "- 애매하면 무조건 범위에 포함 (널널 룰). 빠뜨리는 것보다 포함하는 게 안전.\n"
-        "- chunk가 chapter 경계에서 애매하면 양쪽 chapter에 다 포함.\n"
-        "- 한 chapter가 source 여러 위치에 흩어져 있으면 ranges에 여러 range로.\n\n"
+        "**핵심 원칙 (강제)**: 한 chapter에 필요한 내용을 다 담는 것이 우선. 겹침/중복 허용 (같은 영역이 여러 chapter 에 들어가도 OK). 애매하면 포함. chapter 가 source 여러 위치에 흩어져 있으면 ranges 에 여러 range.\n\n"
         "범위 결정 기준:\n"
         "- adapted_title의 의미와 source 영역의 내용이 맞으면 그 영역 포함.\n"
-        "- adapted_title이 양식 원본 그대로면 source의 어디든 chapter role에 맞는 곳 식별.\n"
         "- chapter set 전체로 보면 overall_source_focus 안에서 sub-evidence 분배.\n\n"
         "JSON 출력:\n"
         "{\n"
@@ -13216,31 +13375,6 @@ def compute_reference_metrics(
     return metrics
 
 
-def should_split_adaptation_batch(
-    prompt_text: str,
-    model_context_char_budget: int = 128000,
-    safety_ratio: float = 0.95,
-) -> bool:
-    """13.7c: batch split 동적 기준.
-
-    원칙: 고정 chapter 수 기준이 아니라 입력 크기 기준. char 길이로
-    rough token 추정 (의미 판단 아님).
-
-    model_context_char_budget의 safety_ratio 넘으면 split 권고.
-    안전 마진은 운영 기준 (의미 하드코딩 아님).
-
-    임계값: 128000 × 0.95 = 121,600자. gpt-5.4 128k context 거의 다 활용
-    (response token ~6000자 여유). 큰 양식 (챕터 수십~수백)에서만 split 발동.
-
-    이전 (100000 × 0.6 = 60000자): 어제 1차 fix로 소스 50000자 입력 후
-    자주 발동 → split path가 overall_source_focus 누락 → 챕터 작전 일관성
-    위험. 임계값 완화로 single batch 유지하면 root 관점 살림.
-    """
-    if not prompt_text:
-        return False
-    return len(prompt_text) > model_context_char_budget * safety_ratio
-
-
 def normalize_adaptation_decision(
     decision: dict,
     original_title: str,
@@ -13364,8 +13498,6 @@ def summarize_adaptation_plan(
     decisions: list[dict],
     source_topic: dict,
     ai_call_info: dict | None = None,
-    batch_strategy: str = "single",
-    batch_split_reason: str | None = None,
     overall_source_focus: dict | None = None,
 ) -> dict:
     """슬림 summary — adapted_title 결정 결과만 요약. 옛 부수 분포 제거."""
@@ -13387,8 +13519,6 @@ def summarize_adaptation_plan(
         "validation_failure_count": validation_failure_count,
         "title_pairs": title_pairs,
         "ai_calls": ai_call_info or {},
-        "batch_strategy": batch_strategy,
-        "batch_split_reason": batch_split_reason,
     }
 
 
@@ -15336,16 +15466,65 @@ def extract_shallow_section_plan_seed(
 SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다.
 하나의 대제목 섹션에 대해, 주어진 **role 패턴**에 따라 소스 내용을 배치합니다.
 
+# ⚠️ 절대 규칙 — 소스 원문 그대로 사용 (변환 X)
+
+당신은 1차 스켈레톤 작성자. **소스의 문장 / 단어 / 표현 / 글자를 가능한 그대로 가져다 쓰세요**. 말투 정제 / 형식 모방은 다음 단계 (2b-b) 가 처리합니다.
+
+## 절대 X — 인공지능 자기 멋대로 변환 금지
+
+- **한자 변환 절대 금지** — 소스가 한글이면 그대로 한글. 한국어 한자어 (`점검 결과`, `행정`, `정보시스템`, `업무` 등) 를 **한자 (`点检结果`, `行政`, `信息系统`, `業務`) 로 변환 절대 X**. 현대 한국 행정문서는 한글 위주.
+- **영어 변환 절대 금지** — 소스가 한글이면 그대로. `클라우드` 를 `cloud` 로 변환 X.
+- **새 한자 / 새 영어 단어 생성 절대 금지** — 소스에 정확히 등장한 한자 / 영어만 그대로 쓰고, 그 외 모든 한자 / 영어 단어 만들기 X. 인공지능 중국어 / 일본어 학습 데이터의 한자 (`点检`, `信息`, `行政`, `公司`, `通信` 등) 출력 절대 X.
+
+## 양식 sample 의 단어 가져오기 금지
+
+- 양식 sample 의 한자 / 영어 / 행정 약어 등을 새 본문에 가져오기 X.
+- 양식 sample 은 트리 구조 / role 의미 이해용 참고만. **단어 / 말투 / 형식 모방은 2b-b 책임**.
+- 양식 sample 이 `(Back to the Basic)` 같은 영어 부제면 → 당신은 그것 안 따라가도 됨. 단어는 소스 원문에서만.
+
+## 자유도 한계
+
+- 소스의 사실 / 숫자 / 주체 / 시기 → 정확히 그대로 (`6 층`, `'25. 6. 5.`, `4 억 4,894 만원` 등 변경 X)
+- 짧게 만들기 위해 단어 줄이지 마세요. 정보 손실 X.
+- 말투 / 술어 / 분할 형식 변환 X — 2b-b 가 처리.
+- 의역 / 단어 교체 X.
+
+## 정보 압축 금지 (강제)
+
+각 item text 는 source 의 관련 내용을 **과도하게 압축하지 않습니다**.
+
+- source 에 대상 / 시기 / 규모 / 수단 / 결과 함께 있으면 → 가능한 한 같은 item 또는 적절한 자식 item 에 **모두 보존**.
+- `계약 체결`, `사업 착공`, `추진` 처럼 **결과어만 남기고 대상 / 시기 / 규모 / 수단 누락 X**.
+- 잘못된 예: `(부지계약) 사업 착공` (대상/시기 누락)
+- 올바른 예: `(부지계약) 새만금산단 (2 공구) 용지 계약 체결` + 자식에 `(시기) '26 년 상반기` (정보 분산 보존)
+- 단, 양식 말투나 종결어미로 다듬는 건 2b-b 책임 — 정보 손실만 안 되게.
+
+## 출력 직전 자체 점검 (반드시)
+
+JSON 출력 직전, 모든 item 의 text 를 다시 훑어서:
+
+1. **한자가 있는가?** 있다면 → source 원문에 그 한자가 정확히 있었는지 확인. 없으면 한글 source 표현으로 되돌리기.
+2. **영어 단어가 있는가?** 있다면 → source 원문에 그 영어가 정확히 있었는지 확인. 없으면 한글 표현으로 되돌리기.
+3. **새 한자 / 새 영어가 단 한 글자라도 남으면 안 됨** — 양식 sample 의 한자/영어 가져온 것도 X. source 원문에 정확히 일치하는 글자만 허용.
+
+이 자체 점검을 거치지 않은 출력은 wrong. 출력 전에 반드시 점검하세요.
+
 ## 핵심 규칙 (강제)
 
 1. **패턴에 명시된 role만 사용하세요** — 새 role 생성 금지
-2. **개수 제약 (강제)**:
+2. **개수 제약 (강제) — target_count 우선**:
    - `정확히 1개/부모`: 부모 인스턴스 아래 딱 1개만 생성. 2개 이상 절대 금지.
-   - `여러 개 가능`: 양식 관찰 갯수 **min ~ max 사이**에서 결정.
-     - **min 미만 절대 금지** (그보다 적게 만들지 마세요)
-     - **max 초과 절대 금지** (그보다 많이 만들지 마세요)
-     - `mean`은 참고용 (분포의 중심 — 어느 쪽에 가까울지 판단)
-     - 단일 관찰(min=max=N)이면 그 값 N을 그대로 사용
+   - `여러 개 가능`: **양식 관찰의 mean (반올림 정수) 을 target_count 로 기본 생성**. min 만 만들지 마세요.
+     - 양식이 같은 parent 아래 같은 role 을 평균 N 개 관찰했으면 → 새 출력에서도 **N 개의 독립 instance 분리 생성**.
+     - **min 까지 줄이는 건 source 에 명확히 N 개 분리할 내용이 없을 때만**. 단순히 source 가 짧다는 이유로 N 개 → 1 개 합치기 절대 X.
+     - **max 초과 절대 금지**.
+     - 단일 관찰 (min=max=N) 이면 그 값 N 그대로.
+
+   **합치기 금지 (강제 룰)**:
+   - 양식에서 같은 parent 아래 같은 child role 이 N 개 관찰됐다면, source 가 한 문단이어도 **쉼표 / 세미콜론 / 번호 / 날짜 / 기관 / 조치 단위로 분리해 N 개 instance 에 배치**.
+   - 같은 role 이 반복 등장하는 게 정상. 합치면 wrong.
+   - 잘못된 예: 하나의 detail_item 안에 세 가지 조치 다 포함 ← 절대 X
+   - 올바른 예: detail_item 1, 2, 3 으로 분리
 3. **필수/선택**:
    - `필수(최소 1개)`: 반드시 1개 이상 포함
    - `선택(생략 가능)`: 해당 내용이 소스에 없으면 생략
@@ -15360,12 +15539,12 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 
 ## ⚠️ 소스와 양식의 주제가 완전히 다를 수 있음
 
-양식은 **어떤 주제**(예: 과일 가격)를 다뤘더라도, 당신이 채울 소스는 **전혀 다른 주제**(예: 야구장 관객 수)일 수 있습니다.
+양식은 **어떤 주제** (예: 과일 가격) 를 다뤘더라도, 당신이 채울 소스는 **전혀 다른 주제** (예: 야구장 관객 수) 일 수 있습니다.
 
-- **role의 description은 구조적·관계적 역할만 기술**합니다. 주제는 무관.
-- **role의 sample text는 스타일(문장 길이/포맷) 참고용**입니다. **주제는 완전히 무시**하세요.
-- sample이 "딸기 가격이 15% 상승"이라도 당신 소스가 야구라면 "관중 수가 15% 증가"처럼 **해당 소스 주제로 작성**
-- sample의 **길이/문체/숫자 포함 여부** 같은 형식만 따르세요 (marker는 코드가 처리)
+- **role 의 description 은 구조적·관계적 역할만** 기술. 주제 무관.
+- **role 의 sample text 는 트리 구조 / role 의미 이해용 참고만**. **단어 / 문체 / 형식 모방 X — 다음 단계 (2b-b) 가 처리**.
+- sample 이 어떤 주제든 → 당신은 **소스의 단어 / 글자** 그대로 사용.
+- sample 의 양식 단어 (영어 / 한자 / 행정 약어 등) 가져오기 절대 X.
 
 ## source 내용 재구성 (양식 구조 우선)
 
@@ -15395,12 +15574,11 @@ source는 양식과 다른 도메인일 가능성이 큽니다. source의 자연
 chapter title을 그대로 복제하지 마세요. chapter title은 양식 전체 대제목으로
 별도 위치에 이미 박히고, 당신은 그 아래 트리 자식들만 채웁니다.
 
-판단 기준 — 양식 role 카탈로그의 sample text를 직접 참고하세요:
-- sample이 chapter title 자체가 아니라 chapter 안의 **별도 측면**(구체적 성과,
-  세부 전략, sub-과제, intro 요약 등)을 보여주면 그 패턴 그대로 따라가세요.
-- chapter title보다 한 단계 좁고 구체적인 sub-주제로 작성하세요.
-- 양식 sample의 스타일·길이는 따르되, 주제는 당신 source의 해당 부분 내용을
-  사용 (스타일 모방, 내용 복제 X). **marker는 본문에 넣지 마세요 — 코드가 자동 부착합니다**.
+판단 기준 — 양식 role 카탈로그의 sample text 는 **트리 구조 / role 의미 이해용** 참고:
+- sample 이 chapter title 자체가 아니라 chapter 안의 **별도 측면** (구체적 성과, 세부 전략, sub-과제, intro 요약 등) 을 보여주면 — 그 **위치 / 깊이** 를 트리 구조로 반영.
+- chapter title 보다 한 단계 좁고 구체적인 sub-주제로 작성.
+- **양식 sample 의 단어 / 문체 / 길이 모방 X — 다음 단계 (2b-b) 가 처리**. 당신은 소스 내용 정확히 추출만.
+- **marker 는 본문에 넣지 마세요** — 다음 단계 (형식 입히기) 가 자동 부착.
 
 이 규칙은 트리 모든 단계에 동일: 부모→자식으로 내려갈수록 더 구체적 정보로
 좁혀져야 하며, 같은 정보가 부모와 자식에 중복되면 안 됩니다.
@@ -15436,10 +15614,22 @@ section_header
 소스에서 ※로 시작하더라도 내용이 주제 설명이면 detail_item일 수 있고,
 소스에서 ㅇ로 시작하더라도 내용이 보충 설명이면 note일 수 있습니다.
 
-## 텍스트 작성 규칙
-- **role의 description이나 번호("과제 1", "전략 2" 등)를 텍스트에 넣지 마세요**
-- 소스의 실제 내용만 작성하세요
-- **양식 sample의 본문 시작 형태(괄호·키워드·문장 시작 등)와 문체·길이를 그대로 모방하세요** — sample이 "`(분석)` ..."로 시작하면 출력도 그 형태로
+## 텍스트 작성 규칙 (2b-a 책임 범위)
+
+- **role 의 description 이나 번호 ("과제 1", "전략 2" 등) 를 텍스트에 넣지 마세요**
+- **소스의 실제 내용만 작성** — 사실 / 숫자 / 주체 / 시기 정확히
+- **양식 sample 단어 / 말투 / 형식 모방하지 마세요** — 그건 다음 단계 (2b-b) 가 처리합니다.
+- 단어는 소스에서. 형식 정제는 신경 X. 정보를 정확히 트리에 배치하는 데 집중.
+
+## ⚠️ 2b-a 의 책임은 정보 + 구조
+
+이 단계는 **1차 본문 (스켈레톤)** 작성. 양식 sample 은 트리 구조 / role 의미 이해용 참고만, **단어 / 술어 / 분할 모방 X**.
+
+- 양식 sample 이 `[전략1] ... (Back to the Basic)` 형태라도 → 새 본문은 소스 단어로 자유롭게. 양식 영어 / 한자 가져오기 금지.
+- 양식 sample 이 명사구로 끝나든 서술문이든 → 신경 쓰지 마세요. 정보 정확히 적기만.
+- 양식 sample 의 분할 패턴 (괄호 부제 / 키워드 위치) → 모방 X. 2b-b 가 처리.
+
+다음 단계 (2b-b) 가 1차 본문을 받아 양식 sample 말투/형식으로 정제합니다. 2b-a 는 raw 정보만.
 
 ## 출력 형식
 
@@ -15521,10 +15711,13 @@ def _format_pattern_tree(
             _min = min(observed)
             _max = max(observed)
             _mean = sum(observed) / len(observed)
+            _target = round(_mean) if _mean > 0 else _min
             observed_preview = observed[:6]
             more = "…" if len(observed) > len(observed_preview) else ""
             flags.append(
-                f"양식 갯수 min={_min}, max={_max}, mean={_mean:.1f} (관찰={observed_preview}{more})"
+                f"양식 관찰 갯수 = {observed_preview}{more}, "
+                f"target_count={_target} (이만큼 분리 생성 권장, 합치기 금지), "
+                f"min={_min}, max={_max}"
             )
         # per_type semantics 우선, global fallback
         pts = (per_type_semantics or {}).get(role_name, {})
@@ -15804,28 +15997,9 @@ def build_section_fill_prompt(
         "더 만들어서 분리. 인스턴스 부족 시 자식 role을 root로 박는 거 금지.)"
     )
 
-    # 11.2 style_profiles — 패턴에 등장하는 role의 말투 rule
+    # 2b-a 는 말투 책임 X — style_profiles 받지만 prompt 박지 않음.
+    # 양식 sample 의 말투/술어/분할 모방은 2b-b (build_section_polish_prompt) 의 책임.
     style_text = ""
-    if style_profiles:
-        _style_lines = []
-        for role in sorted(pattern_roles):
-            sp = style_profiles.get(role) or {}
-            rules = sp.get("content_style_rules_for_generation") or []
-            obs = (sp.get("additional_observations") or "").strip()
-            if not rules and not obs:
-                continue
-            _style_lines.append(f"\n### {role}")
-            for r in rules:
-                _style_lines.append(f"- {r}")
-            if obs:
-                _style_lines.append(f"- (추가 관찰): {obs}")
-        if _style_lines:
-            style_text = (
-                "## role별 말투 가이드 (양식 sample 분석 결과 — 그대로 따르세요)\n"
-                + "각 rule의 [sN]은 양식 분석 시점의 sample 번호 (참고용, 출력에 인용 X).\n"
-                + "\n".join(_style_lines)
-                + "\n\n"
-            )
 
     # 2c 분리 (2026-05-22): 강조 markup 생성은 2c 책임 — 2b prompt에 강조 가이드 박지 않음.
     # emphasis_layers / paragraph_emphasis_map 인자는 호환성 위해 받지만 prompt에 박지 않음.
@@ -15845,7 +16019,7 @@ def build_section_fill_prompt(
     user_parts = []
     text_block = (
         f"## 대제목\n"
-        f"**{chapter_title}** (타입: {chapter_type_name})\n\n"
+        f"**{chapter_title}**\n\n"
         f"## 이 섹션의 role 패턴\n"
         f"아래 패턴에 따라 내용을 배치하세요:\n{pattern_text}\n\n"
         f"{template_tree_text}"
@@ -16063,6 +16237,237 @@ def parse_section_fill_from_llm(llm_response: str) -> list[dict]:
 # - 2c: 작성된 본문에 양식 형식(마커 + 강조 글꼴 분리 markup) 입힘
 # - assemble: 2c output 그대로 본보기에 박음 (마커 부착 코드 없음)
 #
+
+
+SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문 다듬기 전문가입니다.
+
+1차로 작성된 본문 트리 (스켈레톤) 를 받아, **양식 sample 의 말투 / 분할 / 술어 종결 / 본문 풍부함** 으로 정제합니다. **기존 item 의 문체·술어·분할 정제** 가 주된 책임. instance 추가는 예외적 복구 모드에서만.
+
+# ⚠️ 절대 규칙 1 — 한자 / 일본어 / 영어 자체 점검 (출력 직전 4 단계 강제)
+
+2b-b 의 **가장 중요한 책임은 한자 검증·치환**입니다. 이전 단계 (2b-a) 가 한자 / 일본어 / 영어를 자체 생성한 경우 **2b-b 가 반드시 한글로 되돌립니다**.
+
+JSON 출력 직전, 모든 item 의 text 를 4 단계로 검증·치환합니다:
+
+## Step 1 — 한자 / 일본어 / 영어 단어 수집
+
+각 item 의 text 안에서 다음 패턴을 모두 찾아 list 로 만들기:
+- **한자** (CJK Unified Ideographs U+4E00~U+9FFF): `業務`, `行政`, `情報`, `点检`, `信息`, `公司`, `通信`, `服務`, `提供`, `等`, `付き` (일본어 히라가나·가타카나도 포함) 등.
+- **영어 단어**: `cloud`, `service`, `system` 등.
+
+## Step 2 — source 원문 그대로 매칭 검증
+
+수집한 각 단어를 **source 원문에서 같은 글자 그대로** 검색:
+- **정확 매칭만** (부분 매칭·유사 매칭 X).
+- 양식 sample 에 있어도 source 원문에 없으면 → **있는 것 아님**. 양식 단어 가져오기 절대 X.
+- source 원문에 등장하면 → 보존 가능 (예: source 가 `(美)`, `(韓)`, `bottleneck` 직접 사용하면 그대로).
+
+## Step 3 — source 원문에 없으면 한글로 치환
+
+source 에 없는 한자 / 일본어 / 영어 단어는 **모두 한글로 치환**합니다. 대응 한글이 없으면 source 원문에 등장하는 다른 한글 표현으로 paraphrase. 그래도 안 되면 그 단어 자체를 제거하고 자연스럽게 잇기.
+
+**자주 잘못 생성되는 한자 → 한글 치환 예** (참고용, source 검증 후 적용):
+- `業務` → `업무`, `行政` → `행정`, `情報` → `정보`, `信息` → `정보`, `公司` → `회사`, `通信` → `통신`
+- `服務` → `서비스`, `提供` → `제공`, `等` → `등`, `点检` → `점검`, `諮詢` → `자문`
+- 일본어 `付き` → `붙은` 또는 제거, `(美)` 가 source 에 없으면 `(미국)` 로
+
+**중요**: 한자가 한국어 한자어로 통용되더라도 (`業務` 같은 게 흔히 쓰여도) **source 에 한자 형태로 등장하지 않으면 무조건 한글**. 현대 한국 행정문서는 한글 위주.
+
+## Step 4 — 출력 직전 최종 스캔
+
+JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+4E00~U+9FFF) / 일본어 가나가 한 글자라도 남아있는지 확인:
+- 남아있고 source 원문에 그 글자가 정확히 등장 → 보존 OK.
+- 남아있는데 source 원문에 없음 → **출력 무효**. 다시 Step 3 으로 돌아가 치환.
+
+이 자체 점검 거치지 않은 출력은 wrong. 한자 한 글자라도 source 에 없는데 남아있으면 batch 전체 실패로 처리됩니다.
+
+# 핵심 책임
+
+## 1. 말투 / 술어 / 분할 정제 (가장 중요)
+
+각 노드의 1차 text 를 양식 sample 에 맞게 정제:
+
+- **양식 sample 의 술어 종결** (`~함`, `~한다`, `~완료`, `~예정`, 명사형 등) 그대로 모방.
+- **양식 sample 의 segment 분할 패턴** (`(분류) 본문`, `메인 (괄호 부제)` 등) 그대로 모방.
+- **양식 sample 이 단일 layer 면 단일 layer**, 다중 segment 면 다중 segment.
+
+## 2. 정보 밀도 / 구성 단위 모방 (글자 수 기계적 모방 X)
+
+같은 role 의 양식 sample 을 볼 때 **종결 + 분할 + 정보량** 3가지 모두 모방:
+
+1. **종결 방식**: `~함`, `~한다`, `~완료`, `~추진`, 명사형 종결 등.
+2. **분할 방식**: `(분류) 본문`, `메인 (괄호 부제)` 등.
+3. **정보 구성 단위**: sample 이 `사실 + 수단 + 부연 + 결과` 구조면 source 범위 안에서 같은 수준으로 보강.
+
+- 양식 sample 의 글자 수를 **기계적으로 맞추지 마세요**. 길이는 정보량 맞추기 위한 참고 기준.
+- 1차 text 가 `(분류) + 짧은 명사구` 수준이고 양식 sample 이 더 긴 본문 구조 → source 또는 1차 자식 item 참고해 정보 보강.
+- **종결만 맞추고 본문 지나치게 짧아지는 것은 실패** (예: `(부지계약) 사업 착공` — 대상/시기 정보 누락).
+- 보강 시 들어가는 사실 / 시기 / 대상 / 결과는 **반드시 source 또는 1차 트리에 존재** 해야. source 에 없는 내용으로 길이 늘리기 X.
+
+## 3. 중복 방지 — 자식 정보 합치기 조건부
+
+부모 text 보강 시 자식 item 정보 참고할 수 있지만 **무조건 합치기 X**:
+
+- **양식 sample 에서 시기 / 부연이 부모 본문 안에 통합되는 패턴** → 부모에 통합 가능.
+- **양식 sample 에서 시기 / 부연이 별도 자식 (note / detail) 로 분리되는 패턴** → 자식에 유지. 부모에 중복 X.
+- 기본값: 부모에는 핵심 추진 내용, 자식에는 시기 / 금액 / 근거 같은 보충 정보.
+- 양식 sample 의 분할 위치 확인 후 결정.
+
+## 4. 누락 instance 복구 (예외적 모드만)
+
+b 의 기본 책임은 기존 item 의 문체/술어/분할 정제. **새 instance 추가는 다음 조건 모두 충족 시만**:
+
+1. 1차 트리가 양식의 target_count 를 명백히 미달 (예: 양식 3 개 인데 1차에 1 개)
+2. source 안에 기존 item 에 사용되지 않은 **독립적인** 내용이 있음
+3. 추가 내용이 기존 item 의 반복 / 요약 / 재표현이 아님
+4. 새 item 의 role 은 양식 role 카탈로그에 있는 role 만 사용
+
+**금지**:
+- 양식 갯수 맞추기 위해 source 에 없는 내용 생성 X
+- 기존 item 내용 쪼개거나 반복해서 가짜 instance 추가 X
+- sample 의 단어 / 한자 / 영어 가져와 instance 생성 X
+- source 근거 불충분하면 추가하지 않고 기존만 정제
+
+## 5. 자유도 한계 (소스 원문 글자 보존)
+
+- 소스의 사실 / 숫자 / 주체 / 시기 → 정확히 그대로
+- 의역 / 단어 교체 X — 말투 / 술어 / 분할만 정제
+- 한자 / 영어 변환 X (위 절대 규칙)
+
+# 출력 형식 — id 최종 재번호
+
+```json
+{
+  "items": [
+    {"id": 0, "parent_id": null, "role": "...", "text": "<정제된 본문>"},
+    {"id": 1, "parent_id": 0, "role": "...", "text": "..."}
+  ]
+}
+```
+
+**id 재부여 규칙**:
+- 출력 직전, 모든 item 을 **트리 순서 (root → 자식 깊이 우선)** 대로 다시 번호.
+- id 는 0 부터 1 씩 증가. 빠짐없이.
+- parent_id 는 재부여된 새 id 기준으로 정확히 재계산.
+- 기존 1차 item 의 의미와 부모-자식 관계는 유지하되, 기존 id 값 자체는 유지 X.
+- 추가 item 도 같은 재번호 체계에 포함.
+- old_id / source_id / 메모 등 추가 필드 출력 X.
+
+**기타 규칙**:
+- role 은 1차 와 동일. 새 instance 도 양식 cluster ID 에서만.
+- 마커 / 강조 markup 추가 금지 — 다음 단계 (2c) 가 처리.
+- 들여쓰기 공백 / 탭 추가 금지 — 다음 단계가 처리.
+
+반드시 위 JSON 만 출력.
+"""
+
+
+def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[dict]:
+    """2b-b: 1차 본문 트리를 받아 양식 sample 말투로 정제 + 보충 + variant 누락 추가.
+
+    2b-a (build_section_fill_prompt) 와 동일한 양식 정보 + **말투 가이드 (style_profiles)** 받음.
+    2b-b 만 말투 모방 책임 — 2b-a 는 말투 정보 안 받음.
+
+    Args:
+        items_1st: 2b-a (1차) 결과 트리 [{id, parent_id, role, text}, ...]
+        **fill_kwargs: build_section_fill_prompt 와 동일한 인자. style_profiles 가 들어있으면
+            polish user content 에 말투 가이드 박힘.
+    """
+    import json as _json
+
+    base_messages = build_section_fill_prompt(**fill_kwargs)
+
+    items_json = _json.dumps(
+        [{"id": it.get("id"), "parent_id": it.get("parent_id"),
+          "role": it.get("role"), "text": it.get("text", "")} for it in items_1st],
+        ensure_ascii=False, indent=2,
+    )
+
+    # 2b-b 책임: 양식 sample 의 말투/술어/분할 모방.
+    # style_profiles (11.2 결과) 가 있으면 role 별 말투 rule 박음.
+    style_profiles = fill_kwargs.get("style_profiles") or {}
+    pattern = fill_kwargs.get("pattern") or {}
+    pattern_roles_local: set = set()
+
+    def _collect(p, acc):
+        for r, info in p.items():
+            acc.add(r)
+            ch = info.get("children") or {}
+            if ch:
+                _collect(ch, acc)
+    _collect(pattern, pattern_roles_local)
+
+    style_section = ""
+    if style_profiles:
+        _lines = []
+        for role in sorted(pattern_roles_local):
+            sp = style_profiles.get(role) or {}
+            rules = sp.get("content_style_rules_for_generation") or []
+            if not rules:
+                continue
+            _lines.append(f"\n### {role}")
+            for r in rules[:3]:
+                _lines.append(f"- {r}")
+        if _lines:
+            style_section = (
+                "## role별 말투 rule (양식 sample 분석 — 새 본문에 그대로 적용)\n"
+                "각 노드의 1차 text 를 아래 rule + 양식 sample 의 술어 종결/분할 패턴에 맞춰 정제.\n"
+                + "\n".join(_lines)
+                + "\n\n"
+            )
+
+    polish_user_prefix = (
+        "## 1차 본문 트리 (스켈레톤)\n"
+        "아래 1차 본문을 받아 양식 sample 말투/술어/분할로 정제 + 짧은 본문 보충 + variant 누락 instance 추가.\n"
+        f"```json\n{items_json}\n```\n\n"
+        + style_section
+        + "---\n\n"
+        + "## 양식 정보 (2b-a 와 동일 — 참고)\n"
+    )
+
+    base_user = base_messages[-1]
+    base_user_content = base_user.get("content", "") if isinstance(base_user, dict) else ""
+    if isinstance(base_user_content, list):
+        for part in base_user_content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                part["text"] = polish_user_prefix + part.get("text", "")
+                break
+        polished_user = {"role": "user", "content": base_user_content}
+    else:
+        polished_user = {"role": "user", "content": polish_user_prefix + base_user_content}
+
+    return [
+        {"role": "system", "content": SECTION_POLISH_PROMPT},
+        polished_user,
+    ]
+
+
+def parse_section_polish_from_llm(llm_response: str) -> list[dict]:
+    """2b-b LLM 응답에서 정제된 items 트리 파싱. 실패 시 빈 list."""
+    import re as _re
+    text = (llm_response or "").strip()
+    m = _re.search(r"```(?:json)?\s*\n?(.*?)```", text, _re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+    try:
+        data = json.loads(text)
+    except Exception as e:
+        log.warning(f"[2b-b POLISH] JSON 파싱 실패: {e}")
+        return []
+    items = data.get("items", []) if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        return []
+    cleaned = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        cleaned.append({
+            "id": it.get("id"),
+            "parent_id": it.get("parent_id"),
+            "role": it.get("role", ""),
+            "text": str(it.get("text", "") or "").strip(),
+        })
+    return cleaned
 # 2c는 양식 sample(마커 + 강조 markup 포함 원본) + 양식 마커 힌트 +
 # 강조 layer rule을 보고 각 item의 text에 마커/강조를 입힘.
 # - 양식 마커 단어가 chapter 의미와 부조화면 단어 변경 허용 (예: 전략→보완과제)
@@ -16074,8 +16479,26 @@ def parse_section_fill_from_llm(llm_response: str) -> list[dict]:
 SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니다.
 
 ## 역할
-이미 작성된 본문 트리에 양식의 **형식**(마커 + 강조 글꼴 분리 markup)을 입힙니다.
-본문 의미·문장은 거의 그대로 보존하고, 마커와 강조 markup만 입히세요.
+이미 작성된 본문 트리에 양식의 **형식** (outer_marker + style layer markup + 들여쓰기) 을 입힙니다.
+본문 의미·문장은 거의 그대로 보존.
+
+## 핵심 개념 분리 (먼저 익히세요)
+
+각 item text 는 다음 segment 로 나누어 처리:
+
+- **outer_marker**: 문단 앞 장식 기호 / 번호. 예: `□`, `➊`, `Ⅰ.`, `1)`, `[전략1]`.
+- **content_label**: 본문 초반의 분류 라벨. 예: `(부지계약)`, `(시기)`, `(투자규모)`. **본문 내용** — 삭제 / 교체 X.
+- **body**: content_label 뒤의 실제 본문.
+- **inner_parenthetical**: body 안에 들어간 보충 괄호. 예: `(2 공구)`, `(순 공사비 6 천억원 등)`.
+
+**outer_marker 와 content_label 을 혼동하지 마세요**. content_label 은 마커가 아닙니다.
+
+## style_layer 용어 (중요)
+
+`[[emN]]...[[/emN]]` 은 **반드시 강조를 뜻하지 않습니다**. 원본 양식의 **글꼴 layer 재현용 style_layer** 입니다.
+
+- **base layer 도 markup**: 원본 양식에서 base layer 가 markup 으로 표시된 cluster 라면 새 본문에도 적용. base = 기본 글꼴, "중요 강조" 아님.
+- **non-base layer**: sample 에서 반복적으로 특정 위치 / 의미 기능에 적용된 경우에만 사용. 불확실하면 base.
 
 ## 입력 (user 메시지)
 1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·강조 없는 본문.
@@ -16089,32 +16512,88 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 ### 1. 마커 결정 (item마다)
 각 item의 role을 보고 그 role의 양식 sample + 마커 힌트로 판단:
 
-- **양식 마커 그대로 사용** — sample 단어가 chapter·본문 의미와 어울릴 때.
-  예: 양식 `□`, 양식 `Ⅰ.`, 양식 `[전략1]`을 그대로 둘지.
-- **단어 변경** — 양식 sample 단어가 chapter·본문 의미와 부조화일 때만 같은 형식(괄호·띄어쓰기) 유지하고 단어만 chapter 의미에 맞게 바꿈. 자연스러우면 그대로 두는 게 우선.
-  주의: 같은 cluster의 모든 instance는 같은 단어로 통일.
-- **시퀀스 번호 — 반드시 부모 단위로 카운트 (강제 룰)**:
-  - 트리에서 자기 `parent_id`가 같은 형제(sibling)들 중에서만 카운트.
-  - 같은 cluster여도 `parent_id`가 다르면 **새로 1부터 시작**.
-  - **위반 금지**: 트리 전체로 통합 카운트 금지. cluster 단위 통합 카운트 금지.
-  - 카운트 절차:
+- **양식 마커 그대로 사용 (기본)** — sample 단어가 chapter·본문 의미와 어울리면 그대로.
+  예: 양식 `□`, 양식 `Ⅰ.`, 양식 `[전략1]` 그대로.
+- **단어 변경은 semantic_template_marker 만 (제한적 허용)**:
+  - `[전략1]`, `[과제1]`, `[목표1]` 처럼 **단어 + 번호 결합** 된 marker 에서만 단어 변경 허용.
+  - `□`, `ㅇ`, `-`, `※`, `➊`, `Ⅰ.`, `1)` 같은 **fixed / sequence marker 는 단어 변경 X**. 그대로 사용.
+  - semantic_template_marker 의 단어 바꿀 때도:
+    - **입력 text / chapter_title / role description 에 이미 있는 한글 단어** 만 사용
+    - sample 고유 단어 / source 에 없는 한자 / 영어 새로 만들기 X
+    - 같은 cluster 의 모든 instance 는 같은 단어로 통일
+- **시퀀스 번호 — 반드시 `parent_id` 단위로 카운트 (절대 강제)**:
+  - 각 item 의 `parent_id` 를 보고, **그 부모 아래 같은 role 형제** 만 sibling 으로 본다.
+  - `parent_id` 가 다르면 **항상 새로 첫 번째 마커부터 시작**. 같은 role 여도, 직전 형제 직후여도, 같은 sub-section 안이어도 — `parent_id` 가 다르면 reset.
+  - **흔한 실수 (절대 금지)**:
+    - 트리 전체에서 같은 role 카운트 누적 — 부모 다른데 마커 번호 이어감.
+    - 같은 sub-section 안에서 다른 부모 아래 같은 role 인데 마커 번호 이어감.
+  - **카운트 절차**:
     1. 자기 `parent_id` 확인.
-    2. 그 `parent_id`를 부모로 가진 같은 cluster 형제들 나열.
-    3. 그 형제 목록에서 자기가 몇 번째인지 = 시퀀스 번호.
+    2. **input 트리 안에서 자기와 같은 `parent_id` + 같은 `role`** 인 item 목록 나열.
+    3. 자기가 그 목록에서 몇 번째 (1-based) = sibling_index.
+    4. 양식 sample 의 시퀀스 마커 list 에서 `markers[sibling_index - 1]` 사용.
+  - **추상적 예시** (실제 마커 글자/role 이름은 양식에 따라 다름):
+    - 부모 A 아래 첫 R 형제 → sibling_index=1 → 첫 마커.
+    - 부모 B 아래 첫 R 형제 → A 와 부모 다름 → sibling_index=1 → 첫 마커 (이전 부모 카운트 무관).
+    - 부모 A 아래 두 번째 R 형제 → sibling_index=2 → 두 번째 마커.
   - 양식 sample 시퀀스가 1~3번만 보였더라도 같은 패턴으로 4·5번 만들어 사용.
 - **마커 없음** — 양식 sample에 마커 없는 cluster는 마커 추가하지 마세요.
 - **이미 마커가 있으면** — text 앞에 마커 비슷한 게 이미 있으면: 적절하면 그대로 유지, 양식 형식과 다르면 양식 형식으로 교체, 마커가 두 개 보이면 하나만 남김.
 
-### 2. 강조 markup 입히기 (item마다)
-그 role의 강조 layer 가이드 + 양식 sample 분할 패턴 보고:
+### 2. style layer markup 입히기 (item 마다)
 
-- **모든 segment는 markup으로 감쌈** — base든 강조든 예외 없음.
-  - **base layer**도 `[[base_layer_id]]segment[[/base_layer_id]]`로 감쌉니다 (가이드의 base layer id 사용).
-  - **강조 layer**는 `[[emN]]segment[[/emN]]`로 감쌉니다.
-- **짝 맞춤 강제** — 여는 `[[emN]]`과 닫는 `[[/emN]]`은 반드시 같은 N. 다른 N으로 닫지 마세요. 짝 없는 단독 marker 출력 금지.
-- **양식 분할 패턴 모방** — sample이 `[[em1]]X[[/em1]] [[em2]]Y[[/em2]] [[em1]]Z[[/em1]]` 같이 다중 단편이면 본문도 비슷한 단편 수·길이·base/강조 분포로.
-- 본문 전체를 단일 `[[base_layer_id]]...[[/base_layer_id]]`로 감싸도 OK — cluster가 단일 글꼴이면 자연스럽게 그 형태.
-- **cluster에 정의되지 않은 layer 사용 금지**.
+**판단 순서 (반드시 이 순서로)**:
+
+#### A. 새 본문과 가장 가까운 sample 선택
+
+같은 role 의 sample 이 여러 개 있으면 다음 기준으로 우선 매칭:
+
+- outer_marker 유무
+- content_label 유무
+- body 내부 괄호 (inner_parenthetical) 유무
+- 나열 구조 유무
+- 문장 길이 / 정보 밀도
+
+새 본문의 segment 구조와 가장 비슷한 sample 을 선택.
+
+#### B. 선택한 sample 의 segment 별 layer 그대로 모방
+
+- 양식 sample 의 segment 경계 (괄호 위치, 마커 위치 등) 그대로 모방.
+- 양식 segment 위치의 layer 를 새 본문의 **같은 의미 기능 segment** 에 적용:
+  - content_label → content_label
+  - outer_marker → outer_marker
+  - 시기 → 시기
+  - 금액 / 규모 → 금액 / 규모
+  - 기관명 → 기관명
+  - 핵심 과제명 → 핵심 과제명
+- 양식 sample 에 없는 segment 분할 만들지 마세요. 양식이 통째 한 layer 였으면 새 본문도 통째 한 layer.
+
+#### C. 여러 sample 에서 반복되는 패턴 우선
+
+- 여러 sample 에서 같은 위치 / 같은 의미 기능에 같은 layer 가 반복되면 그 패턴 우선.
+- sample 마다 non-base 위치가 다르면 의미 기능 매칭 (위 B).
+
+#### D. 불확실하면 base layer
+
+- 가이드 모호 / sample 불명확 → base layer.
+- 확신이 낮은 단어 → base layer.
+
+### 3. 과잉 style 방지 (강제)
+
+sample 보다 더 많은 non-base layer 만들지 마세요:
+
+- sample 에서 content_label 만 non-base → 새 본문도 content_label 만 non-base.
+- sample 에서 핵심어 1~2 개 만 non-base → 새 본문도 1~2 개.
+- sample 에서 body 전체가 non-base → 새 본문도 body 전체 non-base.
+- body 내부 괄호 (inner_parenthetical) 는 sample 에서 별도 layer 였을 때만 별도 처리. **content_label 과 inner_parenthetical 혼동 X**.
+
+**짝 맞춤 강제** — 여는 `[[emN]]` 과 닫는 `[[/emN]]` 은 같은 N. 짝 없는 단독 marker 출력 금지.
+
+**금지 패턴**:
+- sample 에서 일부 segment 만 non-base 였는데 새 본문 **전체를 그 layer 로 감싸기** — 가장 흔한 wrong.
+- 본문 전체를 강조 layer 한 색으로 감싸기 — base 가이드 무시.
+- 가이드에 없는 layer 사용 — cluster 에 정의되지 않은 layer 사용 금지.
+- paragraph_count ≤ 1 / char_count 1~2 같은 노이즈 layer 사용.
 
 ### 3. 들여쓰기 (마커처럼 양식 sample 그대로)
 - 양식 sample의 **앞 공백·탭(들여쓰기)을 그대로 복제**해서 text 머리에 포함.
@@ -16184,19 +16663,19 @@ def build_section_style_prompt(
         if r:
             used_roles.add(r)
 
-    # role 카탈로그 — 양식 sample 원본 그대로 (마커 포함)
+    # role 카탈로그 — description 만 노출 (2026-05-25 fix).
+    # 1차 분석 캐시의 sample 은 들여쓰기 strip + em 마크업 없음 → 2c 가 들여쓰기·강조 박을 때
+    # 노이즈. 양식 본보기는 아래 paragraph_emphasis_map.sample_paragraphs.annotated_text
+    # (들여쓰기 + 마커 + em 마크업 다 보존) 만 사용.
     catalog_lines = []
     for role_name in sorted(used_roles):
         info = role_catalog.get(role_name) or {}
         desc = info.get("description", "")
-        sample = info.get("sample", "")
         count = info.get("count", 0)
         count_str = f", 양식 등장: {count}회" if count else ""
         lines = [f"- **{role_name}**{count_str}"]
         if desc:
             lines.append(f"  설명: {desc}")
-        if sample:
-            lines.append(f"  양식 sample(원본): \"{sample}\"")
         catalog_lines.append("\n".join(lines))
     catalog_text = "\n".join(catalog_lines)
 
@@ -16268,10 +16747,12 @@ def build_section_style_prompt(
                         _picked.extend(pl[:2])
                     em_lines.append("- 양식 본래 sample (원본 — 마커 + 강조 markup + 부모 정보):")
                     for sp in _picked:
-                        ann = (sp.get("annotated_text") or "").strip()
+                        # .strip() 제거 (2026-05-24): 양식 sample 의 앞 공백 / 들여쓰기 보존.
+                        # AI 가 들여쓰기 패턴 모방 가능하도록 sample 원본 그대로.
+                        ann = sp.get("annotated_text") or ""
                         pidx_v = sp.get("parent_idx")
                         if ann:
-                            em_lines.append(f"    - parent={pidx_v}: {ann}")
+                            em_lines.append(f"    - parent={pidx_v}: {ann!r}")
                     em_lines.append(
                         "    ↑ 위 분할 패턴(단편 수·길이·base/강조 분포)을 모방하세요.\n"
                         "    **마커 시퀀스는 parent가 바뀌면 새로 1번부터 시작합니다** "
@@ -16287,25 +16768,9 @@ def build_section_style_prompt(
                 + "\n\n"
             )
 
-    # 말투 rule (참고용 — 본문 의미 보존이 우선이라 가볍게)
+    # 2c 책임 단순화: 말투 (style_profiles) 는 2b 단독 책임으로 일원화.
+    # 2c 는 형식 (마커 + 강조 markup + 들여쓰기) 만 입힘. 말투 가이드 prompt 박지 않음.
     style_text = ""
-    if style_profiles:
-        st_lines = []
-        for role_name in sorted(used_roles):
-            sp = style_profiles.get(role_name) or {}
-            rules = sp.get("content_style_rules_for_generation") or []
-            if not rules:
-                continue
-            st_lines.append(f"\n### {role_name}")
-            for r in rules[:3]:  # 핵심 rule 몇 개만
-                st_lines.append(f"- {r}")
-        if st_lines:
-            style_text = (
-                "## 말투 rule (참고용)\n"
-                "본문 의미는 그대로 두되, 띄어쓰기·구두점 등 형식 미세 조정 시 참고.\n"
-                + "\n".join(st_lines)
-                + "\n\n"
-            )
 
     # 본문 트리 (2b 결과)
     import json as _json
@@ -16334,7 +16799,7 @@ def build_section_style_prompt(
 
     user_text = (
         f"## chapter 의미\n"
-        f"**{chapter_title}** (타입: {chapter_type_name})\n"
+        f"**{chapter_title}**\n"
         f"{_pos_hint}\n"
         f"## 본문 트리 (2b 결과 — 마커·강조 없음)\n"
         f"```json\n{items_json}\n```\n\n"
@@ -16443,6 +16908,8 @@ async def apply_section_style_to_items(
         _dump("prompt_built", {
             "messages_count": len(messages_2c),
             "user_content_len": len(messages_2c[-1].get("content", "")) if messages_2c else 0,
+            "user_content_full": messages_2c[-1].get("content", "") if messages_2c else "",
+            "system_content_full": messages_2c[0].get("content", "") if messages_2c else "",
         })
         llm_content_2c = await call_llm_fn(messages_2c, f"hwpx_section_style_{ch_idx_for_log}")
         _dump("llm_returned", {
@@ -17462,6 +17929,10 @@ def has_toc_gate(section_results: dict) -> dict:
 
 TOC_BASED_CHAPTER_PLAN_PROMPT = """당신은 한국어 HWPX 양식의 chapter 단위(generation unit)를 결정합니다.
 
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현 (title / reason / 분석) 은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 TOC 글자 인용은 그대로 — 자체 표현과 인용 구분.
+
 [INPUT]
 1. TOC paragraphs — 양식 self-description (가장 신뢰)
 2. Body paragraphs (모든 section)
@@ -18432,6 +18903,10 @@ def extract_generation_unit_subtrees(toc_plan: dict, section_results: dict) -> l
 
 CHAPTER_PATTERN_FAMILY_PROMPT = """당신은 양식의 generation_unit들이 같은 local pattern family에 속하는지 판단하는 분석가입니다.
 이 판단은 양식이 어떤 unit을 반복 허용했는지를 보고, 추후 source가 더 많을 때 chapter를 같은 pattern으로 늘릴 수 있는지 결정하는 근거가 됩니다.
+
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현 (analysis / reason / pattern_signature) 은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 sample 인용은 그대로 — 자체 표현과 인용 구분.
 
 [INPUT]
 
