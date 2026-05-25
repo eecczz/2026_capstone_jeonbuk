@@ -3748,11 +3748,11 @@ marker / 번호 체계, cluster_id 는 모두 local_anchor 판단의 **보조 �
 
 ### ⚠️ 가까운 heading 우선 — hard rule
 
-**가까운 heading / 박스 / 요약 paragraph 가 현재 paragraph 를 의미상 포괄할 가능성이 조금이라도 있으면, 그 가까운 heading 을 parent 로 잡는다. 더 오래된 상위 heading 으로 올리지 마라.**
+**가까운 heading / 박스 / 요약 paragraph 가 현재 paragraph 를 의미상 직접 포괄할 수 있으면, 그 가까운 heading 을 parent 로 잡는다. 더 오래된 상위 heading 으로 올리지 마라.**
 
-- 상위 heading 은 가까운 heading 이 **명확히 포괄 못할 때만** parent 후보가 된다.
-- "가까운 heading 이 너무 좁다" / "더 큰 카테고리가 어울린다" 같은 직관으로 상위 heading 선택 X. 가까운 heading 이 1% 라도 포괄 가능하면 그것 채택.
-- 의미상 직접 포괄 = 주제 / 범위 / 내용이 관련. 정확히 같은 단어일 필요 X.
+- 상위 heading 은 가까운 heading 이 **명확히 직접 포괄하지 못할 때만** parent 후보가 된다.
+- **"더 큰 카테고리가 어울린다" / "가까운 heading 이 너무 좁다" 같은 이유만으로 가까운 heading 을 건너뛰지 마라**.
+- **의미상 직접 포괄** = 주제 / 범위 / 내용이 연결되어 있고, 현재 paragraph 가 그 heading 의 설명 / 부연 / 구체화로 읽히는 것.
 
 **예외**: **같은 local enumeration block 안의 같은 series 직전 항목은 local_anchor 후보에서 제외**한다.
 - 예: 같은 block 안에서 ➋ 의 local_anchor 는 직전 ➊ 이 **아니라**, ➊ 과 ➋ 를 함께 묶는 상위 paragraph.
