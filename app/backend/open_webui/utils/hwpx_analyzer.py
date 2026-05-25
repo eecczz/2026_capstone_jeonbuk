@@ -1645,7 +1645,7 @@ LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 **level 판단** 전문가�
 - marker, marker_family, description
 - features: paraPrIDRef, prev/next marker(family), same_paraPr_run
 
-## 임무 (2가지만)
+## 임무 (3가지)
 
 각 문단에 대해:
 
@@ -1654,16 +1654,28 @@ LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 **level 판단** 전문가�
    - 기본은 0 (1순위 채택)
    - 위치·구조상 다른 후보가 더 맞으면 1, 2 등 선택
    - **0이 아니면 `selection_reason_code` 필수**
+3. **parent_hint** (debug-only, 사고 유도용): 이 문단이 의미상 어느 문단의 자식인지 idx 로 표기. 최상위면 `null`.
+   - **이 값은 코드가 안 씁니다.** level 결정 직전에 "이 문단이 무엇의 자식인가" 를 명시적으로 생각하면 level 정확도가 올라가서 추가하는 항목.
+   - 직전 형제가 부모라고 보이면 그 idx. 더 위 단락이 부모면 그 idx.
+   - level 과 parent_hint 가 mismatch (코드 알고리즘이 parent_hint 와 다른 부모 매핑) 면 둘 다 의심 — 재검토.
 
 ## 결정 원칙
 
-### A. 구조 신호로 level 결정
+### A. 구조 신호 + 의미 흐름 같이 검토 — level 결정
 
+**구조 신호** (형식):
 - **same_paraPr_run = true 연속**: 양식 작성자가 같은 위계로 묶음 → 같은 level (강한 신호)
 - **marker_family 같은 연속**: enumeration siblings → 같은 level
 - **marker_family 전환 (interleaved)**: 기존 family 사이 끼어 있으면 → 자식 (level+1)
 - **marker_family 전환 (replace)**: 기존 family 끝나고 통째 교체 → 같은 level 가능
-- **description**: 위 신호 모호할 때 보조
+
+**의미 흐름** (description 보고 판단):
+- 단락 description 을 읽고 의미상 "이 단락이 무엇의 정리 / 요약 / 보충 / 자식인가" 를 판단.
+- **구조 신호와 의미 흐름이 어긋나면 둘 다 의심**. 자동으로 한 쪽 우선 X — parent_hint 로 의미상 부모를 명시한 뒤 level 을 그에 맞게 결정.
+- 예: paraPrIDRef 같아도 의미상 직전 단락의 정리 / 보충 / 자식이면 level+1. 형식만 보고 같은 level 로 두지 X.
+- 예: 같은 paraPrIDRef 연속이라도 description 이 "장 시작부 서두 박스" / "전략 개요 박스" 같이 직전 단락의 정리 성격이면 자식 (level+1) 후보.
+
+**구조 + 의미 둘 다 같은 결론** → 안정. 어긋나면 parent_hint 가 가리키는 부모에 맞게 level 결정.
 
 ### B. level 일관성 체크 (코드 알고리즘 이해)
 
@@ -1705,18 +1717,21 @@ parent = 현재 문단보다 앞에 나온 문단 중,
     {
       "idx": 0,
       "level": 0,
-      "selected_role_candidate_index": 0
+      "selected_role_candidate_index": 0,
+      "parent_hint": null
     },
     {
       "idx": 5,
       "level": 2,
       "selected_role_candidate_index": 1,
-      "selection_reason_code": "marker_family_fit"
+      "selection_reason_code": "marker_family_fit",
+      "parent_hint": 4
     },
     {
       "idx": 10,
       "level": 3,
-      "selected_role_candidate_index": 0
+      "selected_role_candidate_index": 0,
+      "parent_hint": 6
     }
   ]
 }
@@ -1724,9 +1739,10 @@ parent = 현재 문단보다 앞에 나온 문단 중,
 
 ## 중요
 - **모든 idx 출력**
-- 필수 필드: level, selected_role_candidate_index
+- 필수 필드: level, selected_role_candidate_index, **parent_hint**
 - selected_role_candidate_index != 0이면 selection_reason_code 필수
-- parent_idx, sibling_group_id 출력 금지 (있어도 코드가 무시 가능)
+- parent_hint 는 의미상 부모 idx (코드 안 씀 — level 결정 사고 유도용). 최상위면 null.
+- parent_idx, sibling_group_id 출력 금지 (있어도 코드가 무시)
 - 반드시 JSON만 출력
 """
 
@@ -3161,10 +3177,14 @@ chapter root 예외는 **chapter 경계를 정의하는 paragraph에만 적용**
 
 ## Cluster 개수 — 경제성
 
-- **필요한 만큼만 만들고 singleton 남발 금지**
-- 1f가 grammar 추출할 때 의미 있는 노드 종류 단위로 cluster
-- semantic taxonomy 만들지 말 것 (description 의미 차이로 cluster 늘리지 X)
-- 다만 grammar 상 다른 노드 종류로 구분 필요한 경우 (예: 시퀀스 본체 vs trailing summary, 다른 위계 chapter root) 는 split
+- 의미 있는 노드 종류 단위로 cluster. semantic taxonomy 만들지 말 것 (description 의미 차이로 cluster 늘리지 X).
+- 다만 grammar 상 다른 노드 종류로 구분 필요한 경우 (예: 시퀀스 본체 vs trailing summary, 다른 위계 chapter root) 는 split.
+
+### ⚠️ singleton 회피보다 우선하는 분리 룰
+
+- **chapter_id 가 다르면 다른 cluster** (위 chapter root 예외 제외) — singleton 생겨도 무조건 분리.
+- **paraPrIDRef 가 다르면 다른 cluster** — 양식 작성자가 다른 박스 모양 / 다른 글꼴로 박은 것이므로 의미상 다른 노드 종류. singleton 생겨도 무조건 분리.
+- "singleton 남발 금지" 는 위 두 분리 룰 충족한 다음에 그래도 묶을 수 있는 경우만 적용. 위 두 룰 위반 통합 금지.
 
 ## 입력
 
@@ -8696,28 +8716,38 @@ def compute_sibling_cooccurrence_rules(
     # 각 paragraph idx → paragraph dict 매핑 (parent 조회용)
     idx_to_p = {p.get("idx"): p for p in paragraphs if p.get("idx") is not None}
 
-    # parent paragraph idx → list of child cluster ids (child_set per parent instance)
-    # parent paragraph idx == instance id (양식의 한 paragraph가 한 instance)
+    # parent paragraph idx → set of child cluster ids
     parent_to_children: dict = defaultdict(set)
-    parent_to_role: dict = {}
     for p in paragraphs:
         role = p.get("role", "")
         parent_idx = p.get("parent_idx")
         if not role or parent_idx is None:
             continue
         parent_to_children[parent_idx].add(role)
-        # parent role도 기록 (parent paragraph로부터)
+
+    # role 별 자식 있는 instance 수 — heading role 식별용
+    # (자식 있는 instance 가 1개 이상 있으면 그 role 은 heading. 자식 없는 instance 도 등록 대상)
+    role_has_children_count: dict = defaultdict(int)
+    for parent_idx in parent_to_children:
         parent_p = idx_to_p.get(parent_idx)
         if parent_p:
-            parent_to_role[parent_idx] = parent_p.get("role", "")
+            parent_role = parent_p.get("role", "")
+            if parent_role:
+                role_has_children_count[parent_role] += 1
 
-    # parent role → list of (parent paragraph idx, child_set)
+    # role → list of (paragraph idx, child_set)
+    # heading role (같은 role 중 자식 있는 instance 가 있는 role) 은 자식 없는 instance 도 등록.
+    # 이로써 cluster_8 같이 첫 번째 instance 는 자식 풍부 + 두 번째 instance 는 빈 heading 인 경우
+    # 두 번째 instance 가 variant `child_set: []` 로 살아남음 (2026-05-25 fix).
     role_instances: dict = defaultdict(list)
-    for parent_idx, children in parent_to_children.items():
-        parent_role = parent_to_role.get(parent_idx, "")
-        if not parent_role:
+    for p in paragraphs:
+        pidx = p.get("idx")
+        role = p.get("role", "")
+        if pidx is None or not role:
             continue
-        role_instances[parent_role].append((parent_idx, frozenset(children)))
+        if role_has_children_count.get(role, 0) > 0:
+            children = parent_to_children.get(pidx, set())
+            role_instances[role].append((pidx, frozenset(children)))
 
     rules = []
     for parent_role, instances in role_instances.items():
@@ -8740,10 +8770,10 @@ def compute_sibling_cooccurrence_rules(
         cooccurred_pairs = [list(p) for p in sorted(cooccurred)]
 
         # variant 단위 instance grouping (같은 child_set frozenset)
+        # 빈 child_set 도 별도 variant 로 등록 — 자식 없는 heading instance 누락 방지 (2026-05-25 fix).
         variant_groups: dict = defaultdict(list)  # child_set frozenset → list of parent_idx
         for parent_idx, cs in instances:
-            if cs:  # 빈 set은 variant 안 만듦
-                variant_groups[cs].append(parent_idx)
+            variant_groups[cs].append(parent_idx)
 
         variants = []
         for vi, (child_set_fs, parent_idxs) in enumerate(
@@ -16637,14 +16667,23 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 ## ⚠️ 글꼴 layer 적용 정책 (가장 중요 — 다른 모든 규칙보다 우선)
 
-1. **새 본문에서 "강조할 자리" 를 골라내지 않는다.** "핵심어", "핵심 명사구", "중요 표현", "강조 표현" 같은 기준으로 새 segment 만들기 금지.
-2. **양식 본보기 sample 의 non-base layer 를 새 본문에 의미 기반으로 전이하지 않는다.** 본보기가 "조달기업 공제조합" 에 layer X 박았다고 해서 새 본문에서 비슷한 의미 명사구를 골라 X 박지 마세요.
-3. **non-base layer 적용은 다음 두 종류 segment 만 허용**:
-   - **외부 마커** (`□`, `ㅇ`, `*`, `Ⅰ.`, `➊`, `[전략1]` 등) — 양식 본보기에서 마커에 박힌 layer 그대로.
-   - **괄호 안 분류 라벨** (`(경제상황)`, `(정책환경)`, `(부지계약)`, `(시기)`, `(투자규모)` 등 본문 시작 직후 짧은 괄호) — 양식 본보기 동일 패턴.
-4. **위 두 종류 외 본문 모든 글자는 base layer 하나로만 감싼다.** 본문 한가운데 명사구·동사구·금액·시기 등에 non-base layer 절대 박지 마세요.
-5. **양식 본보기에 다른 layer 가 박혀있어도** 위 두 종류 segment 가 아니면 base 로 변환.
-6. **불확실하면 base.** 본보기 패턴이 모호하거나 본문 segment 가 본보기와 다르면 base 하나로만.
+1. **목표는 non-base layer 를 줄이는 것이 아니라, 양식 sample 의 style 분할 규칙을 재현하는 것이다.**
+
+2. **본문 중간 non-base layer 는 허용한다.** 단, 반드시 양식 sample 또는 role 별 layer guide 에 근거가 있어야 한다.
+
+3. **새 본문에서 "중요해 보이는 표현" 을 자유롭게 고르지 않는다.** 대신 같은 role 의 sample 에서 반복되는 분할 패턴을 따른다.
+
+4. **sample 의 분할 패턴을 우선한다.**
+   - sample 에서 본문이 base / non-base / base / non-base 로 나뉘면 새 본문도 비슷한 수와 위치로 나눈다.
+   - sample 에서 특정 의미 기능 segment 가 layer 를 받으면 새 본문에서도 같은 기능 segment 에 적용한다.
+   - sample 보다 더 많은 non-base span 을 만들지 않는다.
+
+5. **layer guide 의 rules_for_generation 이 있으면 그 규칙을 따른다.**
+   예: content_label, 항목번호, 괄호 안 카테고리, 정책수단, 결과 명사구, 인용구, 수치 구간 등.
+
+6. **단순히 "핵심어", "중요 표현" 처럼 너무 넓은 규칙은 sample 의 분할 개수와 위치 패턴 안에서만 적용한다.** 아무 단어나 추가로 고르지 않는다.
+
+7. **불확실하면 해당 segment 만 base 로 둔다. 하지만 문단 전체를 무조건 base 로 뭉개지 않는다.**
 
 ## 입력 (user 메시지)
 1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·layer 없는 본문.
@@ -16688,40 +16727,41 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 ### 2. 글꼴 layer 적용 (item 마다)
 
-**위 정책 1~6 을 반드시 따릅니다.** 정책과 아래 절차가 충돌하면 정책 우선.
+**위 정책 1~7 을 반드시 따릅니다.**
 
 #### 절차
 
-1. **본문 시작에 외부 마커가 있다면** 그 마커에 본보기의 마커 layer 적용 (있을 때만).
-2. **본문 시작 직후 짧은 괄호 분류 라벨** (`(경제상황)`, `(부지계약)` 등) 이 있다면 본보기의 분류 라벨 layer 적용 (본보기 패턴 일관 시).
-3. **그 외 본문 모든 글자** → base layer 하나로 통째 감싸기.
-4. 본보기에 본문 한가운데 다른 layer 있더라도 위 정책 4 에 의해 base 로 처리.
+1. **본문 시작 외부 마커** (있으면) — 본보기의 마커 layer 적용.
+2. **본문 시작 직후 분류 라벨** (`(경제상황)`, `(부지계약)` 등 본보기 일관 패턴) — 본보기 분류 layer 적용.
+3. **본문 한가운데 segment** — 본보기 sample 에서 같은 종류 단락이 반복적으로 같은 자리 / 같은 의미 기능에 layer 박는 패턴이 보이면 새 본문에도 적용. layer guide 의 rules_for_generation 있으면 그 규칙 따름.
+4. 위 패턴이 모호하거나 새 본문 segment 와 안 맞으면 그 segment 만 base. 문단 전체 base 로 뭉개지 X.
 
-#### 본보기 sample 활용 — 매핑 X, 확인 O
+#### 본보기 sample 활용
 
-- 본보기 sample 은 **외부 마커 + 분류 라벨에 어떤 layer 박혔는지 확인용** 으로만 사용.
-- 본보기의 본문 한가운데 layer (예: 명사구, 금액, 시기 강조) 는 **새 본문에 적용하지 마세요**. 본보기 그 자리 의미가 새 본문에 없거나 다를 가능성이 크기 때문.
-- 본보기 본문 layer 가 새 본문에 우연히 맞는 자리가 있어도 무시. 안전한 base 우선.
+- 본보기 sample 의 **분할 개수·순서·layer 배치를 우선 모방**.
+- sample 보다 더 많은 non-base span 을 새로 만들지 X.
+- sample 의 의미 기능 (시기 / 금액 / 분류 라벨 / 정책수단 등) 이 layer 받으면 새 본문에서도 같은 기능 자리에 적용.
+- 단 새 본문에 그 의미 기능 segment 가 없으면 억지로 만들지 X (base).
 
-#### 의미 기반 선택 금지
+#### 임의 추가 금지
 
-- "이 단어가 핵심이니까 강조" 식 판단 금지.
-- "양식 본보기에 시기가 강조됐으니 새 본문 시기도 강조" 식 의미 매핑 금지.
-- 외부 마커 + 분류 라벨만 본보기 layer 그대로. 나머지 base.
+- "이 단어가 핵심이니까 강조" 식 자유 선택 X. sample 분할 패턴 안에서만.
+- sample 에 1개 자리 강조면 새 본문도 1개. 2개면 2개. 더 많이 만들지 X.
 
 ### 3. 허용·금지 patterns
 
 **허용**:
 - 외부 마커 (`□`, `Ⅰ.`, `➊` 등) 에 본보기 마커 layer.
-- 본문 시작 직후 짧은 괄호 분류 라벨 (`(경제상황)`, `(부지계약)` 등) 에 본보기 분류 layer.
-- 그 외 모든 본문 글자 → base layer.
+- 본문 시작 직후 분류 라벨 (`(경제상황)`, `(부지계약)` 등) 에 본보기 분류 layer.
+- **본문 한가운데 segment** — 본보기 sample 의 반복 분할 규칙에 따른 자리 (시기 / 금액 / 정책수단 / 결과 명사구 / 인용구 / 수치 구간 등 layer guide 의 rules_for_generation 명시 자리).
+- 그 외 base layer.
 
 **짝 맞춤 강제** — 여는 `[[emN]]` 과 닫는 `[[/emN]]` 은 같은 N. 짝 없는 단독 표시 출력 금지.
 
 **금지 (절대)**:
-- 본문 한가운데 명사구·금액·시기·기관명·핵심 과제명 등에 non-base layer 박기.
-- "이 단어가 양식 본보기의 layer X 자리와 같은 의미니까 X 적용" 식 의미 기반 매핑.
-- 본보기에는 본문 안 layer 가 있지만 새 본문에는 같은 의미 segment 없을 때 비슷한 자리 찾아 layer 박기.
+- 양식 sample / layer guide 에 **근거 없는 자리** 에 non-base layer 박기.
+- sample 분할 패턴 (수·위치) 보다 더 많은 non-base span 만들기.
+- "이 단어가 핵심이니까 강조" 식 자유 선택. sample 분할 패턴 안에서만.
 - 가이드에 규칙 없는 layer 사용 (cluster 정의에 등장만 하고 적용 규칙 없는 layer 는 사용 금지).
 - paragraph_count ≤ 1 / char_count 1~2 같은 노이즈 layer 사용.
 - 본문 전체를 non-base layer 한 색으로 감싸기 — base 정책 위반.
@@ -16877,7 +16917,12 @@ def build_section_style_prompt(
                     _picked = []
                     for pkey, pl in list(_by_parent.items())[:3]:
                         _picked.extend(pl[:2])
-                    em_lines.append("- 양식 본보기 sample (외부 마커 + 분류 라벨 layer 확인용 — 본문 안 layer 는 무시하고 base 로):")
+                    em_lines.append(
+                        "- 양식 본보기 sample "
+                        "(마커 / 분류 라벨 / 본문 내부 style 분할 규칙 확인용. "
+                        "sample 의 분할 개수·순서·layer 배치를 우선 모방하세요. "
+                        "단 sample 보다 더 많은 non-base span 을 새로 만들지 마세요):"
+                    )
                     for sp in _picked:
                         ann = sp.get("annotated_text") or ""
                         pidx_v = sp.get("parent_idx")
@@ -16886,7 +16931,8 @@ def build_section_style_prompt(
                     em_lines.append(
                         "    **마커 시퀀스만 parent 단위 reset 패턴 따라가세요** "
                         "(예: parent=A 아래 󰊱, 󰊲 → parent=B 아래 다시 󰊱, ...). "
-                        "본문 한가운데 layer 는 절대 모방 X — base 하나로."
+                        "본문 한가운데 layer 도 양식 sample 의 반복 분할 규칙이면 적용하세요. "
+                        "다만 규칙 없이 새 본문에서 중요 표현을 추가 선정하지 마세요."
                     )
         if em_lines:
             emphasis_text = (
