@@ -525,9 +525,11 @@ def _build_rag_processor(request: Request, websocket=None):
                 import time as _time
 
                 # 직전 응답이 음성으로 사용자에게 이미 전달된 후의 새 발화라면 LLM 에
-                # 안내 prefix 부착 — history (이전 user/assistant) 는 보존되지만
-                # LLM 이 이전 질문을 다시 답변하지 않고 이번 발화에만 응답하도록.
+                # 안내 (1) user_text prefix + (2) history 끝 system message 둘 다
+                # inject. prefix 만으로는 LLM 이 history 의 이전 질문을 다시
+                # 답변하는 케이스가 잔재. system message 가 더 명확한 instruction.
                 effective_user_text = user_text
+                effective_history = self._history
                 if self._post_reply_reset:
                     effective_user_text = (
                         "(시스템 안내: 직전 답변은 이미 사용자에게 음성으로 전달되었습니다. "
@@ -535,7 +537,18 @@ def _build_rag_processor(request: Request, websocket=None):
                         "이전 사용자 질문을 다시 답변하지 말고, 이번 발화에만 답해주세요.)\n\n"
                         + user_text
                     )
-                    log.info("[voice_ws] injecting post-reply-reset guidance into user_text")
+                    effective_history = self._history + [
+                        {
+                            "role": "system",
+                            "content": (
+                                "위 대화의 직전 사용자 질문은 이미 답변이 완료되어 "
+                                "사용자에게 음성으로 전달되었습니다. 다음 사용자 발화는 "
+                                "그 답변 이후의 새 질문이거나 정정/후속 질의입니다. "
+                                "이전 질문을 다시 반복해 답변하지 말고, 이번 새 발화에만 응답하세요."
+                            ),
+                        }
+                    ]
+                    log.info("[voice_ws] injecting post-reply-reset guidance (prefix + system msg)")
                     self._post_reply_reset = False
 
                 stream_failed = False
@@ -544,7 +557,7 @@ def _build_rag_processor(request: Request, websocket=None):
                     self._owi_request,
                     user_obj,
                     effective_user_text,
-                    self._history,
+                    effective_history,
                     session_id,
                     voice_mode=True,
                 ):
@@ -1113,6 +1126,11 @@ async def voice_sim_ws(websocket: WebSocket):
         "pending": [],
         "active": [],
         "debounce": 0.85,
+        # voice-ws 와 동일: 직전 reply 가 이미 사용자에게 전달됐는지.
+        # True 면 다음 restart 에서 history pop / active merge skip → 새 질문 시작점 리셋.
+        "reply_played": False,
+        # reset 직후 LLM 호출 시 user_text 에 '직전 답변 끝, 새 발화에만 답해라' 안내 prefix 부착 신호.
+        "post_reply_reset": False,
     }
 
     async def send(kind: str, text: str = ""):
@@ -1155,10 +1173,35 @@ async def voice_sim_ws(websocket: WebSocket):
             user_obj = _get_public_user(owi_request_proxy)
             session_id = str(_uuid.uuid4())
 
+            # 직전 reply 가 사용자에게 이미 전달된 후의 새 발화면 LLM 에 안내
+            # (1) user_text prefix + (2) history 끝 system message 둘 다 inject.
+            effective_user_text = user_text
+            effective_history = state["history"]
+            if state["post_reply_reset"]:
+                effective_user_text = (
+                    "(시스템 안내: 직전 답변은 이미 사용자에게 전달되었습니다. "
+                    "이번 발화는 그 응답 이후의 후속 질문이거나 정정입니다. "
+                    "이전 사용자 질문을 다시 답변하지 말고, 이번 발화에만 답해주세요.)\n\n"
+                    + user_text
+                )
+                effective_history = state["history"] + [
+                    {
+                        "role": "system",
+                        "content": (
+                            "위 대화의 직전 사용자 질문은 이미 답변이 완료되어 "
+                            "사용자에게 전달되었습니다. 다음 사용자 발화는 "
+                            "그 답변 이후의 새 질문이거나 정정/후속 질의입니다. "
+                            "이전 질문을 다시 반복해 답변하지 말고, 이번 새 발화에만 응답하세요."
+                        ),
+                    }
+                ]
+                await debug("injecting post-reply-reset guidance (prefix + system msg)")
+                state["post_reply_reset"] = False
+
             full_reply = ""
             stream_failed = False
             async for kind, payload in _stream_public_llm_reply(
-                owi_request_proxy, user_obj, user_text, state["history"],
+                owi_request_proxy, user_obj, effective_user_text, effective_history,
                 session_id, voice_mode=False,
             ):
                 if not is_current(gid):
@@ -1170,15 +1213,19 @@ async def voice_sim_ws(websocket: WebSocket):
                     final_text = payload or _hum(full_reply)
                     if not is_current(gid):
                         return
+                    # history append 는 원본 user_text 로 (prefix 노출 X)
                     state["history"].append({"role": "user", "content": user_text})
                     state["history"].append({"role": "assistant", "content": final_text})
                     await send("reply", final_text)
+                    # reply 가 사용자에게 전달된 시점 — 다음 turn 은 새 질문 시작점.
+                    state["reply_played"] = True
                     await debug(f"reply id={gid} len={len(final_text)}")
                 elif kind == "error":
                     stream_failed = True
                     await debug(f"stream error: {payload}")
             if stream_failed and not full_reply:
                 await send("reply", "죄송해요. 답변 준비 중에 문제가 생겼어요.")
+                state["reply_played"] = True
         except asyncio.CancelledError:
             raise
 
@@ -1204,6 +1251,21 @@ async def voice_sim_ws(websocket: WebSocket):
                 state["active"] = []
 
     async def restart_generation(user_text: str):
+        # 직전 reply 가 이미 사용자에게 전달됐다면 (sim 의 reply 메시지 send 후) 그 turn 은
+        # 종결 — history pop / active merge 안 하고 새 질문 시작점으로 리셋.
+        if state["reply_played"]:
+            await debug("previous reply was played — resetting merge window for new question")
+            state["active"] = []
+            state["pending"] = [user_text.strip()] if user_text.strip() else []
+            state["reply_played"] = False
+            state["post_reply_reset"] = True  # LLM 호출 시 안내 prefix 부착
+            state["generation_id"] += 1
+            gid = state["generation_id"]
+            await debug(f"restart id={gid} pending={state['pending']}")
+            await stop_current()
+            state["task"] = asyncio.create_task(generate_after_debounce(gid))
+            return
+
         prev_user = []
         if not state["active"] and state["history"]:
             if state["history"][-1].get("role") == "assistant":
