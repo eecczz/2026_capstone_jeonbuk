@@ -16508,18 +16508,29 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 **outer_marker 와 content_label 을 혼동하지 마세요**. content_label 은 마커가 아닙니다.
 
-## style_layer 용어 (중요)
+## 글꼴 layer 용어 (중요)
 
-`[[emN]]...[[/emN]]` 은 **반드시 강조를 뜻하지 않습니다**. 원본 양식의 **글꼴 layer 재현용 style_layer** 입니다.
+`[[emN]]...[[/emN]]` 은 **강조 표시가 아닙니다**. 원본 양식의 **글꼴 layer 재현용 style 표시** 입니다.
 
-- **base layer 도 markup**: 원본 양식에서 base layer 가 markup 으로 표시된 cluster 라면 새 본문에도 적용. base = 기본 글꼴, "중요 강조" 아님.
-- **non-base layer**: sample 에서 반복적으로 특정 위치 / 의미 기능에 적용된 경우에만 사용. 불확실하면 base.
+- **base layer**: 그 역할(cluster) 의 기본 글꼴. 본문 모든 글자의 기본값.
+- **non-base layer**: 양식이 특정 위치 (마커, 분류 라벨 등) 에 다른 글꼴 박은 자리.
+
+## ⚠️ 글꼴 layer 적용 정책 (가장 중요 — 다른 모든 규칙보다 우선)
+
+1. **새 본문에서 "강조할 자리" 를 골라내지 않는다.** "핵심어", "핵심 명사구", "중요 표현", "강조 표현" 같은 기준으로 새 segment 만들기 금지.
+2. **양식 본보기 sample 의 non-base layer 를 새 본문에 의미 기반으로 전이하지 않는다.** 본보기가 "조달기업 공제조합" 에 layer X 박았다고 해서 새 본문에서 비슷한 의미 명사구를 골라 X 박지 마세요.
+3. **non-base layer 적용은 다음 두 종류 segment 만 허용**:
+   - **외부 마커** (`□`, `ㅇ`, `*`, `Ⅰ.`, `➊`, `[전략1]` 등) — 양식 본보기에서 마커에 박힌 layer 그대로.
+   - **괄호 안 분류 라벨** (`(경제상황)`, `(정책환경)`, `(부지계약)`, `(시기)`, `(투자규모)` 등 본문 시작 직후 짧은 괄호) — 양식 본보기 동일 패턴.
+4. **위 두 종류 외 본문 모든 글자는 base layer 하나로만 감싼다.** 본문 한가운데 명사구·동사구·금액·시기 등에 non-base layer 절대 박지 마세요.
+5. **양식 본보기에 다른 layer 가 박혀있어도** 위 두 종류 segment 가 아니면 base 로 변환.
+6. **불확실하면 base.** 본보기 패턴이 모호하거나 본문 segment 가 본보기와 다르면 base 하나로만.
 
 ## 입력 (user 메시지)
-1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·강조 없는 본문.
-2. **양식 role 카탈로그**: 각 role(cluster)별 양식 sample (마커 + 강조 markup 포함 원본).
-3. **양식 마커 힌트**: 각 role별 markers 리스트, family, separator.
-4. **강조 layer 가이드**: 각 role의 base layer + 강조 layer + 적용 rule.
+1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·layer 없는 본문.
+2. **양식 role 카탈로그**: 각 role(cluster) 별 양식 sample (마커 + layer 포함 원본).
+3. **양식 마커 힌트**: 각 role 별 markers 리스트, family, separator.
+4. **글꼴 layer 가이드**: 각 role 의 base layer + non-base layer + 적용 규칙 (규칙 있는 것만 사용).
 5. **chapter 의미**: 대제목 텍스트.
 
 ## 작업
@@ -16555,60 +16566,45 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 - **마커 없음** — 양식 sample에 마커 없는 cluster는 마커 추가하지 마세요.
 - **이미 마커가 있으면** — text 앞에 마커 비슷한 게 이미 있으면: 적절하면 그대로 유지, 양식 형식과 다르면 양식 형식으로 교체, 마커가 두 개 보이면 하나만 남김.
 
-### 2. style layer markup 입히기 (item 마다)
+### 2. 글꼴 layer 적용 (item 마다)
 
-**판단 순서 (반드시 이 순서로)**:
+**위 정책 1~6 을 반드시 따릅니다.** 정책과 아래 절차가 충돌하면 정책 우선.
 
-#### A. 새 본문과 가장 가까운 sample 선택
+#### 절차
 
-같은 role 의 sample 이 여러 개 있으면 다음 기준으로 우선 매칭:
+1. **본문 시작에 외부 마커가 있다면** 그 마커에 본보기의 마커 layer 적용 (있을 때만).
+2. **본문 시작 직후 짧은 괄호 분류 라벨** (`(경제상황)`, `(부지계약)` 등) 이 있다면 본보기의 분류 라벨 layer 적용 (본보기 패턴 일관 시).
+3. **그 외 본문 모든 글자** → base layer 하나로 통째 감싸기.
+4. 본보기에 본문 한가운데 다른 layer 있더라도 위 정책 4 에 의해 base 로 처리.
 
-- outer_marker 유무
-- content_label 유무
-- body 내부 괄호 (inner_parenthetical) 유무
-- 나열 구조 유무
-- 문장 길이 / 정보 밀도
+#### 본보기 sample 활용 — 매핑 X, 확인 O
 
-새 본문의 segment 구조와 가장 비슷한 sample 을 선택.
+- 본보기 sample 은 **외부 마커 + 분류 라벨에 어떤 layer 박혔는지 확인용** 으로만 사용.
+- 본보기의 본문 한가운데 layer (예: 명사구, 금액, 시기 강조) 는 **새 본문에 적용하지 마세요**. 본보기 그 자리 의미가 새 본문에 없거나 다를 가능성이 크기 때문.
+- 본보기 본문 layer 가 새 본문에 우연히 맞는 자리가 있어도 무시. 안전한 base 우선.
 
-#### B. 선택한 sample 의 segment 별 layer 그대로 모방
+#### 의미 기반 선택 금지
 
-- 양식 sample 의 segment 경계 (괄호 위치, 마커 위치 등) 그대로 모방.
-- 양식 segment 위치의 layer 를 새 본문의 **같은 의미 기능 segment** 에 적용:
-  - content_label → content_label
-  - outer_marker → outer_marker
-  - 시기 → 시기
-  - 금액 / 규모 → 금액 / 규모
-  - 기관명 → 기관명
-  - 핵심 과제명 → 핵심 과제명
-- 양식 sample 에 없는 segment 분할 만들지 마세요. 양식이 통째 한 layer 였으면 새 본문도 통째 한 layer.
+- "이 단어가 핵심이니까 강조" 식 판단 금지.
+- "양식 본보기에 시기가 강조됐으니 새 본문 시기도 강조" 식 의미 매핑 금지.
+- 외부 마커 + 분류 라벨만 본보기 layer 그대로. 나머지 base.
 
-#### C. 여러 sample 에서 반복되는 패턴 우선
+### 3. 허용·금지 patterns
 
-- 여러 sample 에서 같은 위치 / 같은 의미 기능에 같은 layer 가 반복되면 그 패턴 우선.
-- sample 마다 non-base 위치가 다르면 의미 기능 매칭 (위 B).
+**허용**:
+- 외부 마커 (`□`, `Ⅰ.`, `➊` 등) 에 본보기 마커 layer.
+- 본문 시작 직후 짧은 괄호 분류 라벨 (`(경제상황)`, `(부지계약)` 등) 에 본보기 분류 layer.
+- 그 외 모든 본문 글자 → base layer.
 
-#### D. 불확실하면 base layer
+**짝 맞춤 강제** — 여는 `[[emN]]` 과 닫는 `[[/emN]]` 은 같은 N. 짝 없는 단독 표시 출력 금지.
 
-- 가이드 모호 / sample 불명확 → base layer.
-- 확신이 낮은 단어 → base layer.
-
-### 3. 과잉 style 방지 (강제)
-
-sample 보다 더 많은 non-base layer 만들지 마세요:
-
-- sample 에서 content_label 만 non-base → 새 본문도 content_label 만 non-base.
-- sample 에서 핵심어 1~2 개 만 non-base → 새 본문도 1~2 개.
-- sample 에서 body 전체가 non-base → 새 본문도 body 전체 non-base.
-- body 내부 괄호 (inner_parenthetical) 는 sample 에서 별도 layer 였을 때만 별도 처리. **content_label 과 inner_parenthetical 혼동 X**.
-
-**짝 맞춤 강제** — 여는 `[[emN]]` 과 닫는 `[[/emN]]` 은 같은 N. 짝 없는 단독 marker 출력 금지.
-
-**금지 패턴**:
-- sample 에서 일부 segment 만 non-base 였는데 새 본문 **전체를 그 layer 로 감싸기** — 가장 흔한 wrong.
-- 본문 전체를 강조 layer 한 색으로 감싸기 — base 가이드 무시.
-- 가이드에 없는 layer 사용 — cluster 에 정의되지 않은 layer 사용 금지.
+**금지 (절대)**:
+- 본문 한가운데 명사구·금액·시기·기관명·핵심 과제명 등에 non-base layer 박기.
+- "이 단어가 양식 본보기의 layer X 자리와 같은 의미니까 X 적용" 식 의미 기반 매핑.
+- 본보기에는 본문 안 layer 가 있지만 새 본문에는 같은 의미 segment 없을 때 비슷한 자리 찾아 layer 박기.
+- 가이드에 규칙 없는 layer 사용 (cluster 정의에 등장만 하고 적용 규칙 없는 layer 는 사용 금지).
 - paragraph_count ≤ 1 / char_count 1~2 같은 노이즈 layer 사용.
+- 본문 전체를 non-base layer 한 색으로 감싸기 — base 정책 위반.
 
 ### 3. 들여쓰기 (마커처럼 양식 sample 그대로)
 - 양식 sample의 **앞 공백·탭(들여쓰기)을 그대로 복제**해서 text 머리에 포함.
@@ -16635,7 +16631,7 @@ sample 보다 더 많은 non-base layer 만들지 마세요:
 
 - `id`, `parent_id`, `role`은 **입력과 동일**하게 유지 (변경 금지).
 - `text`만 변경.
-- 강조 markup은 text 안에 inline.
+- 글꼴 layer 표시는 text 안에 inline.
 - 트리 항목 추가/삭제 금지.
 
 반드시 위 JSON만 출력. 다른 설명 포함 금지.
@@ -16655,7 +16651,7 @@ def build_section_style_prompt(
     total_chapters: int | None = None,
 ) -> list[dict]:
     """
-    2c 호출: 2b 본문 트리 → 마커 + 강조 markup 입힌 트리.
+    2c 호출: 2b 본문 트리 → 마커 + 글꼴 layer 입힌 트리.
 
     Args:
         chapter_title: chapter 대제목 (의미 판단용)
@@ -16665,7 +16661,7 @@ def build_section_style_prompt(
         role_catalog: role별 양식 sample + description (원본 그대로, 마커 포함)
         marker_policies: 1f marker policies — role별 markers 리스트 + family + separator
         style_profiles: 11.2 말투 rule (참고용)
-        emphasis_layers: 11.2b 강조 layer rule
+        emphasis_layers: 11.2b 글꼴 layer rule
         paragraph_emphasis_map: 양식 paragraph annotated_text sample (원본, 마커 포함)
 
     Returns:
@@ -16720,7 +16716,8 @@ def build_section_style_prompt(
             + "\n\n"
         )
 
-    # 강조 layer 가이드
+    # 글꼴 layer 가이드 — 규칙 있는 layer 만 노출. 정의만 있고 규칙 없는 layer 는
+    # 가이드에서 빼서 모델이 사용 불가하게 함 (2026-05-25 정책 강화).
     emphasis_text = ""
     if emphasis_layers:
         em_lines = []
@@ -16728,56 +16725,54 @@ def build_section_style_prompt(
             em = emphasis_layers.get(role_name) or {}
             ems_list = em.get("emphasis_layers") or []
             base_lid = em.get("base_layer_id", "")
-            # 글꼴 1종 cluster (강조 없음)도 base 정보 명시 — 2c가 base에도 markup 박도록.
             if not base_lid and not ems_list:
                 continue
-            em_lines.append(f"\n### {role_name}")
-            em_lines.append(f"- base layer: `{base_lid}` — 이 layer로 base segment 감쌈 (`[[{base_lid}]]...[[/{base_lid}]]`)")
+            # 규칙 있는 non-base layer 만 추림
+            _layers_with_rules = []
             for layer in ems_list:
                 lid = layer.get("layer_id", "")
-                rules = layer.get("rules_for_generation") or []
-                if not lid:
-                    continue
-                em_lines.append(f"- `[[{lid}]]...[[/{lid}]]`:")
-                for r in rules:
-                    em_lines.append(f"    - {r}")
-            obs = (em.get("additional_observations") or "").strip()
-            if obs:
-                em_lines.append(f"- (추가 관찰): {obs}")
-            # 양식 본래 sample annotated_text — 원본 그대로 (마커 포함)
+                rules = [r for r in (layer.get("rules_for_generation") or []) if r]
+                if lid and rules:
+                    _layers_with_rules.append((lid, rules))
+            em_lines.append(f"\n### {role_name}")
+            em_lines.append(f"- base layer: `{base_lid}` — 본문 모든 글자의 기본 글꼴 (default).")
+            if _layers_with_rules:
+                em_lines.append("- 규칙 있는 non-base layer (적용 가능):")
+                for lid, rules in _layers_with_rules:
+                    em_lines.append(f"    - `[[{lid}]]...[[/{lid}]]`:")
+                    for r in rules:
+                        em_lines.append(f"        - {r}")
+            else:
+                em_lines.append("- 규칙 있는 non-base layer 없음 → 본문 전체 base 하나로만 감싸기.")
+            # 본보기 sample — 외부 마커 + 분류 라벨 layer 확인용. 본문 안 layer 는 무시.
             if paragraph_emphasis_map:
                 pem = paragraph_emphasis_map.get(role_name) or {}
                 samples = pem.get("sample_paragraphs") or []
                 if samples:
-                    # 여러 부모의 sample을 골고루 보여줘 마커 reset 패턴이 잘 보이도록.
-                    # parent_idx별로 그룹화해서 부모 변화가 sample에 포함되게.
                     from collections import OrderedDict
                     _by_parent = OrderedDict()
                     for sp in samples:
                         pkey = sp.get("parent_idx")
                         _by_parent.setdefault(pkey, []).append(sp)
-                    # 부모별로 최대 2개씩, 부모 3개까지
                     _picked = []
                     for pkey, pl in list(_by_parent.items())[:3]:
                         _picked.extend(pl[:2])
-                    em_lines.append("- 양식 본래 sample (원본 — 마커 + 강조 markup + 부모 정보):")
+                    em_lines.append("- 양식 본보기 sample (외부 마커 + 분류 라벨 layer 확인용 — 본문 안 layer 는 무시하고 base 로):")
                     for sp in _picked:
-                        # .strip() 제거 (2026-05-24): 양식 sample 의 앞 공백 / 들여쓰기 보존.
-                        # AI 가 들여쓰기 패턴 모방 가능하도록 sample 원본 그대로.
                         ann = sp.get("annotated_text") or ""
                         pidx_v = sp.get("parent_idx")
                         if ann:
                             em_lines.append(f"    - parent={pidx_v}: {ann!r}")
                     em_lines.append(
-                        "    ↑ 위 분할 패턴(단편 수·길이·base/강조 분포)을 모방하세요.\n"
-                        "    **마커 시퀀스는 parent가 바뀌면 새로 1번부터 시작합니다** "
-                        "(예: parent=A 아래 󰊱, 󰊲, 󰊳 → parent=B 아래 다시 󰊱, 󰊲, ...). "
-                        "양식 sample의 parent 그룹을 보고 reset 패턴을 그대로 따라가세요."
+                        "    **마커 시퀀스만 parent 단위 reset 패턴 따라가세요** "
+                        "(예: parent=A 아래 󰊱, 󰊲 → parent=B 아래 다시 󰊱, ...). "
+                        "본문 한가운데 layer 는 절대 모방 X — base 하나로."
                     )
         if em_lines:
             emphasis_text = (
-                "## 강조 layer 가이드 (role별)\n"
-                "각 강조 layer rule + 양식 sample의 분할 패턴을 따라 markup 입히세요.\n"
+                "## 글꼴 layer 가이드 (role 별)\n"
+                "위 정책 1~6 을 반드시 따릅니다. 본문 한가운데에 non-base layer 박지 마세요.\n"
+                "외부 마커 + 본문 시작 직후 짧은 괄호 분류 라벨만 non-base 허용. 그 외 base.\n"
                 "여는 태그와 닫는 태그는 반드시 같은 N (짝 강제).\n"
                 + "\n".join(em_lines)
                 + "\n\n"
