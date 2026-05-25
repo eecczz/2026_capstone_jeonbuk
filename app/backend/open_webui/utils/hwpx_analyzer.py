@@ -3760,19 +3760,33 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
 
 각 paragraph 에 대해 **최종 parent_idx + level** 결정:
 
-- `parent_idx`: 의미상 부모 paragraph 의 idx. 최상위면 null.
-- `level`: 0 부터 시작. chapter root 는 1. root 자식은 2. ...
+- `parent_idx`: 의미상 부모 paragraph 의 idx. 부모 없으면 null.
+- `level`: 다음 단일 룰로 결정.
+  - **parent_idx 가 null 이면 level = 0**.
+  - **parent_idx 가 있으면 level = 부모 paragraph 의 level + 1**.
+
+예:
+- 문서 제목 / 표지 paragraph (parent 없음): parent_idx=null, level=0.
+- 차례 paragraph (parent 없음 또는 표지의 자식): parent_idx=null → level=0, 또는 parent_idx=문서제목idx → level=1.
+- chapter root 가 차례의 자식이면: parent_idx=차례idx → level=차례.level+1.
+- chapter root 가 root 면: parent_idx=null → level=0.
+
+**chapter root 의 level 은 강제 X — parent 에 따라 자동 결정**. 따라서 prompt 다른 곳에서 "chapter root level=1" 같은 강제 표현 X.
 
 ## hard constraint (강제. 위반 시 wrong)
 
 1. **같은 cluster_id paragraph 는 같은 level + 같은 parent cluster 의 자식**.
    - cluster_X 의 한 paragraph 가 cluster_A 의 자식이면, cluster_X 의 모든 paragraph 가 cluster_A 의 paragraph 중 하나의 자식.
-2. **parent_idx 는 항상 자기 idx 보다 작은 정수**. self-loop / forward reference 금지.
-3. **모든 paragraph 의 parent_idx + level 출력**. 누락 X.
-4. **chapter_id 가 다른 paragraph 를 parent 로 잡지 마라** (chapter root 예외).
+2. **parent_idx 는 항상 자기 idx 보다 작은 정수** or null. self-loop / forward reference 금지.
+3. **level 규칙 (단일 룰)**:
+   - parent_idx = null → level = 0.
+   - parent_idx 있음 → level = parent paragraph 의 level + 1.
+   - 위 룰 위반 시 wrong (예: parent_idx=null 인데 level=1, 또는 parent.level=2 인데 자기 level=4).
+4. **모든 paragraph 의 parent_idx + level 출력**. 누락 X.
+5. **chapter_id 가 다른 paragraph 를 parent 로 잡지 마라** (chapter root 예외).
    - paragraph 의 parent 는 같은 chapter_id 안에 있어야.
    - 단 chapter root (chapter 의 최상위 paragraph) 의 parent 는 다른 chapter 또는 null 가능.
-5. **cycle 금지**. parent chain 추적 시 무한 루프 발생하면 wrong.
+6. **cycle 금지**. parent chain 추적 시 무한 루프 발생하면 wrong.
 
 ## 자식 판단 — 구체 패턴
 
@@ -3807,12 +3821,13 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
 
 1. 모든 paragraph idx 가 정확히 한 번씩 등장.
 2. parent_idx 가 자기보다 작은 정수 or null.
-3. 같은 cluster_id paragraph 의 level 다 같음.
-4. 같은 cluster_id paragraph 의 parent cluster 다 같음.
-5. cycle 없음.
-6. chapter_id 다른 paragraph 를 parent 로 잡지 않음 (chapter root 예외).
+3. **level 룰 만족**: parent_idx=null → level=0. parent_idx 있음 → level=parent.level+1.
+4. 같은 cluster_id paragraph 의 level 다 같음.
+5. 같은 cluster_id paragraph 의 parent cluster 다 같음.
+6. cycle 없음.
+7. chapter_id 다른 paragraph 를 parent 로 잡지 않음 (chapter root 예외).
 
-위 6 가지 한 가지라도 위반 시 wrong. 재검토 후 출력.
+위 7 가지 한 가지라도 위반 시 wrong. 재검토 후 출력.
 
 ## 출력 형식 (JSON 만)
 
@@ -3821,12 +3836,15 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
   "paragraphs": [
     {"idx": 0, "parent_idx": null, "level": 0},
     {"idx": 1, "parent_idx": null, "level": 0},
+    {"idx": 3, "parent_idx": null, "level": 0},
     {"idx": 4, "parent_idx": 3, "level": 1},
     {"idx": 5, "parent_idx": 4, "level": 2},
     ...
   ]
 }
 ```
+
+(예시 설명: idx=0/1/3 은 문서 root 또는 표지 / 차례 — parent 없음 → level=0. idx=4 는 차례 (idx=3) 의 자식 → level=차례.level+1=1. idx=5 는 idx=4 의 자식 → level=2. **level = parent.level + 1 룰 일관**.)
 
 - 모든 idx 등장
 - 별도 설명 금지 — JSON 만
