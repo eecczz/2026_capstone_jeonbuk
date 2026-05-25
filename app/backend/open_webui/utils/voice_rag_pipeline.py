@@ -1,0 +1,690 @@
+"""음성 챗봇 PipeCat FrameProcessor 집합 + RAG 파이프라인 빌더.
+
+voice_ws.py 의 voice-ws endpoint 가 PipeCat Pipeline 을 조립할 때, RAG/
+LLM/TTS/자막 흐름을 담당하는 3개의 FrameProcessor 와 그 closure 헬퍼들.
+
+원래 voice_ws.py 안에 nested 로 있던 620줄짜리 _build_rag_processor 를
+모듈 함수 build_rag_processor 로 옮긴 것. signature 와 closure 구조는
+그대로 유지 — 호출 사이트 변경 없음.
+
+────────────────────────────────────────────────────────────────────────
+호출 그래프 (코드 리뷰 시 따라가기 좋은 순서)
+────────────────────────────────────────────────────────────────────────
+  build_rag_processor(request, websocket)
+    │
+    ├─ _send_caption(kind, text)    ← closure, websocket text JSON push
+    │     호출 kind: transcription / reply / clear / phase_label /
+    │                phase_overlay / vad / caption_segment / slots
+    │
+    ├─ class _BargeInBroadcaster (FrameProcessor)
+    │     봇 발화 중 사용자 VAD 시작 감지 → broadcast_interruption.
+    │     PipeCat 정통 barge-in 패턴. STT/RAG 와 무관 — VAD 위에 배치.
+    │
+    ├─ class _AudioStartCaptionObserver (FrameProcessor)
+    │     첫 TTSAudioRawFrame 도착 시점에 자막 reply 메시지 push.
+    │     자막-음성 동시 시작 보장.
+    │
+    └─ class JeonbukRAGProcessor (FrameProcessor)   ← 음성 흐름의 두뇌
+          멀티턴 turn-merge + barge-in cancel + history pop + post-reply-reset.
+          process_frame(frame, dir)
+            ├─ BotStartedSpeakingFrame → _reply_audio_started = True
+            ├─ VADUserStartedSpeakingFrame → audio_pause/orb listening
+            ├─ VADUserStoppedSpeakingFrame → phase_label / orb thinking
+            └─ TranscriptionFrame → _looks_like_korean → _restart_generation
+                  │
+                  ├─ _restart_generation(user_text)
+                  │     ├─ _reply_audio_started True 면 reset 분기
+                  │     │    (history 유지, post_reply_reset = True)
+                  │     └─ 아니면 history pop + active merge
+                  │
+                  ├─ _generate_after_debounce(gid)
+                  │     0.85s 디바운스 → user_text 합치기 → _generate_reply
+                  │
+                  └─ _generate_reply(gid, user_text)
+                        ├─ post_reply_reset → effective_user_text + history 에
+                        │     시스템 안내 inject
+                        ├─ async for delta in _stream_public_llm_reply(...)
+                        │     sentence 단위 _push_tts_if_current 호출
+                        └─ done → _caption_observer.queue_reply + history 누적
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import time
+from typing import Any
+
+from fastapi import Request
+
+from open_webui.utils.voice_tts_text import (
+    tts_text_postprocess as _tts_text_postprocess,
+)
+
+log = logging.getLogger(__name__)
+
+
+def build_rag_processor(request: Request, websocket=None):
+    """우리 RAG 흐름을 Pipecat FrameProcessor 로 감싼 인스턴스 생성.
+
+    의존성을 import time 에 끌어오면 main.py 로딩 시 사이클 문제가 생길 수 있어
+    함수 내부에서 lazy import.
+
+    Args:
+        request: OWI Request-like 프록시 (state.config 접근용)
+        websocket: 자막 메시지 push 용 raw WebSocket. None 이면 자막 채널 없음.
+    """
+    import json as _json
+
+    from pipecat.frames.frames import (
+        TranscriptionFrame,
+        TextFrame,
+        TTSSpeakFrame,
+        VADUserStartedSpeakingFrame,
+        VADUserStoppedSpeakingFrame,
+        BotStartedSpeakingFrame,
+        BotStoppedSpeakingFrame,
+    )
+    from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+
+    async def _send_caption(kind: str, text: str):
+        """프론트엔드 자막 영역 업데이트용 text 메시지 push.
+
+        Pipecat 의 binary 오디오 스트림과 같은 WebSocket 위에 text JSON 으로 전송.
+        프론트 ws.onmessage 가 string 받으면 JSON.parse 해서 vc-user / vc-bot 자막
+        bubble 을 갱신한다 (public-chatbot.html 안 setVoiceCaption).
+        """
+        if websocket is None:
+            return
+        try:
+            await websocket.send_text(_json.dumps({"type": kind, "text": text}))
+        except Exception as e:
+            log.debug(f"voice_ws caption send failed: {e}")
+
+    class _BargeInBroadcaster(FrameProcessor):
+        """봇 발화 중 사용자 VAD started 감지 시 Pipecat broadcast_interruption() 호출.
+
+        Pipecat 1.1 의 정통 interruption 패턴:
+        1) `broadcast_interruption()` → InterruptionTaskFrame upstream push
+        2) Pipeline 이 받아 → InterruptionFrame downstream push
+        3) 모든 FrameProcessor 의 process_task 가 자동 cancel + recreate
+        4) 우리 RAG processor 의 async for LLM loop 도 CancelledError 받고 종료
+
+        VAD started 가 봇 발화 중이 아닐 때 (사용자 첫 발화 / 연속 발화 사이) 는 무시 —
+        false-positive interruption 방지. BotStartedSpeakingFrame / BotStoppedSpeakingFrame
+        으로 봇 발화 상태 추적.
+
+        이 processor 는 VAD 와 RAG 사이에 배치 → RAG 의 LLM loop 에 의존 안 함.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self._bot_speaking: bool = False
+
+        async def process_frame(self, frame, direction):  # type: ignore[override]
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, BotStartedSpeakingFrame):
+                self._bot_speaking = True
+                log.info("[voice_ws] bot started speaking")
+            elif isinstance(frame, BotStoppedSpeakingFrame):
+                self._bot_speaking = False
+                log.info("[voice_ws] bot stopped speaking")
+            elif isinstance(frame, VADUserStartedSpeakingFrame) and self._bot_speaking:
+                log.info("[voice_ws] barge-in detected — broadcasting interruption")
+                try:
+                    await self.broadcast_interruption()
+                except Exception as e:
+                    log.warning(f"[voice_ws] broadcast_interruption failed: {e}")
+
+            await self.push_frame(frame, direction)
+
+    class _AudioStartCaptionObserver(FrameProcessor):
+        """첫 TTSAudioRawFrame 도착 시점에 자막 reply 를 push.
+
+        commit 3c0c0de 시점에 검증된 "자막-음성 동시" 패턴. 이전엔 TTS 텍스트가
+        140자/긴 합성 시간 + chunk 4800 + speed 1.05 라 자막 hold 시간이 길어
+        체감 지연이 컸지만, 지금은 chunk 1920 + speed 1.0 + 짧은 텍스트로
+        합성이 1~2초라 자막 hold 도 거의 안 느껴짐.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self._pending_reply: str | None = None
+            self._sent_for_current: bool = False
+
+        def queue_reply(self, text: str):
+            self._pending_reply = text
+            self._sent_for_current = False
+
+        def clear(self):
+            self._pending_reply = None
+            self._sent_for_current = False
+
+        async def process_frame(self, frame, direction):  # type: ignore[override]
+            from pipecat.frames.frames import TTSAudioRawFrame as _TTSAudioRawFrame
+
+            await super().process_frame(frame, direction)
+
+            if (
+                not self._sent_for_current
+                and self._pending_reply
+                and isinstance(frame, _TTSAudioRawFrame)
+            ):
+                await _send_caption("reply", self._pending_reply)
+                self._sent_for_current = True
+                self._pending_reply = None
+
+            await self.push_frame(frame, direction)
+
+    class JeonbukRAGProcessor(FrameProcessor):
+        """음성 STT 결과를 텍스트 챗봇과 같은 RAG/LLM 흐름으로 처리.
+
+        자막 reply 는 직접 push 하지 않고 _AudioStartCaptionObserver 에
+        queue 만 한다. observer 가 TTS 첫 audio chunk 시점에 자막을 push 해서
+        음성-자막 동시 시작을 보장.
+
+        멀티턴: 단일 WebSocket 세션 동안 history 누적.
+        """
+
+        def __init__(
+            self,
+            owi_request: Request,
+            caption_observer: "_AudioStartCaptionObserver",
+        ):
+            super().__init__()
+            self._owi_request = owi_request
+            self._caption_observer = caption_observer
+            self._history: list[dict] = []
+            self._generation_id: int = 0
+            self._generation_task: asyncio.Task | None = None
+            self._pending_user_segments: list[str] = []
+            self._active_user_segments: list[str] = []
+            self._turn_debounce_secs: float = 0.85
+            # 봇 응답 음성이 한 번이라도 재생되기 시작했는지. True 이면 그 turn 은
+            # 종결된 것으로 보고, 다음 _restart_generation 진입 시 history pop /
+            # active merge 를 안 함 — 새 질문의 "합치는 시작점" 으로 리셋.
+            # barge-in 으로 끝까지 재생 안 됐어도 True 면 그 응답은 사용자가 들은 것.
+            self._reply_audio_started: bool = False
+            # 직전 turn 의 응답이 재생된 후 reset 분기로 들어왔다는 표시. LLM 호출
+            # 시점에 사용자 발화 앞에 안내 prefix 를 붙여 "이전 질문은 답변 완료,
+            # 이번 발화에만 답해라" 명시. history (LLM 맥락) 는 보존되므로 정정/
+            # 후속 질문은 자연 처리되되 이전 질문의 재답변은 막힌다.
+            self._post_reply_reset: bool = False
+
+        def _is_current_generation(self, generation_id: int) -> bool:
+            return generation_id == self._generation_id
+
+        def _merge_turn_segments(self, segments: list[str]) -> list[str]:
+            merged: list[str] = []
+            for segment in segments:
+                segment = (segment or "").strip()
+                if segment and (not merged or merged[-1] != segment):
+                    merged.append(segment)
+            return merged
+
+        async def _stop_current_generation(self):
+            self._caption_observer.clear()
+            await _send_caption("clear", "")
+            try:
+                await self.broadcast_interruption()
+            except Exception as e:
+                log.debug(f"[voice_ws] generation interruption broadcast failed: {e}")
+
+            task = self._generation_task
+            if task and not task.done() and task is not asyncio.current_task():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        async def _restart_generation(self, user_text: str):
+            # 봇 응답 음성이 이미 한 번이라도 재생됐다면 그 turn 은 종결 — 다음 발화는
+            # 새 질문의 시작점으로 리셋 (history 는 LLM 컨텍스트로 보존, 합치기만 안 함).
+            if self._reply_audio_started:
+                log.info(
+                    "[voice_ws] previous reply was played — resetting merge window for new question"
+                )
+                self._active_user_segments = []
+                self._pending_user_segments = [user_text.strip()] if user_text.strip() else []
+                self._reply_audio_started = False
+                self._post_reply_reset = True  # LLM 호출 시 안내 prefix 부착 신호
+                self._generation_id += 1
+                generation_id = self._generation_id
+                log.info(
+                    "[voice_ws] restart generation id=%s pending=%s",
+                    generation_id,
+                    self._pending_user_segments,
+                )
+                await self._stop_current_generation()
+                self._generation_task = asyncio.create_task(
+                    self._generate_after_debounce(generation_id)
+                )
+                return
+
+            # 직전 턴 응답이 아직 음성 재생 시작 전 — barge-in 의도 있는 끼어들기로 보고
+            # 직전 응답을 무효화하고 사용자 발화는 회수해 합친 응답으로 처리.
+            prev_user_for_merge: list[str] = []
+            if not self._active_user_segments and self._history:
+                if self._history and self._history[-1].get("role") == "assistant":
+                    dropped = self._history.pop()
+                    log.info(
+                        "[voice_ws] dropping completed assistant reply len=%s due to new turn",
+                        len(dropped.get("content") or ""),
+                    )
+                if self._history and self._history[-1].get("role") == "user":
+                    prev = self._history.pop()
+                    text = (prev.get("content") or "").strip()
+                    if text:
+                        prev_user_for_merge.append(text)
+
+            self._pending_user_segments = self._merge_turn_segments(
+                [
+                    *prev_user_for_merge,
+                    *self._active_user_segments,
+                    *self._pending_user_segments,
+                    user_text,
+                ]
+            )
+            self._generation_id += 1
+            generation_id = self._generation_id
+            log.info(
+                "[voice_ws] restart generation id=%s pending=%s",
+                generation_id,
+                self._pending_user_segments,
+            )
+
+            await self._stop_current_generation()
+            self._generation_task = asyncio.create_task(
+                self._generate_after_debounce(generation_id)
+            )
+
+        async def _generate_after_debounce(self, generation_id: int):
+            try:
+                await asyncio.sleep(self._turn_debounce_secs)
+                if not self._is_current_generation(generation_id):
+                    return
+
+                user_segments = [s for s in self._pending_user_segments if s.strip()]
+                self._pending_user_segments = []
+                self._active_user_segments = user_segments
+                user_text = " ".join(user_segments).strip()
+                if not user_text:
+                    self._active_user_segments = []
+                    return
+
+                # 멀티턴 합쳐진 최종 user_text — '질문은 …' 요약을 잠깐 띄움.
+                # frontend 가 3.5s 동안 stateEl 에 표시 후 마지막 정상 phase_label
+                # 로 자동 복귀. 끼어들기 형식이라 정상 순서를 안 깨뜨림.
+                _summary_src = user_text.strip().replace("\n", " ")
+                _summary = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
+                await _send_caption("phase_overlay", f"질문은 “{_summary}”")
+                await _send_caption("phase_label", "관련 자료 찾는 중")
+                await self._generate_reply(generation_id, user_text)
+            except asyncio.CancelledError:
+                log.info("[voice_ws] generation task cancelled id=%s", generation_id)
+                raise
+            finally:
+                if self._is_current_generation(generation_id):
+                    self._active_user_segments = []
+
+        async def _push_tts_if_current(self, generation_id: int, text: str):
+            if not self._is_current_generation(generation_id):
+                return
+            await self.push_frame(TTSSpeakFrame(text=text))
+
+        async def _generate_reply(self, generation_id: int, user_text: str):
+            import re as _re
+            import uuid as _uuid
+
+            # 문장부호 + 한국어 종결어미 결합만 매치. 단순 "다\s" / "요\s" 매치는
+            # 짧은 종결 ("했다.", "이고요,") 마다 끊겨 TTS 호출이 빈번해지고,
+            # 합성 시간 ≈ 재생 시간이 되어 frontend buffer 가 비는 무음 구간이 생김.
+            _sentence_pat = _re.compile(
+                r"(?<!\d)\.\s|(?<!\d)\.$|[!?]\s|[!?]$"
+                r"|다\.\s|요\.\s|니다\.\s|에요\.\s|어요\.\s"
+                r"|다\.$|요\.$|니다\.$|에요\.$|어요\.$"
+            )
+            sentence_buffer = ""
+            full_reply = ""
+            sentence_count = 0
+            _stream_t0 = None
+            # 60자 이상에서만 sentence 분리 push — 합성 시간을 재생 시간보다 길게
+            # 유지해 audio buffer 가 비는 무음 구간 방지. 첫 sentence 도 60자가
+            # 모일 때까지 대기하므로 응답 시작 latency 가 0.5~1s 추가될 수 있음.
+            MIN_SENT_LEN = 60
+
+            try:
+                from open_webui.routers.public_chatbot import (
+                    _stream_public_llm_reply,
+                    _get_public_user,
+                    _humanize_reply as _hum,
+                )
+
+                user_obj = _get_public_user(self._owi_request)
+                session_id = str(_uuid.uuid4())
+
+                import time as _time
+
+                # 직전 응답이 음성으로 사용자에게 이미 전달된 후의 새 발화라면 LLM 에
+                # 안내 (1) user_text prefix + (2) history 끝 system message 둘 다
+                # inject. prefix 만으로는 LLM 이 history 의 이전 질문을 다시
+                # 답변하는 케이스가 잔재. system message 가 더 명확한 instruction.
+                effective_user_text = user_text
+                effective_history = self._history
+                if self._post_reply_reset:
+                    effective_user_text = (
+                        "(시스템 안내: 직전 사용자 질문에 대한 답변은 이미 완료되어 "
+                        "사용자가 들었습니다. 이번 발화는 새 질문이거나, 직전 답변에 "
+                        "대한 정정·후속 질문일 수 있습니다. 이전 대화 맥락은 자유롭게 "
+                        "참조하되, 직전 질문의 답변을 통째로 반복하지는 마세요.)\n\n"
+                        + user_text
+                    )
+                    effective_history = self._history + [
+                        {
+                            "role": "system",
+                            "content": (
+                                "위 대화의 직전 사용자 질문은 이미 답변이 완료되어 사용자가 "
+                                "음성으로 들었습니다. 다음 사용자 발화는 (a) 그 답변과 별개의 "
+                                "새 질문, (b) 직전 답변에 대한 후속/심화 질문, (c) 직전 답변의 "
+                                "정정 요청 중 하나입니다. 이전 대화 맥락은 그대로 활용해서 "
+                                "발화 의도를 정확히 파악하되, 직전 사용자 질문 자체를 다시 "
+                                "처음부터 답변하지는 마세요. 이번 새 발화의 의도에만 응답하세요."
+                            ),
+                        }
+                    ]
+                    log.info("[voice_ws] injecting post-reply-reset guidance (prefix + system msg)")
+                    self._post_reply_reset = False
+
+                stream_failed = False
+                delta_count = 0
+                async for kind, payload in _stream_public_llm_reply(
+                    self._owi_request,
+                    user_obj,
+                    effective_user_text,
+                    effective_history,
+                    session_id,
+                    voice_mode=True,
+                ):
+                    if not self._is_current_generation(generation_id):
+                        log.info("[voice_ws] stale stream ignored id=%s", generation_id)
+                        return
+
+                    if kind == "delta":
+                        now = _time.time()
+                        if _stream_t0 is None:
+                            _stream_t0 = now
+                            log.info("[voice_ws] FIRST delta arrived id=%s", generation_id)
+                            # LLM 이 답변을 만들기 시작 — orb 는 여전히 thinking
+                            await _send_caption("phase_label", "답변 작성 중")
+                        delta_count += 1
+                        if delta_count <= 5 or delta_count % 20 == 0:
+                            log.info(
+                                f"[voice_ws] delta #{delta_count} +{(now - _stream_t0)*1000:.0f}ms len={len(payload)} id={generation_id}"
+                            )
+                        sentence_buffer += payload
+                        full_reply += payload
+                        while True:
+                            m = _sentence_pat.search(sentence_buffer)
+                            if not m:
+                                break
+                            end = m.end()
+                            sentence = sentence_buffer[:end].strip()
+                            if len(sentence) < MIN_SENT_LEN:
+                                break
+                            sentence_buffer = sentence_buffer[end:]
+                            sentence_clean = _hum(sentence)
+                            if sentence_clean.strip():
+                                sentence_count += 1
+                                tts_sentence = _tts_text_postprocess(sentence_clean)
+                                log.info(
+                                    f"[voice_ws] stream sentence #{sentence_count}: {tts_sentence[:50]!r} id={generation_id}"
+                                )
+                                await self._push_tts_if_current(generation_id, tts_sentence)
+                    elif kind == "done":
+                        final_text = payload or _hum(full_reply)
+                        if sentence_buffer.strip():
+                            tail = _hum(sentence_buffer.strip())
+                            if tail and len(tail) >= 5:
+                                log.info(
+                                    f"[voice_ws] stream tail: {tail[:40]!r} id={generation_id}"
+                                )
+                                await self._push_tts_if_current(
+                                    generation_id, _tts_text_postprocess(tail)
+                                )
+                        if not self._is_current_generation(generation_id):
+                            return
+                        self._caption_observer.queue_reply(final_text)
+                        self._history.append({"role": "user", "content": user_text})
+                        self._history.append({"role": "assistant", "content": final_text})
+                        log.info(
+                            f"[voice_ws] stream done deltas={delta_count} len={len(final_text)} id={generation_id}"
+                        )
+                    elif kind == "error":
+                        log.warning(f"[voice_ws] stream error: {payload}")
+                        stream_failed = True
+
+                if stream_failed and not full_reply:
+                    raise RuntimeError("LLM stream produced no output")
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if not self._is_current_generation(generation_id):
+                    return
+                log.exception(f"voice_ws streaming failed, falling back to non-stream: {e}")
+                try:
+                    from open_webui.routers.public_chatbot import _run_chat_internal
+
+                    reply_text, _sid, _src = await _run_chat_internal(
+                        self._owi_request, user_text, self._history
+                    )
+                except Exception as e2:
+                    log.exception(f"voice_ws fallback also failed: {e2}")
+                    reply_text = "죄송해요. 답변 준비 중에 문제가 생겼어요."
+
+                if not self._is_current_generation(generation_id):
+                    return
+
+                self._history.append({"role": "user", "content": user_text})
+                self._history.append({"role": "assistant", "content": reply_text})
+                self._caption_observer.queue_reply(reply_text)
+                parts = _re.split(
+                    r"(?<=[.!?])\s+|(?<=다)\s+|(?<=요)\s+", reply_text
+                )
+                parts = [p.strip() for p in parts if p.strip()] or [reply_text]
+                for s in parts:
+                    if not self._is_current_generation(generation_id):
+                        return
+                    if s.strip():
+                        await self._push_tts_if_current(
+                            generation_id, _tts_text_postprocess(s)
+                        )
+
+        async def process_frame(self, frame, direction):  # type: ignore[override]
+            await super().process_frame(frame, direction)
+
+            # 봇 응답 음성이 실제 재생 시작된 시점 마킹 — 다음 사용자 발화의 "합치는
+            # 시작점" 을 리셋하는 신호. barge-in 으로 끝까지 못 들었어도 시작은 된 것.
+            if isinstance(frame, BotStartedSpeakingFrame):
+                if not self._reply_audio_started:
+                    self._reply_audio_started = True
+                    log.info("[voice_ws] reply audio started — merge window will reset on next turn")
+
+            # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
+            if isinstance(frame, VADUserStartedSpeakingFrame):
+                log.info("[voice_ws] VAD: user started speaking")
+                # 사용자 발화 시작 → frontend orb 기본 (검은 원) 으로
+                await _send_caption("vad", "start")
+                # 사용자가 끼어들면 STT 결과 도착 전에 진행 중 generation 을 먼저 멈춘다.
+                # 짧은 발화 (LLM stream 이 1.5s 내 done) 케이스에서 cancel 못 잡는 문제 보강.
+                # 단 history pop 은 _restart_generation 에서 — 여기선 in-flight 만 정리.
+                if self._generation_task and not self._generation_task.done():
+                    self._generation_id += 1  # in-flight stream 의 stale 체크가 즉시 False
+                    log.info(
+                        "[voice_ws] barge-in detected, bumping generation_id=%s and stopping",
+                        self._generation_id,
+                    )
+                    await self._stop_current_generation()
+            elif isinstance(frame, VADUserStoppedSpeakingFrame):
+                log.info("[voice_ws] VAD: user stopped speaking")
+                # 사용자 발화 끝 → frontend orb thinking + 단계 라벨
+                await _send_caption("vad", "stop")
+                await _send_caption("phase_label", "발화 정리 중")
+
+            if isinstance(frame, TranscriptionFrame):
+                user_text = (frame.text or "").strip()
+                log.info(f"[voice_ws] STT transcript: {user_text!r}")
+                if not user_text:
+                    return
+
+                # STT 가 한국어가 아닌 외국어/영문 비스무리하게 transcribe 한 결과는
+                # 노이즈로 drop — LLM 컨텍스트 오염을 막아 응답 품질과 TTS 발음
+                # 안정성 보장. 도청 챗봇은 한국어 발화 가정.
+                from open_webui.routers.public_chatbot import _looks_like_korean
+                if not _looks_like_korean(user_text, threshold=0.5):
+                    log.info(
+                        f"[voice_ws] non-Korean STT transcript dropped (noise): {user_text!r}"
+                    )
+                    await _send_caption("clear", "")
+                    return
+
+                # 사용자 발화 자막 즉시 push
+                await _send_caption("transcription", user_text)
+                await self._restart_generation(user_text)
+                return
+
+                # ── 진짜 LLM streaming + sentence-by-sentence TTS ──
+                # _stream_public_llm_reply 가 SSE delta 별로 yield. LLM 첫 토큰이
+                # 도착하는 순간부터 sentence buffer 에 누적, 종결 어미 감지 즉시
+                # TTSSpeakFrame push → 첫 문장 음성 합성을 LLM 응답 완료 전에 시작.
+                # 사용자 체감 응답 시간 큰 폭 단축.
+                import re as _re
+                import uuid as _uuid
+
+                # 종결 매칭 — 소수점/약어 (예: "1.5%", "A.B.C") 잘못 끊지 않도록
+                # "." 뒤에 숫자/영문 오면 무시. 한국어 종결어미 + 문장부호.
+                _sentence_pat = _re.compile(
+                    r"(?<!\d)\.\s|(?<!\d)\.$|[!?。…]|다\s|요\s|니다\s|에요\s|이에요\s|예요\s"
+                )
+                sentence_buffer = ""
+                full_reply = ""
+                sentence_count = 0
+                _stream_t0 = None  # 첫 delta 도착 시점 — streaming 동작 진단
+                # sentence 최소 길이 — 너무 짧은 단편은 다음과 합쳐서 push (악센트 깨짐 방지)
+                MIN_SENT_LEN = 20
+
+                try:
+                    from open_webui.routers.public_chatbot import (
+                        _stream_public_llm_reply,
+                        _get_public_user,
+                        _humanize_reply as _hum,
+                    )
+
+                    user_obj = _get_public_user(self._owi_request)
+                    session_id = str(_uuid.uuid4())
+
+                    import time as _time
+
+                    stream_failed = False
+                    delta_count = 0
+                    async for kind, payload in _stream_public_llm_reply(
+                        self._owi_request, user_obj, user_text, self._history,
+                        session_id, voice_mode=True,
+                    ):
+                        if kind == "delta":
+                            now = _time.time()
+                            if _stream_t0 is None:
+                                _stream_t0 = now
+                                log.info("[voice_ws] FIRST delta arrived")
+                            delta_count += 1
+                            if delta_count <= 5 or delta_count % 20 == 0:
+                                # 처음 5개 + 20개마다 delta 도착 시점 로깅
+                                log.info(
+                                    f"[voice_ws] delta #{delta_count} +{(now - _stream_t0)*1000:.0f}ms len={len(payload)}"
+                                )
+                            sentence_buffer += payload
+                            full_reply += payload
+                            # 문장 경계 감지 → 즉시 TTS 합성 시작
+                            while True:
+                                m = _sentence_pat.search(sentence_buffer)
+                                if not m:
+                                    break
+                                end = m.end()
+                                sentence = sentence_buffer[:end].strip()
+                                # 20자 미만이면 buffer 그대로 두고 다음 종결까지 누적
+                                if len(sentence) < MIN_SENT_LEN:
+                                    break
+                                sentence_buffer = sentence_buffer[end:]
+                                sentence_clean = _hum(sentence)
+                                if sentence_clean.strip():
+                                    sentence_count += 1
+                                    # TTS 만 한국어 발음 (자막은 원본)
+                                    tts_sentence = _tts_text_postprocess(sentence_clean)
+                                    log.info(
+                                        f"[voice_ws] stream sentence #{sentence_count}: "
+                                        f"{tts_sentence[:50]!r}"
+                                    )
+                                    await self.push_frame(TTSSpeakFrame(text=tts_sentence))
+                        elif kind == "done":
+                            final_text = payload or _hum(full_reply)
+                            # 남은 buffer 도 한 문장으로 합성
+                            if sentence_buffer.strip():
+                                tail = _hum(sentence_buffer.strip())
+                                if tail and len(tail) >= 5:
+                                    log.info(f"[voice_ws] stream tail: {tail[:40]!r}")
+                                    await self.push_frame(
+                                        TTSSpeakFrame(text=_tts_text_postprocess(tail))
+                                    )
+                            # 자막은 humanized 원본 (숫자 그대로)
+                            self._caption_observer.queue_reply(final_text)
+                            self._history.append({"role": "user", "content": user_text})
+                            self._history.append({"role": "assistant", "content": final_text})
+                            log.info(
+                                f"[voice_ws] stream done deltas={delta_count} len={len(final_text)}"
+                            )
+                        elif kind == "error":
+                            log.warning(f"[voice_ws] stream error: {payload}")
+                            stream_failed = True
+
+                    if stream_failed and not full_reply:
+                        raise RuntimeError("LLM stream produced no output")
+
+                except Exception as e:
+                    log.exception(f"voice_ws streaming failed, falling back to non-stream: {e}")
+                    # 폴백: 기존 non-streaming 경로
+                    try:
+                        from open_webui.routers.public_chatbot import _run_chat_internal
+
+                        reply_text, _sid, _src = await _run_chat_internal(
+                            self._owi_request, user_text, self._history
+                        )
+                    except Exception as e2:
+                        log.exception(f"voice_ws fallback also failed: {e2}")
+                        reply_text = "죄송해요. 답변 준비 중에 문제가 생겼어요."
+                    self._history.append({"role": "user", "content": user_text})
+                    self._history.append({"role": "assistant", "content": reply_text})
+                    self._caption_observer.queue_reply(reply_text)
+                    # 문장 분할 후 push (제한 없음)
+                    parts = _re.split(
+                        r"(?<=[.!?。…])\s+|(?<=다)\s+|(?<=요)\s+", reply_text
+                    )
+                    parts = [p.strip() for p in parts if p.strip()] or [reply_text]
+                    for s in parts:
+                        if s.strip():
+                            await self.push_frame(
+                                TTSSpeakFrame(text=_tts_text_postprocess(s))
+                            )
+                return
+
+            # 그 외 frame (오디오/제어) 은 그대로 다음 노드로
+            await self.push_frame(frame, direction)
+
+    caption_observer = _AudioStartCaptionObserver()
+    rag = JeonbukRAGProcessor(request, caption_observer)
+    barge_in = _BargeInBroadcaster()
+    return rag, caption_observer, barge_in
+
+
+
+# voice_ws.py 호환 alias
+_build_rag_processor = build_rag_processor
