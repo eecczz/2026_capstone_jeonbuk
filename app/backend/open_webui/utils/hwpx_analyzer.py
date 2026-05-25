@@ -3721,109 +3721,107 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
 
 ## 핵심 목적
 
-이전 1c 단계가 paragraph 단위로 level + parent 를 추론했으나 **wrong 가능성 큼** (특히 같은 박스 안 paragraph 의 위계 차이 못 잡음). 1c 결과는 wrong 트리.
-당신의 역할은 **트리를 고치는 것** — 이미 확정된 cluster 정보 + 텍스트 내용 + paragraph 위치 (idx 순서) 모두 보고 부모-자식 관계를 **다시 잘 만든다**.
+이전 1c 단계가 paragraph 단위로 level + parent 를 추론했으나 wrong 가능성 큼. 1c 결과는 wrong 트리.
+당신의 역할은 **트리를 고치는 것** — 텍스트 내용 + cluster 정보 + paragraph 위치 모두 보고 부모-자식 관계를 다시 잘 만든다.
 
 ## 부모-자식 관계 정의 (양방향)
 
 - **자식**: 부모의 내용을 **설명 / 부연 / 구체화 / 예시 / 근거 제시** 하는 paragraph.
 - **부모**: 자식들의 내용을 **포괄 / 도입 / 요약 / 묶는 헤딩** 역할의 paragraph.
 
-→ A 가 B 의 자식이라면, B 는 A 의 내용을 포괄해야 하고, A 는 B 의 내용을 설명해야 한다. **양방향 다 성립해야**.
+→ A 가 B 의 자식이라면 **B 는 A 를 포괄**, **A 는 B 를 설명**. 양방향 다 성립해야.
 
-## 판단 신호 — 위치 + 내용 둘 다 봐라
+## parent_idx 판단 — local_anchor 최우선
 
-**위치 신호**:
-- paragraph idx 순서. 부모는 자식보다 먼저 나온다. 자식은 부모 직후 또는 그 sibling 그룹 안에 있다.
-- 같은 cluster 의 paragraph 들은 양식 전체에 흩어져 등장 — 각 등장 위치마다 직전 paragraph 가 부모일 가능성 높음.
+**parent_idx 는 local_anchor 를 최우선으로 한다.**
+marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **보조 신호**다.
 
-**내용 신호**:
-- 부모는 자식들이 무엇에 대한 것인지 도입 / 헤딩.
-- 자식은 그 헤딩이 가리키는 구체 사실 / 예시 / 부연.
+### local_anchor 정의
 
-**두 신호 다 같이 봐야**. 위치만 보면 형식 함정 (paraPr 같음 등). 내용만 보면 위치 일관성 깨짐. 둘 다 일치할 때 부모-자식 확정.
+- 같은 chapter 안에서 현재 paragraph 보다 앞에 있고,
+- 현재 paragraph 를 **의미상 직접 포괄**하는 paragraph,
+- 중간에 더 가까운 직접 부모 후보가 없는 paragraph.
+
+직접 부모 후보가 여러 개면:
+- 가장 가까운 이전 paragraph 우선.
+- 넓게 포괄하는 오래된 heading 보다, 바로 앞의 구체 heading / 번호 항목 우선.
+
+## cluster_id 의 의미 (중요)
+
+`cluster_id` 는 **시각적 / 서식상 역할** 을 나타내는 참고 정보다.
+
+- **`cluster_id` 는 parent_idx 를 강제하지 않는다**.
+- 같은 cluster_id paragraph 는 같은 시각적 역할일 가능성이 높지만, **같은 부모를 가져야 한다는 뜻은 아니다**.
+- 같은 cluster_id 라도 서로 다른 local_anchor 아래에서 반복될 수 있다.
+- parent_idx 는 cluster_id 일관성보다 **local_anchor 와 텍스트 의미** 를 우선한다.
+
+예: `* (국내)` 와 `* 공급망관리` 가 같은 cluster_id 라도, local_anchor 가 다르면 parent_idx 가 다르다.
 
 ## input
 
 각 paragraph 마다:
-- `idx`: paragraph 위치 (전체 양식 안에서)
+- `idx`: paragraph 위치
 - `chapter_id`: 속한 chapter
-- `cluster_id`: 1e + repair 가 확정한 structural cluster
-- `marker`: paragraph 앞 마커 (없으면 "")
+- `cluster_id`: 1e + repair 가 확정한 시각적 cluster (참고 정보)
+- `marker`: paragraph 앞 마커
 - `text`: paragraph 본문
 
-각 paragraph 마다 1c 가 줬던 hint:
-- `1c_hint_parent_idx`: 1c 가 추론한 부모 idx (wrong 가능 — 참고만)
-- `1c_hint_level`: 1c 가 추론한 level (wrong 가능 — 참고만)
+각 paragraph 의 1c hint:
+- `1c_hint_parent_idx`: 1c 가 추론한 부모 idx (wrong 가능 — 마지막 참고)
+- `1c_hint_level`: 1c 가 추론한 level (wrong 가능)
 
 ## 임무
 
-각 paragraph 에 대해 **최종 parent_idx + level** 결정:
+각 paragraph 에 대해 **parent_idx + level** 결정.
 
 - `parent_idx`: 의미상 부모 paragraph 의 idx. 부모 없으면 null.
-- `level`: 다음 단일 룰로 결정.
-  - **parent_idx 가 null 이면 level = 0**.
-  - **parent_idx 가 있으면 level = 부모 paragraph 의 level + 1**.
-
-예:
-- 문서 제목 / 표지 paragraph (parent 없음): parent_idx=null, level=0.
-- 차례 paragraph (parent 없음 또는 표지의 자식): parent_idx=null → level=0, 또는 parent_idx=문서제목idx → level=1.
-- chapter root 가 차례의 자식이면: parent_idx=차례idx → level=차례.level+1.
-- chapter root 가 root 면: parent_idx=null → level=0.
-
-**chapter root 의 level 은 강제 X — parent 에 따라 자동 결정**. 따라서 prompt 다른 곳에서 "chapter root level=1" 같은 강제 표현 X.
+- `level`: 단일 룰.
+  - **parent_idx = null → level = 0**.
+  - **parent_idx 있음 → level = 부모 paragraph 의 level + 1**.
 
 ## hard constraint (강제. 위반 시 wrong)
 
-1. **같은 cluster_id paragraph 는 같은 level + 같은 parent cluster 의 자식**.
-   - cluster_X 의 한 paragraph 가 cluster_A 의 자식이면, cluster_X 의 모든 paragraph 가 cluster_A 의 paragraph 중 하나의 자식.
-2. **parent_idx 는 항상 자기 idx 보다 작은 정수** or null. self-loop / forward reference 금지.
-3. **level 규칙 (단일 룰)**:
-   - parent_idx = null → level = 0.
-   - parent_idx 있음 → level = parent paragraph 의 level + 1.
-   - 위 룰 위반 시 wrong (예: parent_idx=null 인데 level=1, 또는 parent.level=2 인데 자기 level=4).
-4. **모든 paragraph 의 parent_idx + level 출력**. 누락 X.
-5. **chapter_id 가 다른 paragraph 를 parent 로 잡지 마라** (chapter root 예외).
-   - paragraph 의 parent 는 같은 chapter_id 안에 있어야.
-   - 단 chapter root (chapter 의 최상위 paragraph) 의 parent 는 다른 chapter 또는 null 가능.
-6. **cycle 금지**. parent chain 추적 시 무한 루프 발생하면 wrong.
+1. **parent_idx 는 자기 idx 보다 작은 정수 or null**. self-loop / forward reference 금지.
+2. **level 단일 룰**: parent_idx=null → level=0. parent_idx 있음 → level=parent.level+1.
+3. **모든 paragraph 의 parent_idx + level 출력**. 누락 X.
+4. **chapter_id 가 다른 paragraph 를 parent 로 잡지 마라** (chapter root 예외).
+   - 단 chapter root (chapter 의 최상위) 의 parent 는 다른 chapter 또는 null 가능.
+5. **cycle 금지**.
 
 ## 자식 판단 — 구체 패턴
 
-다음 경우 paragraph A 는 paragraph B 의 **자식** (B 가 부모):
+다음 경우 A 는 B 의 자식:
 
-1. **B 가 헤딩 / 번호 제목** ("1 업무추진", "Ⅱ . ...", "[전략 1]" 등) 이고 A 가 그 본문 / 부연 / 설명 / 예시 / 사례.
-   - 부모 (B) 가 "무엇에 대한 것" 인지 알리고, 자식 (A) 가 그 구체 내용.
-2. **B 가 박스 / 요약 paragraph** 이고 A 가 그 박스가 가리키는 세부 내용.
+1. **B 가 헤딩 / 번호 제목** ("1 업무추진", "Ⅱ . ...", "[전략 1]" 등) 이고 A 가 그 본문 / 부연 / 설명 / 예시.
+2. **B 가 박스 / 요약 paragraph** 이고 A 가 그 박스의 세부 내용.
 3. **B 가 도입 / 개요** 이고 A 가 그 안에서 다루는 항목.
-4. **A 가 B 다음 enumeration item** (1, 2, 3 / ➊, ➋, ➌ / * 등) 인데 B 가 그 enumeration 을 묶는 헤딩.
+4. **A 가 B 직후 enumeration item** (1, 2, 3 / ➊, ➋, ➌ / * 등) 인데 B 가 그 enumeration 을 묶는 헤딩.
 
-→ 모든 경우 공통: **B 가 A 를 포괄, A 가 B 를 설명**. 양방향 확인.
+→ 모든 경우 공통: **B 가 A 를 포괄, A 가 B 를 설명**.
 
 ## 형제 판단
 
-다음 경우 A 는 B 의 **형제** (같은 parent):
+A 와 B 가 형제 (같은 parent) 인 조건:
 
-- A 와 B 가 같은 cluster (반드시) — 같은 cluster 면 무조건 같은 parent.
-- A 와 B 가 다른 cluster 이지만 같은 enumeration 의 변형 (예: `*` 와 `**`) — 같은 parent.
+- **같은 local_anchor 아래에서 병렬 나열**.
+
+같은 cluster_id 거나 같은 marker family (`*` 와 `**` 등) 라도, **local_anchor 가 다르면 다른 부모**. marker 만 보고 형제 확정 X.
 
 ## 1c hint 활용
 
-1c hint 는 **참고만**. 다음 경우 hint 따라가도 OK:
-- hint 의 parent cluster 가 의미상 부모 cluster 와 일치.
-- hint 의 level 이 같은 cluster paragraph 다 일관.
+1c hint 는 **마지막 참고**.
 
-다음 경우 hint 무시 + 재결정:
-- hint 의 parent paragraph 가 같은 cluster paragraph 끼리 일관 안 됨 (예: cluster_X 의 한 paragraph 는 hint parent=A, 다른 paragraph 는 hint parent=B).
-- hint 가 의미상 부모와 어긋남 (예: ◈ 박스 헤딩의 자식이어야 하는데 hint 가 chapter root).
+- hint 가 local_anchor + 텍스트 의미 판단에 부합하면 따른다.
+- hint 가 cluster 일관성만 근거로 **더 가까운 직접 부모를 건너뛰면 무시한다**.
+- hint 의 level 이 같은 cluster 안에서 일관되더라도, **local_anchor 가 다르면 따르지 않는다**.
 
 ## 자기 점검 (출력 직전 필수)
 
 1. 모든 paragraph idx 가 정확히 한 번씩 등장.
 2. parent_idx 가 자기보다 작은 정수 or null.
-3. **level 룰 만족**: parent_idx=null → level=0. parent_idx 있음 → level=parent.level+1.
-4. 같은 cluster_id paragraph 의 level 다 같음.
-5. 같은 cluster_id paragraph 의 parent cluster 다 같음.
+3. level 룰 만족: parent_idx=null → level=0. parent_idx 있음 → level=parent.level+1.
+4. 각 paragraph 의 parent_idx 가 **가장 가까운 의미상 직접 부모** 인가? 더 가까운 후보 건너뛰고 오래된 heading 에 붙이지 않았는가?
+5. 같은 cluster_id paragraph 인데 parent 가 다른 경우 — **local_anchor 가 다른 반복 구조** 인지 확인 (다르면 OK, 같은데 parent 다르면 재검토).
 6. cycle 없음.
 7. chapter_id 다른 paragraph 를 parent 로 잡지 않음 (chapter root 예외).
 
@@ -3844,7 +3842,7 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
 }
 ```
 
-(예시 설명: idx=0/1/3 은 문서 root 또는 표지 / 차례 — parent 없음 → level=0. idx=4 는 차례 (idx=3) 의 자식 → level=차례.level+1=1. idx=5 는 idx=4 의 자식 → level=2. **level = parent.level + 1 룰 일관**.)
+(예시: idx=0/1/3 = 표지 / 차례 — parent null, level 0. idx=4 = 차례 자식, level 1. idx=5 = idx=4 자식, level 2. **level = parent.level + 1 일관**.)
 
 - 모든 idx 등장
 - 별도 설명 금지 — JSON 만
@@ -4036,6 +4034,24 @@ def parse_tree_rebuild_from_llm(
     extra = seen - expected_idxs
     if extra:
         issues.append(f"unknown paragraph idxs: {sorted(extra)[:30]}")
+
+    # level 무결성 검증: parent_idx=null → level=0. parent_idx 있음 → level=parent.level+1.
+    for idx, node in tree.items():
+        parent = node["parent_idx"]
+        level = node["level"]
+        if parent is None:
+            if level != 0:
+                issues.append(f"idx {idx}: parent_idx=null but level={level} (expected 0)")
+        else:
+            if parent not in tree:
+                issues.append(f"idx {idx}: parent_idx={parent} not in tree")
+            else:
+                expected_level = tree[parent]["level"] + 1
+                if level != expected_level:
+                    issues.append(
+                        f"idx {idx}: level={level}, expected={expected_level} "
+                        f"(parent={parent} level={tree[parent]['level']})"
+                    )
 
     return {"tree": tree, "issues": issues}
 
