@@ -3375,7 +3375,7 @@ def build_canonical_clustering_prompt(
     ]
 
 
-CANONICAL_CLUSTERING_REPAIR_PROMPT = """당신은 이전 1e structural clustering 결과의 validation 오류를 수정하는 전문가입니다.
+CANONICAL_CLUSTERING_REPAIR_PROMPT = """당신은 이전 1e structural clustering 결과를 **의미 검증 + 정정** 하는 전문가입니다.
 
 # ⚠️ 응답 언어 — 한국어 전용
 - 자체 표현은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
@@ -3383,76 +3383,85 @@ CANONICAL_CLUSTERING_REPAIR_PROMPT = """당신은 이전 1e structural clusterin
 
 ## 핵심 목적
 
-이전 분류에 누락 (missing) / 중복 (duplicate) / 범위 밖 (extra) idx 오류가 있어 수정이 필요합니다.
-**모든 input idx가 정확히 한 번씩** 한 cluster에 속해야 합니다 (95% 가 아니라 100%).
+**이전 1e 의 모든 cluster 를 다시 의미 검증하고, 위반 발견 시 즉시 분리하라.**
 
-## 요구사항 (validation 만족 필수)
+- 이전 1e 가 의미 룰 (marker family / parent / chapter / level) 위반한 cluster 만들었을 가능성 매우 높음. 당신은 그걸 찾아서 분리하는 책임.
+- **issues 가 비어있어도 무조건 모든 cluster 검토**. "고칠 게 없네" 하지 말 것 — 의미 위반은 issues 에 안 잡혀있음.
+- idx 누락 / 중복 / extra 오류도 동시 정정 (secondary).
 
-1. **모든 input paragraph idx 가 정확히 한 번씩** 등장
-2. **누락 idx**: 구조 패턴 (parent/child/sibling/repetition/position) 보고 **적절한 cluster 에 배정** — singleton 남발 금지
-3. **중복 idx**: 한 cluster 에만 남김 (가장 적절한 곳)
-4. **input 범위 밖 idx**: 제거
-5. **기존 cluster 구조는 가능한 한 유지** — 미수정 idx 들의 cluster 배정은 그대로
-
-## 판단 원칙 (1e 와 동일)
-
-cluster 는 **structural role 단위로 나눈다.**
-
-**repair 단계의 입력 차이**: 1e 와 달리 repair 는 **이전 1e 의 cluster 결과를 입력으로 받음**. 따라서 부모 paragraph 의 cluster 도 입력으로 알 수 있고, **부모 cluster 가 가장 강한 비교 기준**.
-
-**같은 cluster 조건 (모두 충족)**:
-1. normalized marker 같다.
-2. level 같다.
-3. chapter_partition 같다 (chapter_id, chapter root 예외 — is_chapter_root=true 일 때만 chapter_id 무관 통합 가능).
-4. **부모 paragraph 의 cluster** 가 같다 (이전 1e 결과 기준 — 가장 강한 기준).
-5. 부모 paragraph 의 marker / level / structural role 도 모두 같다.
-6. 같은 부모 구조 안에서 같은 반복 위치 / 기능.
-
-**다른 cluster 강제 (예외 없음 — hard constraint)**:
+## 다른 cluster — hard constraint (강제. 제안 X. 예외 없음.)
 
 다음 중 **하나라도 다르면 반드시 다른 cluster. 절대 통합 금지**:
 
-1. **normalized marker** — 정규화 후 family 다르면 무조건 분리. **`*` 와 `ㅇ` / `*` 와 `①` / `▪` 와 `1)` / `➊` 와 `*` 절대 다른 cluster**.
-2. **level**
-3. **chapter_partition** (chapter_id, chapter root 예외 외)
-4. **부모 paragraph 의 cluster** (이전 1e 결과 기준 — 가장 강한)
-5. **부모 paragraph 의 marker / level / structural role** 중 하나
+1. **normalized marker family 다름** — `*` 와 `ㅇ` / `*` 와 `①` / `▪` 와 `1)` / `➊` 와 `*` / `□` 와 `ㅇ` **절대 다른 cluster**. 같은 family 만 통합 가능 (예: `*`/`**`/`***` 는 같은 family. `1`/`2`/`3` 같은 sequence 도 같은 family. `Ⅰ`/`Ⅱ`/`Ⅲ` 도 같은 family).
+2. **level 다름** — level 4 와 level 5 절대 다른 cluster.
+3. **chapter_partition 다름** — chapter_id 다른 paragraph 절대 다른 cluster (chapter root paragraph 자체 예외 외).
+4. **부모 paragraph 의 cluster 다름** — 가장 강한 기준. 같은 marker `ㅇ` 라도 부모가 `cluster_6 (Ⅰ장 □)` 와 `cluster_11 (Ⅱ장 □)` 면 절대 다른 cluster. 같은 marker `▪` 라도 부모가 `cluster_19 (➊)` 와 `cluster_21 (*)` 면 절대 다른 cluster.
+5. **부모 paragraph 의 marker / level / structural role 중 하나 다름**.
 
-cluster 결정도 **level 낮은 것부터 (parent_first)** — 부모 cluster 가 자식 cluster 결정의 힌트.
+**위 5가지는 hard constraint. 보조 신호 (paraPrIDRef / description / 자식 수) 일치해도 위 5가지 중 하나 다르면 무조건 분리. 제안 X. 강제.**
 
-## 마지막 자기 점검 (출력 직전 필수)
+## 같은 cluster 조건 (모두 충족 시만 통합 가능)
 
-JSON 출력 후 자기 출력을 다시 훑어서 각 cluster 안:
-1. marker 가 모두 같은 family 인가? (정규화 후)
-2. level 이 모두 같은가?
-3. chapter_id 가 모두 같은가? (chapter root 예외 제외)
-4. 부모 cluster / marker / level / role 이 모두 같은가?
+1. normalized marker family 같다.
+2. level 같다.
+3. chapter_partition 같다 (chapter root 예외).
+4. 부모 paragraph 의 cluster 같다.
+5. 부모 paragraph 의 marker / level / role 모두 같다.
+6. 같은 부모 구조 안에서 같은 반복 위치 / 기능.
 
-위 4 가지 한 가지라도 위반하면 즉시 분리. 다른 family marker 가 한 cluster 안에 한 글자라도 섞여있으면 wrong.
+## 요구사항
 
-**보조 신호 (단독 분리 X)**:
-- paraPrIDRef / charPrIDRef
-- child 개수
-- description 의미 차이
+1. **이전 1e 의 모든 cluster 다시 검증**. issues 유무 무관. 의미 룰 위반 발견 시 분리.
+2. **누락 / 중복 / extra idx 오류** 동시 정정. 누락 idx 는 적절한 cluster 에 배정 (singleton 남발 X). 중복 idx 는 가장 적절한 한 cluster 만 남김. extra idx 는 제거.
+3. **모든 input paragraph idx 가 정확히 한 번씩** 등장 (100%).
+4. **이전 cluster 가 의미 룰 만족 + idx 형식 OK 면 그대로 유지**. 룰 위반된 cluster 만 분리.
 
-위 보조 신호 차이만으로는 분리 X. **sibling 위치 / 반복 패턴 / visible style 차이와 함께 안정적으로 나타나면** 다른 structural role 로 split.
+## 자주 발생하는 1e wrong (반드시 분리)
 
-**금지**:
-- 마커 / level / chapter_partition / parent_structural_role 중 하나라도 다른데 같은 cluster 묶기.
-- 보조 신호 단독으로 분리.
-- 1b/1c role 이름 / 외부 convention 정답 가정.
+이전 1e 가 만들 가능성이 높은 wrong 패턴 — 발견 시 즉시 분리:
+
+- **같은 marker 인데 부모 cluster 가 둘 이상** → 부모 cluster 별로 분리.
+  예: `cluster_X (marker=ㅇ)` 의 paragraph 중 부모 cluster 가 `cluster_A` / `cluster_B` 두 가지 → `cluster_X_a (부모=A)`, `cluster_X_b (부모=B)` 로 분리.
+- **같은 marker 인데 chapter_id 가 둘 이상** (chapter root 예외 외) → chapter 별로 분리.
+- **같은 marker 인데 level 이 둘 이상** → level 별로 분리.
+- **marker family 가 한 cluster 안에 두 개 이상** → family 별로 분리.
+
+## 자기 점검 (필수 — 출력 직전)
+
+JSON 출력 만든 직후 자기 출력을 훑어서 **각 cluster 안**:
+
+1. marker family 모두 같은가? (정규화 후) — 다르면 즉시 분리.
+2. level 모두 같은가? — 다르면 즉시 분리.
+3. chapter_id 모두 같은가? (chapter root 예외) — 다르면 즉시 분리.
+4. **부모 cluster 모두 같은가?** (이전 1e 결과 기준 — 가장 중요) — 다르면 즉시 분리.
+5. 부모 marker / level / role 모두 같은가? — 다르면 즉시 분리.
+
+위 5가지 한 가지라도 위반된 cluster 한 개라도 남아있으면 wrong. **출력 직전 한 번 더 자기 검토하라.**
 
 ## 입력
 
 - 전체 paragraph 데이터 (1e 와 동일 형식 — parent_marker / parent_level / parent_role 포함)
-- **이전 1e cluster 출력** (cluster_id 별 paragraph_idxs) — 이게 가장 강한 비교 기준. 각 paragraph 의 부모 cluster 는 이 출력의 parent_idx 의 cluster_id 로 확인.
-- 발견된 issues (어떤 idx 가 missing/duplicate/extra 인지)
+- **이전 1e cluster 출력** (cluster_id 별 paragraph_idxs) — 검증 대상. 각 paragraph 의 부모 cluster 는 이 출력의 parent_idx 의 cluster_id 로 확인.
+- 발견된 idx issues (missing/duplicate/extra) — secondary (의미 위반은 여기 안 들어있음. 당신이 직접 찾아라).
 
-※ repair 단계에서는 자기 paragraph 의 cluster 와 부모의 cluster 모두 이전 1e 출력에서 알 수 있음. **부모 cluster 가 같은지 비교** 가 가장 강한 검증.
+## 보조 신호 (단독 분리 X)
+
+다음은 보조 신호 — 단독으로는 분리 근거 X:
+- paraPrIDRef / charPrIDRef
+- child 개수
+- description 의미 차이
+
+보조 신호는 위 hard constraint (marker / level / chapter / parent) 와 같이 일치할 때만 통합 근거. 단독으로 다르다고 분리하지 마라.
+
+## 금지
+
+- ❌ 위 5가지 hard constraint 중 하나라도 다른데 같은 cluster 묶기 — 절대 X.
+- ❌ "issues 가 비어있으니 그대로 유지" — 의미 위반은 issues 에 없음. 직접 검토하라.
+- ❌ 1b/1c role 이름 / 외부 convention 정답 가정.
+- ❌ 보조 신호 단독으로 분리.
 
 ## 출력 형식 (JSON 만)
-
-이전 1e 와 동일한 형식:
 
 ```json
 {
