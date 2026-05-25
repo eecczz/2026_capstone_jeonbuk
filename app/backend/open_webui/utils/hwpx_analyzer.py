@@ -1558,38 +1558,41 @@ _idx가 있는 모든 문단에 대해:
 **role, paraPrIDRef, charPrIDRef는 출력하지 마세요.** role은 1b, style ID는 코드가 자동 처리합니다.
 
 ### description 작성 규칙
-1. 해당 위치의 **구조적·관계적 역할**을 기술하세요. **주제/도메인은 절대 언급 금지**.
+1. 해당 위치의 **자리 함수 + 입력 형식**을 짧게 기술하세요. **주제/도메인은 절대 언급 금지**.
    - ❌ 주제 기반(잘못됨): "과일 가격 변동 설명", "교육정책 추진 현황", "조달청 사업 목록"
-   - ✓ 구조 기반(맞음): "상위 항목에 대한 구체적 사례 또는 수치 제시 (단문)"
-   - 이유: 양식과 전혀 다른 주제의 소스를 매핑해야 하므로, 주제가 들어가면 매핑 혼란
-2. 기술해야 할 것:
-   - **함수** (제목/요약/세부 항목/보충/결론/참고/강조 등)
-   - **관계** (부모와의 관계: 설명/근거/예시/반대 사례/부연/요약)
-   - **형식 단서** (짧은 한 줄 / 한 문장 / 여러 문장 / 수치 포함 / 인용문 등)
-   - **옵션**: 시간·인과·열거 등 관계 패턴
-3. 좋은 예:
-   - "문서 최상위 제목 (한 줄, 핵심 주제 명시)"
-   - "작성일자 (yyyy. m. d. 형식, 순수 날짜)"
-   - "장 시작부 서두 박스 (전체 요지 1~2문장)"
-   - "중분류 항목 제목 (짧은 한 줄, 하위 세부 항목의 주제)"
-   - "상위 항목 아래 구체 사실/수치 (한 문장, 증거성)"
-   - "보충 설명 또는 예시 (부모 내용에 대한 부연, 선택적)"
+   - ✓ 구조 기반(맞음): "구체 사실 또는 수치가 들어가는 짧은 본문"
+   - 이유: 양식과 전혀 다른 주제의 소스를 매핑해야 하므로, 주제가 들어가면 매핑 혼란.
+2. 기술해야 할 것 (단순화):
+   - **자리 함수** (제목 / 요약 / 세부 본문 / 보충 / 결론 / 인용 / 강조 박스 등)
+   - **입력 형식** (짧은 한 줄 / 한 문장 / 여러 문장 / 수치 포함 / 인용문 / 날짜 등)
+3. 기술하지 말 것:
+   - ❌ **부모와의 관계**: "설명/근거/예시/반대 사례" 같은 부모 관계 분류 (이건 1c / 1e 책임).
+   - ❌ **시간/인과/열거 관계 패턴**: 관계 추론은 다른 단계가 함.
+4. 좋은 예 (짧고 자리 함수 + 입력 형식만):
+   - "문서 최상위 제목 (한 줄)"
+   - "작성일자 (yyyy. m. d. 형식)"
+   - "장 시작부 서두 박스 (한~두 문장)"
+   - "중분류 항목 제목 (짧은 한 줄)"
+   - "구체 사실 또는 수치가 들어가는 짧은 본문"
+   - "보충 설명 또는 예시 (선택적)"
    - "관련 법령·규정 인용 박스 (원문 인용형)"
-   - "장 종료 전환 요약 박스 (다음 장으로의 흐름)"
-4. **같은 구조적 위치의 필드는 동일한 description 사용**
-5. **"(고정 텍스트, 수정 불필요)"는 극히 제한적으로만 사용** — 페이지 번호, 머리글/바닥글 같은 순수 레이아웃만
+   - "장 종료 전환 요약 박스"
+5. **같은 자리 함수의 필드는 동일한 description 사용**
+6. **"(고정 텍스트, 수정 불필요)"는 극히 제한적으로만 사용** — 페이지 번호, 머리글/바닥글 같은 순수 레이아웃만
 
-### 표 분석
+### 표 분석 (1a 책임 = 위치·구조. 표 종류는 1f 가 최종)
 문서 내 모든 표에 대해 (0번부터 순서대로):
-- **description**: 표의 용도를 구체적으로 설명
-- **headers**: 라벨(항목명) 셀 목록
-- **value_cells**: 데이터가 채워질 셀 목록
+- **description**: 표의 자리 함수를 짧게 (예: "데이터 표", "텍스트 상자")
+- **headers**: 라벨(항목명) 셀 위치 목록
+- **value_cells**: 데이터가 채워질 셀 위치 목록
 
-### 1x1 표 (텍스트 상자)
-rowCnt="1" colCnt="1"인 표는 **텍스트 상자/강조 박스**입니다.
-- tables 배열에 포함하되, description에 "(텍스트 상자)" 추가
-- **value_cells는 반드시 [{"row": 0, "col": 0}]** — 빈 배열 금지
-- headers는 빈 배열 []
+※ 1a 는 **셀 위치 기록**만. 이 표가 진짜 데이터 표인지 (real_table) 장식 박스인지 (decorative_box) 의 최종 판단은 **1f table_kind 가 함**.
+
+### 1x1 표 (텍스트 상자 / 강조 박스)
+rowCnt="1" colCnt="1"인 표:
+- tables 배열에 포함하되 description 에 "(텍스트 상자)" 추가.
+- **value_cells = [{"row": 0, "col": 0}]** (빈 배열 금지).
+- headers = [].
 
 ## 출력 형식
 반드시 아래 JSON만 출력하세요. **level은 출력하지 마세요** (다음 단계에서 결정).
@@ -1645,20 +1648,20 @@ LEVEL_ANALYSIS_PROMPT = """당신은 HWPX 양식의 **level 판단** 전문가�
 - marker, marker_family, description
 - features: paraPrIDRef, prev/next marker(family), same_paraPr_run
 
-## 임무 (3가지)
+## 임무
 
-각 문단에 대해:
+각 문단에 대해 **level + parent_hint_idx** 중심으로 결정:
 
 1. **level**: 계층 깊이 (0=최상위, 1=대제목, 2,3,...)
-2. **selected_role_candidate_index**: 1b 후보 중 어느 것 채택할지 (0 = 1순위)
-   - 기본은 0 (1순위 채택)
-   - 위치·구조상 다른 후보가 더 맞으면 1, 2 등 선택
-   - **0이 아니면 `selection_reason_code` 필수**
-3. **parent_hint_idx** (사고 유도용): 이 문단이 의미상 어느 문단의 자식인지 idx 로 표기. 최상위면 `null`.
+2. **parent_hint_idx**: 이 문단이 의미상 어느 문단의 자식인지 idx. 최상위면 `null`.
    - level 결정 직전에 "이 문단이 무엇의 자식인가" 를 명시적으로 생각하면 level 정확도가 올라가는 효과.
-   - 직전 형제가 부모라고 보이면 그 idx. 더 위 단락이 부모면 그 idx.
    - 항상 자기 idx 보다 작은 정수 (forward reference 금지). self-loop 금지.
-   - level 과 parent_hint_idx 가 mismatch (코드 알고리즘이 parent_hint_idx 와 다른 부모 매핑) 면 둘 다 의심 — 재검토.
+3. **selected_role_candidate_index** (optional): 1b 후보 중 어느 것 채택할지.
+   - 1b 가 후보 1 개만 줬으면 출력 생략 (default = 0).
+   - 1b 후보 여러 개 + 1 순위가 위치 / 구조상 어색하면 다른 index 선택.
+   - 0 아닌 index 출력 시 `selection_reason_code` 필수.
+
+⚠️ 1c 의 핵심 책임은 **level + parent_hint_idx**. role 선택은 1b 후보 여러 개일 때만 부가 작업.
 
 ## 결정 원칙
 
@@ -1717,33 +1720,34 @@ parent = 현재 문단보다 앞에 나온 문단 중,
     {
       "idx": 0,
       "level": 0,
-      "selected_role_candidate_index": 0,
       "parent_hint_idx": null
     },
     {
       "idx": 5,
       "level": 2,
+      "parent_hint_idx": 4,
       "selected_role_candidate_index": 1,
-      "selection_reason_code": "marker_family_fit",
-      "parent_hint_idx": 4
+      "selection_reason_code": "marker_family_fit"
     },
     {
       "idx": 10,
       "level": 3,
-      "selected_role_candidate_index": 0,
       "parent_hint_idx": 6
     }
   ]
 }
 ```
 
+(첫 번째와 세 번째 예시: 1순위 채택이라 selected_role_candidate_index 생략. 두 번째 예시: 2순위 선택이라 명시 + reason_code.)
+
 ## 중요
 - **모든 idx 출력**
-- 필수 필드: level, selected_role_candidate_index, **parent_hint_idx**
-- selected_role_candidate_index != 0이면 selection_reason_code 필수
-- parent_hint_idx 는 의미상 부모 idx (사고 유도용). 최상위면 null. forward reference 금지.
-- parent_idx, sibling_group_id 출력 금지 (있어도 코드가 무시)
-- 반드시 JSON만 출력
+- **필수 필드**: level, parent_hint_idx
+- **선택 필드**: selected_role_candidate_index (1b 후보 여러 개 + 1순위 어색할 때만). 출력 안 하면 default 0 (1순위 채택).
+- selected_role_candidate_index != 0 이면 selection_reason_code 필수.
+- parent_hint_idx 는 의미상 부모 idx. 최상위면 null. forward reference 금지.
+- parent_idx, sibling_group_id 출력 금지 (있어도 코드가 무시).
+- 반드시 JSON 만 출력.
 """
 
 LEVEL_ANALYSIS_HYBRID_PROMPT = LEVEL_ANALYSIS_PROMPT + """
@@ -3907,9 +3911,11 @@ MARKER_POLICY_PROMPT = """당신은 양식의 role별 **마커(marker) 정책**�
 
 3. **separator**: marker와 content 사이의 구분자 (공백, `. `, `) ` 등)
 
-## 임무 2: table_kind 판별
+## 임무 2: table_kind 판별 — 1f 가 최종 책임
 
 각 role에 대해, 해당 role의 sample 중 `tbl` 필드가 있는 sample을 보고 표가 **장식 박스**인지 **진짜 데이터 표**인지 판별하세요. `tbl` 필드는 해당 paragraph가 자기 안에 `<hp:tbl>` element를 자식으로 포함한다는 뜻입니다.
+
+※ 1a 는 표의 셀 위치만 기록. **table_kind (decorative_box / real_table / not_applicable) 의 최종 판단은 1f 의 임무**.
 
 판별 기준:
 - **`decorative_box`**: 표를 텍스트 강조·박스·배너 목적으로 사용. cell 안 텍스트가 paragraph 본문 텍스트와 일치 또는 부분 분할일 뿐, 데이터 구조 X.
@@ -4278,9 +4284,16 @@ ROLE_CLASSIFICATION_PROMPT = """당신은 양식 문단의 **role 분석** 전�
 - **1b (이 단계)**: semantic_role 후보 + 점수 (level·hierarchy 결정 안 함)
 - 1c (다음 단계): 전체 시퀀스 + 후보 → level + 후보 index 선택
 
-⚠️ **반드시 후보를 다양하게 줘라**. 단일 후보 박지 마라. 1c가 선택할 여지를 남겨야 한다.
+## 후보 갯수 — 동적 (2026-05-25)
 
-⚠️ **1순위가 명백한 케이스(표지·날짜 등)에도 억지 후보 만들지 마라**. 차선책이 진짜 가능한 것만 출력. 가짜 후보 금지.
+명확도에 따라 후보 갯수 조절:
+
+- **명확한 문단** (마커 분명, role 흐름 안정) → **후보 1 개** 허용. 가짜 차선책 만들지 X.
+- **애매한 문단** (마커 모호, role 충돌, 자리 다중 해석 가능) → 후보 2~3 개. 1c 가 선택할 여지 남김.
+
+⚠️ **억지 다중 후보 금지**. 차선책이 진짜 가능할 때만 추가. 1순위가 명백하면 1 개로.
+
+⚠️ **reason 짧게**. 길게 풀어쓰지 말고 핵심 신호 한 줄. confidence 만 남기는 것도 OK.
 
 ## 핵심 개념 분리
 당신은 **semantic_role(의미)**만 다룬다. 다음은 별도 시스템이 처리:
@@ -4294,13 +4307,14 @@ ROLE_CLASSIFICATION_PROMPT = """당신은 양식 문단의 **role 분석** 전�
 - marker, marker_family, description
 - prev/next marker(family), same_paraPr_run, paraPrIDRef
 
-## 임무 (강제 규칙)
+## 임무 (규칙)
 
-각 문단에 대해 **2~3개 후보**를 출력:
+각 문단에 대해 **1~3개 후보**를 출력 (명확도에 따라 동적):
 
-### 규칙 R1: 항상 2개 이상 후보
-- "확실해 보이는" 본문이라도 `body + nearest_alternative` 2개
-- 명백한 표지·날짜·기관명 같은 unique role도 1순위 + 차선책 2개
+### 규칙 R1: 후보 갯수 동적
+- **명확한 문단** (마커 분명, role 흐름 안정, 표지·날짜처럼 unique role) → **후보 1 개** OK.
+- **애매한 문단** (마커 모호, role 충돌, 다중 해석 가능) → 2~3 개. 1c 에게 선택 여지.
+- **억지 차선책 금지** — 진짜 가능한 차선만. 가짜 후보 X.
 
 ### 규칙 R2: 점수 범위 0.55~0.85 주로 사용
 - 0.9+ 거의 안 씀 (over-confident 금지)
@@ -4317,9 +4331,10 @@ ROLE_CLASSIFICATION_PROMPT = """당신은 양식 문단의 **role 분석** 전�
 - 주변 문단과의 관계, 들여쓰기, 반복 패턴, 내용상 역할을 함께 보고 role 후보 제안.
 - 특정 기호 → 특정 role 1순위라는 사전 룰을 적용하지 말 것. 같은 기호도 양식·문맥에 따라 다른 의미 가능.
 
-**무마커(텍스트 박스 등) — 위계 다양화는 여전히 중요**:
-- 무마커 제목 박스가 양식 안에서 여러 위계로 등장하면 **단일 후보 박지 말고 인접 위계 후보 1~2개 같이** 제시 (1c가 위치로 고를 수 있게).
-- 같은 description("제목"·"항목 제목")만으로 단일 후보 박지 마라.
+**무마커(텍스트 박스 등) — 애매 case 면 후보 여러 개**:
+- 무마커 제목 박스가 양식 안에서 여러 위계로 등장 가능 → 위치 / 위계 모호하면 후보 2~3 개 (1c 가 위치로 고를 수 있게).
+- 같은 description ("제목" · "항목 제목") 인데 다른 위계 가능 → 후보 다양화.
+- 단 명백한 단일 위계 (예: 표지 단독 제목) → 후보 1 개 OK.
 
 ### 규칙 R4: 후보 다양성 — 의미적으로 다른 가능성 제시
 - 차선책은 **의미적으로 구별되는** 후보로 제시 (예: `bullet_item` vs `detail_item`, `note` vs `supplement_note`)
@@ -4364,9 +4379,10 @@ ROLE_CLASSIFICATION_PROMPT = """당신은 양식 문단의 **role 분석** 전�
 
 ## 중요
 - **모든 idx 출력** (빠뜨리지 마세요)
-- 각 문단 **항상 2개 이상** 후보 (R1)
+- 각 문단 후보 갯수 **명확하면 1 개, 애매하면 2~3 개** (R1)
 - 점수 0.55~0.85 범위 (R2)
 - semantic_role 이름엔 marker_family·level 박지 마라 (R5)
+- reason 짧게, 또는 생략 가능 (R6)
 - 반드시 JSON만 출력
 """
 
@@ -6444,7 +6460,9 @@ STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문�
 
 ## 좋은 rule 예시
 
-> "□ 마커 다음의 문장은 명사구 또는 '~한다'/'~함' 종결로 작성. 서술형 '~다'는 사용 X. 근거: [s0, s2, s5]"
+> "해당 cluster 본문은 명사구 또는 '~한다' / '~함' 종결로 작성. 서술형 '~다' 는 사용 X. 근거: [s0, s2, s5]"
+
+(※ 11.2 는 **문체 / 종결 / 분할 패턴만** 분석. 마커 / 번호 / 서식은 별 stage 가 처리 — rule 에 마커 언급 X.)
 
 ## 나쁜 rule 예시
 
