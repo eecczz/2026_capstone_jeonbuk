@@ -3709,6 +3709,342 @@ def apply_structural_clustering(
     return role_registry
 
 
+# ═══════════════════════════════════════════════════════════════
+# Tree Rebuild (1g) — cluster 확정 후 트리 재구성 (별도 LLM)
+# ═══════════════════════════════════════════════════════════════
+
+TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + level)** 를 재구성하는 전문가입니다.
+
+# ⚠️ 응답 언어 — 한국어 전용
+- 자체 표현은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 sample 글자 인용은 그대로.
+
+## 핵심 목적
+
+이전 1c 단계가 paragraph 단위로 level + parent 를 추론했으나 **wrong 가능성 큼** (특히 같은 박스 안 paragraph 의 위계 차이 못 잡음).
+당신은 **이미 확정된 cluster 정보 + 텍스트 의미** 만 보고 트리를 **다시 만든다**.
+
+## input
+
+각 paragraph 마다:
+- `idx`: paragraph 위치 (전체 양식 안에서)
+- `chapter_id`: 속한 chapter
+- `cluster_id`: 1e + repair 가 확정한 structural cluster
+- `marker`: paragraph 앞 마커 (없으면 "")
+- `text`: paragraph 본문
+
+각 paragraph 마다 1c 가 줬던 hint:
+- `1c_hint_parent_idx`: 1c 가 추론한 부모 idx (wrong 가능 — 참고만)
+- `1c_hint_level`: 1c 가 추론한 level (wrong 가능 — 참고만)
+
+## 임무
+
+각 paragraph 에 대해 **최종 parent_idx + level** 결정:
+
+- `parent_idx`: 의미상 부모 paragraph 의 idx. 최상위면 null.
+- `level`: 0 부터 시작. chapter root 는 1. root 자식은 2. ...
+
+## hard constraint (강제. 위반 시 wrong)
+
+1. **같은 cluster_id paragraph 는 같은 level + 같은 parent cluster 의 자식**.
+   - cluster_X 의 한 paragraph 가 cluster_A 의 자식이면, cluster_X 의 모든 paragraph 가 cluster_A 의 paragraph 중 하나의 자식.
+2. **parent_idx 는 항상 자기 idx 보다 작은 정수**. self-loop / forward reference 금지.
+3. **모든 paragraph 의 parent_idx + level 출력**. 누락 X.
+4. **chapter_id 가 다른 paragraph 를 parent 로 잡지 마라** (chapter root 예외).
+   - paragraph 의 parent 는 같은 chapter_id 안에 있어야.
+   - 단 chapter root (chapter 의 최상위 paragraph) 의 parent 는 다른 chapter 또는 null 가능.
+5. **cycle 금지**. parent chain 추적 시 무한 루프 발생하면 wrong.
+
+## 의미 추론 가이드 — 자식 판단
+
+다음 경우 paragraph A 는 paragraph B 의 **자식**:
+
+- B 가 헤딩 / 번호 제목 ("1 업무추진", "Ⅱ . ...", "[전략 1]" 등) 이고 A 가 그 본문 / 부연 / 설명 / 예시.
+- B 가 박스 / 요약 paragraph 이고 A 가 그 박스 안의 세부 내용.
+- A 가 B 의 내용을 설명하거나 연관된 얘기 (구체화 / 정리 / 보충).
+- A 가 B 다음에 오는 enumeration item (1, 2, 3 / ➊, ➋, ➌ / * 등) 인데 B 가 그 enumeration 의 헤딩.
+
+다음 경우 A 는 B 의 **형제** (같은 parent):
+
+- A 와 B 가 같은 cluster (반드시).
+- A 와 B 가 다른 cluster 이지만 같은 enumeration 의 변형 (예: `*` 와 `**`).
+
+## 1c hint 활용
+
+1c hint 는 **참고만**. 다음 경우 hint 따라가도 OK:
+- hint 의 parent cluster 가 의미상 부모 cluster 와 일치.
+- hint 의 level 이 같은 cluster paragraph 다 일관.
+
+다음 경우 hint 무시 + 재결정:
+- hint 의 parent paragraph 가 같은 cluster paragraph 끼리 일관 안 됨 (예: cluster_X 의 한 paragraph 는 hint parent=A, 다른 paragraph 는 hint parent=B).
+- hint 가 의미상 부모와 어긋남 (예: ◈ 박스 헤딩의 자식이어야 하는데 hint 가 chapter root).
+
+## 자기 점검 (출력 직전 필수)
+
+1. 모든 paragraph idx 가 정확히 한 번씩 등장.
+2. parent_idx 가 자기보다 작은 정수 or null.
+3. 같은 cluster_id paragraph 의 level 다 같음.
+4. 같은 cluster_id paragraph 의 parent cluster 다 같음.
+5. cycle 없음.
+6. chapter_id 다른 paragraph 를 parent 로 잡지 않음 (chapter root 예외).
+
+위 6 가지 한 가지라도 위반 시 wrong. 재검토 후 출력.
+
+## 출력 형식 (JSON 만)
+
+```json
+{
+  "paragraphs": [
+    {"idx": 0, "parent_idx": null, "level": 0},
+    {"idx": 1, "parent_idx": null, "level": 0},
+    {"idx": 4, "parent_idx": 3, "level": 1},
+    {"idx": 5, "parent_idx": 4, "level": 2},
+    ...
+  ]
+}
+```
+
+- 모든 idx 등장
+- 별도 설명 금지 — JSON 만
+- 반드시 JSON 만
+"""
+
+
+def build_tree_rebuild_prompt(
+    paragraphs: list[dict],
+    decisions: dict,
+    idx_texts: dict,
+) -> list[dict]:
+    """
+    Tree rebuild (1g) prompt 구성.
+
+    Args:
+        paragraphs: 1e+repair 가 확정한 paragraph list (cluster_id 포함)
+        decisions: 1c decisions (parent_hint_idx + level)
+        idx_texts: idx (str 또는 int) → 본문 텍스트 매핑. **필수**.
+
+    Returns:
+        [{"role": "system", "content": TREE_REBUILD_PROMPT},
+         {"role": "user", "content": "..."}]
+
+    Raises:
+        ValueError: paragraph 의 idx / cluster_id / text 매칭 wrong 발견 시.
+    """
+    if not idx_texts:
+        raise ValueError("build_tree_rebuild_prompt: idx_texts is required (text source).")
+
+    # idx 순서 sort (paragraph list 가 idx 순서 안 일치할 가능성 방어)
+    paras_sorted = sorted(
+        (p for p in paragraphs if p.get("idx") is not None),
+        key=lambda x: x["idx"],
+    )
+
+    # idx → text 매핑. str / int 양쪽 시도. 빈 텍스트 "" 정상 (간격 paragraph).
+    # idx 자체가 없으면 wrong → 빈 문자열로 대체 (silent skip 안전).
+    def _text_of(idx: int) -> str:
+        t = idx_texts.get(str(idx))
+        if t is None:
+            t = idx_texts.get(idx)
+        if t is None:
+            t = ""
+        return str(t).replace("\n", " ").replace("|", "/").strip()
+
+    # cluster_id 검증 (None 인 paragraph 없어야)
+    for p in paras_sorted:
+        cid = p.get("structural_role_id")
+        if not cid:
+            raise ValueError(
+                f"build_tree_rebuild_prompt: paragraph idx={p.get('idx')} has no structural_role_id"
+            )
+
+    lines = []
+    lines.append("# 양식 paragraph 정보")
+    lines.append("")
+    lines.append("형식: idx | chapter_id | cluster_id | marker | text")
+    lines.append("")
+
+    for p in paras_sorted:
+        idx = p["idx"]
+        ch = p.get("chapter_id")
+        if ch is None:
+            ch = ""
+        cid = p["structural_role_id"]
+        mk = (p.get("marker") or "").replace("|", "/")
+        text = _text_of(idx)
+        lines.append(f"{idx} | {ch} | {cid} | {mk} | {text}")
+
+    lines.append("")
+    lines.append("# 1c 가 추론한 힌트 (wrong 가능 — 참고만)")
+    lines.append("")
+    lines.append("형식: idx | 1c_hint_parent_idx | 1c_hint_level")
+    lines.append("")
+
+    for p in paras_sorted:
+        idx = p["idx"]
+        d = decisions.get(idx) or decisions.get(str(idx)) or {}
+        hint_parent = d.get("parent_hint_idx")
+        if hint_parent is None:
+            hint_parent = d.get("parent_idx")
+        hint_level = d.get("level")
+        # paragraph 에 직접 있는 경우도 fallback (decisions 안 들어간 케이스 방어)
+        if hint_parent is None:
+            hint_parent = p.get("parent_idx")
+        if hint_level is None:
+            hint_level = p.get("level")
+        lines.append(f"{idx} | {hint_parent} | {hint_level}")
+
+    lines.append("")
+    lines.append("위 정보를 보고 hard constraint 와 의미 가이드 따라 트리를 재구성하세요.")
+    lines.append("**JSON 만 출력**.")
+
+    return [
+        {"role": "system", "content": TREE_REBUILD_PROMPT},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+
+def parse_tree_rebuild_from_llm(
+    llm_response: str,
+    expected_idxs: set,
+) -> dict:
+    """
+    Tree rebuild LLM 응답 파싱 + validation.
+
+    Validation:
+        - 모든 expected_idxs 등장 (한 번씩)
+        - parent_idx 가 자기 idx 보다 작은 정수 or null
+        - level 정수 >= 0
+        - cycle 없음 (parent chain backward only 라서 by construction 없음)
+
+    Returns:
+        {
+            "tree": {idx: {"parent_idx": int|None, "level": int}},
+            "issues": list[str]  # 비어있어야 정상
+        }
+
+    Raises:
+        ValueError: JSON 파싱 실패 또는 critical validation 실패.
+    """
+    import json as _json
+
+    json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', llm_response)
+    if json_match:
+        raw_json = json_match.group(1)
+    else:
+        json_match = re.search(r'(\{[\s\S]*\})', llm_response)
+        if not json_match:
+            raise ValueError("tree_rebuild: JSON not found in LLM response")
+        raw_json = json_match.group(0)
+
+    try:
+        parsed = _json.loads(raw_json)
+    except _json.JSONDecodeError as e:
+        repaired = _repair_json(raw_json)
+        try:
+            parsed = _json.loads(repaired)
+        except _json.JSONDecodeError:
+            raise ValueError(f"tree_rebuild: JSON parsing failed: {e}")
+
+    raw_rows = parsed.get("paragraphs", [])
+    if not raw_rows:
+        raise ValueError("tree_rebuild: empty paragraphs list")
+
+    issues = []
+    tree = {}
+    seen = set()
+    for row in raw_rows:
+        idx = row.get("idx")
+        if idx is None:
+            issues.append(f"row missing idx: {row}")
+            continue
+        if idx in seen:
+            issues.append(f"duplicate idx {idx}")
+            continue
+        seen.add(idx)
+
+        parent = row.get("parent_idx")
+        if parent is not None:
+            if not isinstance(parent, int):
+                try:
+                    parent = int(parent)
+                except (TypeError, ValueError):
+                    issues.append(f"idx {idx}: invalid parent_idx {parent!r}")
+                    parent = None
+            if parent is not None and parent >= idx:
+                issues.append(f"idx {idx}: forward/self ref parent={parent}")
+                parent = None
+
+        level = row.get("level")
+        if not isinstance(level, int):
+            try:
+                level = int(level)
+            except (TypeError, ValueError):
+                issues.append(f"idx {idx}: invalid level {level!r}")
+                level = 0
+        if level < 0:
+            issues.append(f"idx {idx}: negative level {level}")
+            level = 0
+
+        tree[idx] = {"parent_idx": parent, "level": level}
+
+    missing = expected_idxs - seen
+    if missing:
+        issues.append(f"missing paragraph idxs: {sorted(missing)[:30]}")
+
+    extra = seen - expected_idxs
+    if extra:
+        issues.append(f"unknown paragraph idxs: {sorted(extra)[:30]}")
+
+    return {"tree": tree, "issues": issues}
+
+
+def apply_tree_rebuild_to_paragraphs(
+    paragraphs: list[dict],
+    tree: dict,
+) -> list[dict]:
+    """
+    Tree rebuild 결과 (parent_idx + level) 를 paragraph 에 적용.
+
+    paragraph["parent_idx"] = tree[idx]["parent_idx"]
+    paragraph["level"] = tree[idx]["level"]
+    paragraph["sibling_group_id"] = "roots" or "children_of_{pid}"
+
+    Returns:
+        paragraphs (in-place mutation + return).
+
+    Raises:
+        ValueError: idx 매칭 wrong (paragraph idx 가 tree 에 없거나 반대).
+    """
+    para_idx_set = {p.get("idx") for p in paragraphs if p.get("idx") is not None}
+    tree_idx_set = set(tree.keys())
+
+    missing_in_tree = para_idx_set - tree_idx_set
+    if missing_in_tree:
+        raise ValueError(
+            f"apply_tree_rebuild: paragraph idxs missing from tree: "
+            f"{sorted(missing_in_tree)[:30]}"
+        )
+    extra_in_tree = tree_idx_set - para_idx_set
+    if extra_in_tree:
+        raise ValueError(
+            f"apply_tree_rebuild: tree has unknown idxs: "
+            f"{sorted(extra_in_tree)[:30]}"
+        )
+
+    for p in paragraphs:
+        idx = p.get("idx")
+        if idx is None:
+            continue
+        t = tree[idx]
+        p["parent_idx"] = t["parent_idx"]
+        p["level"] = t["level"]
+        p["sibling_group_id"] = (
+            "roots" if t["parent_idx"] is None
+            else f"children_of_{t['parent_idx']}"
+        )
+    return paragraphs
+
+
 def measure_tree_inconsistency(paragraphs: list[dict]) -> dict:
     """
     트리 내적 일관성 측정 — parent_idx와 level이 정합한가.
@@ -5447,7 +5783,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 12  # paragraph.body_first_charpr 추가 — 본문 첫 글자 charPr 신호로 1c 형제 판단
+CACHE_SCHEMA_VERSION = 13  # tree rebuild (1g) — 1e+repair 후 cluster + 의미로 트리 재구성. paragraph.parent_idx + level 새로.
 
 
 def compute_template_hash(template_path: str) -> str:
