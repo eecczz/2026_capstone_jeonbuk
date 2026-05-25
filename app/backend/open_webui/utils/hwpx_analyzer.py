@@ -3746,9 +3746,10 @@ marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **
 - 가장 가까운 이전 paragraph 우선.
 - 넓게 포괄하는 오래된 heading 보다, 바로 앞의 구체 heading / 번호 항목 우선.
 
-**예외**: **같은 enumeration series 의 직전 항목은 local_anchor 후보에서 제외**한다.
-- 예: ➋ 의 local_anchor 는 직전 ➊ 이 **아니라**, ➊ 과 ➋ 를 함께 묶는 상위 paragraph.
-- 즉 ➊ 의 parent 가 󰊳 이면, ➋ 의 local_anchor 도 󰊳.
+**예외**: **같은 local enumeration block 안의 같은 series 직전 항목은 local_anchor 후보에서 제외**한다.
+- 예: 같은 block 안에서 ➋ 의 local_anchor 는 직전 ➊ 이 **아니라**, ➊ 과 ➋ 를 함께 묶는 상위 paragraph.
+- 즉 같은 block 안 ➊ 의 parent 가 󰊳 이면, ➋ 의 local_anchor 도 󰊳.
+- **local enumeration block** = 같은 series 항목들이 **중간에 상위 heading 없이** 같은 상위 부모 아래 함께 등장하는 영역. 중간에 더 상위 heading 또는 다른 묶음 heading 나오면 새 block.
 
 ## cluster_id 의 의미 (중요)
 
@@ -3791,13 +3792,15 @@ marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **
 4. **chapter_id 가 다른 paragraph 를 parent 로 잡지 마라** (chapter root 예외).
    - 단 chapter root (chapter 의 최상위) 의 parent 는 다른 chapter 또는 null 가능.
 5. **cycle 금지**.
-6. **같은 enumeration series 항목은 서로 parent-child 가 될 수 없다**.
-   - 적용 대상 (명확한 순번 묶음): `➊/➋/➌/➍`, `1)/2)/3)`, `가)/나)/다)`, `(1)/(2)/(3)`, `①/②/③`, `1./2./3.`, `ⅰ/ⅱ/ⅲ`, `󰊱/󰊲/󰊳` 등.
+6. **같은 local enumeration block 안의 같은 series 항목은 서로 parent-child 가 될 수 없다**.
+   - 적용 대상 (명확한 순번 묶음): `➊/➋/➌/➍`, `1)/2)/3)`, `가)/나)/다)`, `(1)/(2)/(3)`, `①/②/③`, `1./2./3.`, `ⅰ/ⅱ/ⅲ`.
+   - 특수 기호형 순번 (`󰊱/󰊲/󰊳` 등): 같은 local enumeration block 안에서 순번으로 쓰인 게 명확할 때만 적용.
    - 적용 제외: `*`/`**`/`***`, `□/◇/◈`, `ㅇ/▪` 같은 비순번 마커.
-   - 현재 paragraph 가 같은 series 의 다음 항목이면, **직전 같은 series 항목을 parent 로 잡지 마라**.
-   - 현재 paragraph 의 `parent_idx` 는 직전 같은 series 항목의 `parent_idx` 와 **같다**.
-   - 현재 paragraph 의 `level` 은 직전 같은 series 항목의 `level` 과 **같다**.
-   - 예: `➊` 의 parent 가 `󰊳` 이면, `➋` 의 parent 도 `󰊳`. `➋` 는 `➊` 의 자식이 **아니다**.
+   - **local enumeration block** = 같은 series 항목들이 중간에 더 상위 heading / 다른 묶음 heading 없이 같은 상위 부모 아래 함께 등장하는 영역.
+   - 같은 block 안 현재 paragraph 의 `parent_idx` 는 직전 같은 series 항목의 `parent_idx` 와 **같다**.
+   - 같은 block 안 현재 paragraph 의 `level` 은 직전 같은 series 항목의 `level` 과 **같다**.
+   - 예: 같은 block 안 `➊` 의 parent 가 `󰊳` 이면, `➋` 의 parent 도 `󰊳`. `➋` 는 `➊` 의 자식이 **아니다**.
+   - **block 이 다르면** (예: 문서 멀리 떨어진 다른 묶음의 ➋) 이 룰 적용 X. 새 block 의 첫 항목은 자기 local_anchor 따로 결정.
 
 ## 자식 판단 — 구체 패턴
 
@@ -3835,7 +3838,7 @@ A 와 B 가 형제 (같은 parent) 인 조건:
 5. 같은 cluster_id paragraph 인데 parent 가 다른 경우 — **local_anchor 가 다른 반복 구조** 인지 확인 (다르면 OK, 같은데 parent 다르면 재검토).
 6. cycle 없음.
 7. chapter_id 다른 paragraph 를 parent 로 잡지 않음 (chapter root 예외).
-8. **같은 enumeration series 항목끼리 parent-child 로 연결되지 않음**. 예: `➋` 의 parent 가 `➊` 이면 wrong → `➊` 의 parent 로 정정.
+8. **같은 local enumeration block 안 같은 series 항목끼리 parent-child 로 연결되지 않음**. 예: 같은 block 안 `➋` 의 parent 가 `➊` 이면 wrong → `➊` 의 parent 로 정정.
 
 위 8 가지 한 가지라도 위반 시 wrong. 재검토 후 출력.
 
