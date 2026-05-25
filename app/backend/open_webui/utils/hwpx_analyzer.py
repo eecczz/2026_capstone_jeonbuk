@@ -12837,15 +12837,13 @@ def build_adaptation_plan_prompt(
     user_msg = (
         "[chapters]\n"
         f"{_json.dumps(_ch_brief, ensure_ascii=False, indent=2)}\n\n"
-        "[source_inventory]\n"
-        f"{_json.dumps(_inv_brief, ensure_ascii=False, indent=2)}\n\n"
         + _header_block
         + _toc_block
-        + (f"[broad_source_preview]\n```\n{_src_preview}\n```\n\n" if _src_preview else "")
+        + (f"[source_text]\n```\n{_src_preview}\n```\n\n" if _src_preview else "")
         + "Step 0 — overall_source_focus 결정 (먼저 결정)\n\n"
         "chapter별 결정을 시작하기 전에, 이 chapter set 전체가 사용할 source 중심 주제를 정합니다.\n"
-        "- source_inventory의 summary / available_topics / main_headings를 보고 chapter set 흐름과\n"
-        "  가장 잘 맞는 thread를 선택합니다.\n\n"
+        "- 위 [source_text] 전체를 직접 읽고 chapter set 흐름과 가장 잘 맞는 thread 를 선택합니다.\n"
+        "- 어떤 주제 / heading 이 있는지, 어떤 자료 / 사실이 있는지 직접 파악하세요.\n\n"
         "focus의 granularity (매우 중요):\n"
         "- focus는 source 내용을 **최대한 많이 포괄할 수 있는 상위 주제**여야 합니다. 좁은 한 영역이 아님.\n"
         "- source가 여러 영역을 다루면 그것들을 **모두 묶는 상위 개념**을 focus로 선택.\n"
@@ -12893,10 +12891,7 @@ def build_adaptation_plan_prompt(
         '      - 단일 문자열: \\"새 텍스트\\" (template_parts 없는 경우)\\n'
         '      - parts list: [{\\"charPrIDRef\\": \\"양식 charPr 그대로\\", \\"text\\": \\"새 텍스트\\"}, ...]\\n'
         '        (template_parts 있는 경우 — 같은 parts 수 + 같은 charPrIDRef 순서로 출력)"\n'
-        "  },\n"
-        '  "toc_replacements": [\n'
-        '    {"p_idx": int, "t_idx": int, "new_text": "그 t element 에 들어갈 새 텍스트"}\n'
-        "  ]\n"
+        "  }\n"
         "}\n\n"
         "header 추출 규칙 (옛 2a에서 흡수):\n"
         "- 위 [header_roles]에 명시된 role만 key로 사용 (목록에 없는 role 만들지 X).\n"
@@ -12914,30 +12909,9 @@ def build_adaptation_plan_prompt(
         "  - 출력은 같은 parts 갯수 + 같은 charPrIDRef 순서로 list 형태.\n"
         "  - 각 part의 text는 그 글꼴 영역에 맞는 새 텍스트 (양식 sample의 의미·구조 유지).\n"
         "  - template_parts 없으면 단일 문자열로 출력.\n\n"
-        "toc_replacements 규칙 (multi-paragraph 차례 영역):\n"
-        "- [template_toc_t_list] 가 입력에 있으면, 양식 차례 영역의 어떤 t element 를 어떻게 바꿀지 결정합니다.\n"
-        "- 각 entry: {\"p_idx\": int, \"t_idx\": int, \"new_text\": str}\n"
-        "  - p_idx: [template_toc_t_list] 의 그 t 가 속한 paragraph index (양식 paragraph)\n"
-        "  - t_idx: 그 paragraph 안 t element index\n"
-        "  - new_text: 그 t element 의 text 를 통째로 교체할 새 텍스트\n"
-        "- **(p_idx, t_idx) 쌍은 [template_toc_t_list] 에 등장한 그대로** 사용. 임의 값 금지.\n"
-        "- **보존할 t 는 entry 를 만들지 마세요** (생략하면 양식 원본 그대로 유지):\n"
-        "  - 마커만 든 t (예: 'Ⅰ', 'Ⅱ', '◈', '□', 'ㅇ', '󰊱', '.', ' ')\n"
-        "  - TOC 라벨 ('순 서', '목차', 'Contents' 등)\n"
-        "  - 페이지 번호 / 탭 / 숫자만 있는 t\n"
-        "  - 빈 paragraph / 공백 t\n"
-        "- **chapter title 처리** (모든 chapter 1개씩 빠짐없이):\n"
-        "  - 각 chapter 의 차례 paragraph 를 찾고 (같은 p_idx 공유 t 모음), chapter 본문 텍스트가 들어있는 t 의 new_text = 그 chapter 의 adapted_title.\n"
-        "  - 마커가 별도 t 에 있으면 마커 t 는 보존 (entry 생략).\n"
-        "  - 마커와 chapter 본문이 한 t 에 묶여있으면 new_text 에 마커 보존하여 출력 (예: t.text='󰊳 추진성과 및 평가' → new_text='󰊳 새 chapter title').\n"
-        "  - **여러 t 에 chapter 본문이 분산된 경우** (예: t_idx=2='. 2024년 업무추진 여건 및 방향', t_idx=3=' 2 '): 본문 t 에 new_text 박고, 페이지번호 t 는 생략 (보존).\n"
-        "- **자식 항목 처리**:\n"
-        "  - 자식 본문 텍스트 t 의 new_text = '?'\n"
-        "  - 마커가 별도 t 면 보존, 묶여있으면 마커 보존하여 '󰊳 ?' 형태\n"
-        "- [chapters] 의 모든 chapter 에 대해 adapted_title 용 entry 가 반드시 있어야 합니다.\n"
-        "- [template_toc_t_list] 가 비어있거나 입력에 없으면 \"toc_replacements\": [] 빈 list 출력.\n\n"
         "**한 줄 정리: 제목은 source를 반영해야 하지만, chapter의 역할어와 문서 흐름은 template을 따라야 합니다.**\n"
         "**'먼저 같게 가져갈지 다르게 가져갈지'를 정하지 말고, source 적합성과 chapter role에 따라 자연스러운 제목을 정하면 됩니다.**\n"
+        "**TOC 교체는 별도 단계에서 처리하므로 여기에 toc_replacements 출력 X.**\n"
     )
 
     return [
@@ -12945,6 +12919,137 @@ def build_adaptation_plan_prompt(
         {"role": "user", "content": user_msg},
     ]
 
+
+
+def build_toc_replacement_prompt(
+    chapter_title_pairs: list[dict],
+    template_toc_t_list: list[dict],
+) -> list[dict]:
+    """TOC 매핑 prompt (신 2a 와 분리된 별도 단계 2026-05-25).
+
+    신 2a 가 결정한 chapter title (원래 / 새) pair 와 양식 차례 영역 t element 분포를
+    받아, 각 t element 에 어떤 텍스트를 박을지 매핑만 결정.
+
+    AI 가 chapter 제목 글자가 양식 차례 어디에 들어있는지 의미상 매칭하여 결정
+    (양식 글자와 새 글자가 조금이라도 다르면 substring 매칭 실패 — code 로는 불가, AI 필요).
+
+    Args:
+        chapter_title_pairs: [{"chapter_idx": int, "original_title": str, "adapted_title": str}, ...]
+        template_toc_t_list: [{"p_idx": int, "t_idx": int, "text": str}, ...] 양식 차례 영역 t 분포
+
+    Returns: messages list
+    """
+    import json as _json
+
+    if not chapter_title_pairs or not template_toc_t_list:
+        # 빈 입력은 빈 결과 — caller 가 호출 안 해도 됨
+        return [
+            {"role": "system", "content": "TOC 매핑 도구."},
+            {"role": "user", "content": "입력 없음. 빈 list 출력."},
+        ]
+
+    system_msg = (
+        "당신은 양식 차례 영역의 각 글자 조각에 chapter 새 제목을 매핑하는 도구입니다.\n"
+        "신 2a 가 결정한 chapter 제목 pair (원래 / 새) 와 양식 차례 영역의 t element 분포를 받아,\n"
+        "각 t element 의 글자가 어느 chapter 의 제목 일부인지 의미상 판단해 매핑하세요.\n"
+        "JSON 으로만 응답하세요."
+    )
+
+    user_msg = (
+        "[chapter_title_pairs]\n"
+        f"{_json.dumps(chapter_title_pairs, ensure_ascii=False, indent=2)}\n\n"
+        "[template_toc_t_list]\n"
+        "양식 차례 영역 전체의 t element 분포 (multi-paragraph).\n"
+        "각 entry: {p_idx: 양식 paragraph index, t_idx: 그 paragraph 안 t index, text: 그 t 의 원문}.\n"
+        "같은 차례 줄은 같은 p_idx 를 공유 — 여러 t 로 나뉘어 있어도 한 줄.\n"
+        f"```json\n{_json.dumps(template_toc_t_list, ensure_ascii=False, indent=2)}\n```\n\n"
+        "**매핑 규칙**:\n"
+        "1. 각 chapter 의 차례 줄을 찾기 — chapter title pair 의 original_title 이 들어있는 t element 식별.\n"
+        "2. 그 t 의 글자가 chapter 본문 (Roman numeral / 마커 제외) 이면 adapted_title 로 교체.\n"
+        "3. 글자가 마커만 ('Ⅰ', '.', '◈', '□', 'ㅇ', '󰊱' 등) 또는 페이지 번호 / 라벨 ('순 서', '목 차') / 빈 공백이면 **entry 생략** (양식 원본 보존).\n"
+        "4. 마커 + 본문이 한 t 에 묶여있으면 마커 보존하여 출력 (예: text='󰊳 추진성과 및 평가' → new_text='󰊳 새 chapter title').\n"
+        "5. **chapter title 의 자식 항목** (양식 본문의 ◈ / □ / ㅇ 같은 chapter 안 sub-section 들이 차례에 보임) 의 본문 t 는 new_text='?' 로 (자식 항목은 신 2a 가 결정 안 했음).\n"
+        "6. (p_idx, t_idx) 쌍은 [template_toc_t_list] 에 등장한 그대로 사용. 임의 값 금지.\n"
+        "7. 매핑하지 않는 t 는 entry 생략 → 양식 원본 그대로 유지.\n\n"
+        "JSON 출력:\n"
+        "{\n"
+        '  "toc_replacements": [\n'
+        '    {"p_idx": int, "t_idx": int, "new_text": "그 t element 에 들어갈 새 텍스트"},\n'
+        "    ...\n"
+        "  ]\n"
+        "}\n\n"
+        "[chapter_title_pairs] 의 모든 chapter 에 대해 adapted_title 매핑 entry 가 적어도 1개 있어야 합니다."
+    )
+
+    return [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def parse_toc_replacement_from_llm(llm_raw_response: str) -> dict:
+    """build_toc_replacement_prompt 의 응답 parse.
+
+    Returns: {"toc_replacements": [...], "_validation": {...}}
+    """
+    import json as _json
+    import re as _re
+
+    _raw = (llm_raw_response or "").strip()
+    _result: dict = {
+        "toc_replacements": [],
+        "_validation": {"ok": False, "errors": [], "raw_response_len": len(_raw)},
+    }
+    if not _raw:
+        _result["_validation"]["errors"].append("empty_response")
+        return _result
+
+    _stripped = _raw
+    _m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", _raw, _re.DOTALL)
+    if _m:
+        _stripped = _m.group(1)
+    else:
+        _m2 = _re.search(r"(\{.*\})", _raw, _re.DOTALL)
+        if _m2:
+            _stripped = _m2.group(1)
+
+    try:
+        _parsed = _json.loads(_stripped)
+    except Exception as e:
+        _result["_validation"]["errors"].append(f"json_parse_failed: {e}")
+        return _result
+
+    if not isinstance(_parsed, dict):
+        _result["_validation"]["errors"].append("response_not_object")
+        return _result
+
+    _tocr = _parsed.get("toc_replacements")
+    _clean: list = []
+    if isinstance(_tocr, list):
+        _seen_keys: set = set()
+        for _item in _tocr:
+            if not isinstance(_item, dict):
+                continue
+            _p_idx = _item.get("p_idx")
+            _t_idx = _item.get("t_idx")
+            _new_text = _item.get("new_text")
+            if not isinstance(_t_idx, int) or _t_idx < 0:
+                continue
+            if not isinstance(_new_text, str):
+                continue
+            if _p_idx is not None and not isinstance(_p_idx, int):
+                continue
+            _key = (_p_idx, _t_idx)
+            if _key in _seen_keys:
+                _clean = [r for r in _clean if (r.get("p_idx"), r.get("t_idx")) != _key]
+            _seen_keys.add(_key)
+            _entry = {"t_idx": _t_idx, "new_text": _new_text}
+            if _p_idx is not None:
+                _entry["p_idx"] = _p_idx
+            _clean.append(_entry)
+    _result["toc_replacements"] = _clean
+    _result["_validation"]["ok"] = True
+    return _result
 
 
 def parse_adaptation_plan_from_llm(
@@ -13035,36 +13140,9 @@ def parse_adaptation_plan_from_llm(
     else:
         _result["header"] = {}
 
-    # TOC replacements — (p_idx, t_idx) 단위 schema (multi-paragraph 확장 2026-05-25).
-    # AI 가 양식 차례 영역의 어떤 paragraph 의 어떤 t element 에 무엇을 박을지 결정.
-    # 코드는 그 (p_idx, t_idx) 의 .text 만 set — substring 매칭 없음.
-    _tocr = _parsed.get("toc_replacements")
-    _clean: list = []
-    if isinstance(_tocr, list):
-        _seen_keys: set = set()
-        for _item in _tocr:
-            if not isinstance(_item, dict):
-                continue
-            _p_idx = _item.get("p_idx")
-            _t_idx = _item.get("t_idx")
-            _new_text = _item.get("new_text")
-            if not isinstance(_t_idx, int) or _t_idx < 0:
-                continue
-            if not isinstance(_new_text, str):
-                continue
-            # p_idx 가 없으면 옛 schema (단일 paragraph) — fallback 으로 받음
-            if _p_idx is not None and not isinstance(_p_idx, int):
-                continue
-            _key = (_p_idx, _t_idx)
-            # 중복 (p_idx, t_idx) 는 마지막 결정 우선
-            if _key in _seen_keys:
-                _clean = [r for r in _clean if (r.get("p_idx"), r.get("t_idx")) != _key]
-            _seen_keys.add(_key)
-            _entry = {"t_idx": _t_idx, "new_text": _new_text}
-            if _p_idx is not None:
-                _entry["p_idx"] = _p_idx
-            _clean.append(_entry)
-    _result["toc_replacements"] = _clean
+    # TOC replacements 는 별도 단계 (build_toc_replacement_prompt) 에서 결정.
+    # 신 2a 응답에 toc_replacements 가 들어있어도 무시 — 호환성 위해 빈 list.
+    _result["toc_replacements"] = []
 
     _decisions = _parsed.get("chapter_decisions")
     if not isinstance(_decisions, list):
@@ -13105,11 +13183,11 @@ def build_source_range_prompt(
     chapter_inputs: list[dict],
     overall_source_focus: dict | None = None,
 ) -> list[dict]:
-    """2b-source: source 전체를 양식 chapter별로 분배할 range 결정 prompt.
+    """2b-source: source 전체에서 각 chapter 작성에 활용 가능한 정보 range 를 회수·매핑하는 prompt.
 
-    한 호출에 모든 chapter의 range 한 번에 결정 (chapter 사이 일관성 보장).
-    범위는 char idx 기준 (source_text의 char position).
-    겹침 OK 명시 — 한 chapter에 필요한 내용 다 담는 게 우선.
+    source 와 chapter 의 주장 방향이 달라도 OK.
+    목적은 chapter 별 source 분배가 아니라, chapter 작성에 쓸 수 있는 재료 / 근거 / 맥락을
+    최대한 회수하는 것. 겹침 OK, 중복 OK, 간접 활용 가능 정보도 포함.
 
     Args:
         source_text: 전체 source text
@@ -13135,9 +13213,10 @@ def build_source_range_prompt(
         )
 
     system_msg = (
-        "당신은 양식 chapter 구조에 맞춰 source 본문 영역을 분배하는 도구입니다.\n"
-        "각 chapter에 들어갈 만한 source 내용 영역(char idx 범위)을 결정합니다.\n"
-        "JSON으로만 응답하세요."
+        "당신은 source 본문에서 각 chapter 작성에 활용 가능한 정보 영역을 찾아 매핑하는 도구입니다.\n"
+        "source 의 주장 방향과 chapter 의 방향이 달라도, chapter 작성에 재료로 쓸 수 있으면 포함합니다.\n"
+        "분배가 아니라 회수(recall)와 매핑이 목적입니다.\n"
+        "JSON 으로만 응답하세요."
     )
 
     user_msg = (
@@ -13148,25 +13227,38 @@ def build_source_range_prompt(
         "```\n"
         f"{source_text}\n"
         "```\n\n"
-        "각 chapter에 들어갈 source 영역을 char idx 범위(start, end)로 결정하세요.\n\n"
-        "**핵심 원칙 (강제)**: 한 chapter에 필요한 내용을 다 담는 것이 우선. 겹침/중복 허용 (같은 영역이 여러 chapter 에 들어가도 OK). 애매하면 포함. chapter 가 source 여러 위치에 흩어져 있으면 ranges 에 여러 range.\n\n"
+        "각 chapter 를 작성할 때 활용 가능한 source 영역을 char idx 범위 (start, end) 로 찾으세요.\n\n"
+        "**핵심 원칙 (강제)**: source 내용과 chapter 내용의 방향성이 달라도 됩니다. "
+        "같은 주장 / 같은 결론을 말하는 부분만 고르지 마세요. "
+        "chapter 에 쓸 수 있는 정보, 근거, 수치, 사례, 배경, 정의, 문제점, 반론, 비교, 맥락이면 포함하세요. "
+        "애매하면 포함. 겹침 / 중복 허용. 한 source 영역이 여러 chapter 에 들어가도 OK. "
+        "chapter 에 필요한 재료가 source 여러 위치에 흩어져 있으면 ranges 에 여러 range.\n\n"
         "범위 결정 기준:\n"
-        "- adapted_title의 의미와 source 영역의 내용이 맞으면 그 영역 포함.\n"
-        "- chapter set 전체로 보면 overall_source_focus 안에서 sub-evidence 분배.\n\n"
+        "- adapted_title 과 source 내용이 직접 일치하지 않아도, chapter 작성에 활용 가능하면 포함.\n"
+        "- source 의 결론 / 관점이 chapter 와 달라도, 대조 / 근거 / 배경 / 예시 / 한계 설명에 쓸 수 있으면 포함.\n"
+        "- 단순 키워드 매칭보다 '이 내용을 chapter 문단 작성에 사용할 수 있는가' 를 기준으로 판단.\n"
+        "- 너무 좁게 핵심 문장만 고르지 말고, 해당 정보가 이해되는 문단 / 소제목 단위까지 포함.\n\n"
         "JSON 출력:\n"
         "{\n"
         '  "chapter_ranges": [\n'
         '    {\n'
         '      "chapter_idx": int,\n'
-        '      "ranges": [{"start": int, "end": int}, ...]  // char idx, 여러 개 OK, 겹침 OK\n'
-        '    },\n'
-        "    ...\n"
+        '      "ranges": [\n'
+        '        {\n'
+        '          "start": int,\n'
+        '          "end": int,\n'
+        '          "use_type": "direct|indirect|background|stat|example|counterpoint|definition|context",\n'
+        '          "reason": "이 영역을 chapter 작성에 어떻게 쓸 수 있는지 짧게"\n'
+        '        }\n'
+        '      ]\n'
+        '    }\n'
         "  ]\n"
         "}\n\n"
-        "- chapter_idx는 input과 정확히 일치 (모든 chapter 포함).\n"
-        "- start/end는 source_text의 char idx (0-based). end >= start.\n"
-        "- ranges는 list — 한 chapter당 여러 range 가능.\n"
-        "- range가 source 전체에 가까우면 [{start:0, end:전체길이}] 도 OK.\n"
+        "- chapter_idx 는 input 과 정확히 일치 (모든 chapter 포함).\n"
+        "- start/end 는 source_text 의 char idx (0-based). end >= start.\n"
+        "- ranges 는 list — 한 chapter 당 여러 range 가능.\n"
+        "- range 가 source 전체에 가까우면 [{start:0, end:전체길이, ...}] 도 OK.\n"
+        "- use_type / reason 은 회수 의도 확인용. parser 는 start/end 만 사용하지만 모델이 \"어떻게 써먹을 수 있나\" 를 생각하게 합니다.\n"
     )
 
     return [
@@ -15822,6 +15914,7 @@ def build_section_fill_prompt(
     paragraph_emphasis_map: dict | None = None,
     marker_policy_1f: dict | None = None,
     template_chapter_tree: str = "",
+    broad_source: str = "",
 ) -> list[dict]:
     """
     2b 호출: 한 섹션의 패턴 + 소스 → role 태그된 콘텐츠
@@ -16023,12 +16116,18 @@ def build_section_fill_prompt(
     template_tree_text = ""
     if template_chapter_tree and template_chapter_tree.strip():
         template_tree_text = (
-            "## 양식 실제 instance 트리 (이 chapter)\n"
-            "양식의 실제 paragraph 분포입니다. **각 instance마다 자식 갯수가 다를 수 있으니**\n"
-            "양식의 분포 그대로 모방하세요 (cluster 단위 평균이 아니라 instance별 패턴).\n\n"
+            "## 양식 실제 instance 트리 (이 chapter — 패턴 참고)\n"
+            "아래는 양식의 실제 paragraph 분포입니다. **패턴과 구조 참고용**:\n\n"
             "```\n"
             f"{template_chapter_tree}\n"
             "```\n\n"
+            "**해석 규칙**:\n"
+            "1. **cluster 종류**: 위 트리에 등장한 cluster 만 사용. 새 cluster 추가 금지.\n"
+            "2. **부모-자식 관계**: 위 트리에서 cluster A 가 cluster B 의 자식이면 새 본문도 동일 관계로 parent_id 부여. 트리에서 자식인 cluster 를 형제로 평탄 배치 X.\n"
+            "3. **반복 가능성**: 위 트리에서 cluster X 가 여러 번 등장하면 새 본문에도 **여러 번 등장 가능** (source 자료 분량에 따라). 1번만 등장하면 새 본문도 보통 1번.\n"
+            "4. **instance 수는 source 가 결정**: 양식이 □ 3번이라고 무조건 새 본문 □ 3번 X. source 에 □ 에 해당하는 독립 자료가 3개 있으면 3번, 1개 있으면 1번, 5개 있으면 5번 (양식 cluster 가 반복 가능한 경우).\n"
+            "5. **양식 흐름 존중**: 양식의 자식 그룹 순서 (□ → ㅇ → □ → ➊ → □ 등) 가 자연스러우면 따르되, source 자료 순서가 더 합리적이면 source 따라가도 OK.\n"
+            "6. **너무 짧게 끝내지 X**: source 에 활용 가능한 자료가 양식 분포 수준으로 있다면 양식 분포에 맞춰 본문 생성. source 충분한데 cluster 별 1번씩만 만들고 끝내지 X.\n\n"
         )
 
     user_parts = []
@@ -16044,7 +16143,11 @@ def build_section_fill_prompt(
         f"{catalog_text}\n\n"
         f"{style_text}"
         f"## 소스 자료\n"
-        f"아래 소스에서 **\"{chapter_title}\"** 섹션에 해당하는 내용을 찾아 배치하세요.\n\n"
+        f"아래 소스에서 **\"{chapter_title}\"** 섹션 작성에 활용 가능한 모든 정보를 찾아 배치하세요.\n\n"
+        f"**중요**: source 내용의 주장 방향이나 주제가 chapter_title 과 직접 일치할 필요는 없습니다. "
+        f"이 섹션을 쓰는 데 재료로 사용할 수 있으면 포함하세요. "
+        f"직접 근거, 간접 근거, 배경, 정의, 수치, 사례, 비교, 반론, 한계, 맥락 정보 모두 활용 대상입니다. "
+        f"같은 결론을 말하는 부분만 고르지 마세요. 애매하면 포함.\n\n"
     )
 
     has_pdf_text = bool(pdf_text and pdf_text.strip())
@@ -16052,7 +16155,17 @@ def build_section_fill_prompt(
     has_content = bool(content_text and content_text.strip())
 
     if has_pdf_text:
+        text_block += "### 집중 자료 (2b-source 가 이 chapter 에 매핑한 영역)\n"
         text_block += f"```\n{pdf_text}\n```\n\n"
+        # broad source 가 따로 제공되고 집중 자료와 다르면 안전망으로 같이 노출.
+        # 집중 자료가 좁아 양식 분포 채울 재료 부족할 때 회수 가능.
+        if broad_source and broad_source.strip() and broad_source.strip() != pdf_text.strip():
+            text_block += "### 전체 source (안전망 — 집중 자료에 없는 재료도 회수 가능)\n"
+            text_block += (
+                "집중 자료가 좁아 양식 분포를 채울 재료가 부족하면 아래 전체 source 에서 "
+                "활용 가능한 정보 (배경 / 수치 / 사례 / 비교 / 반론 / 맥락) 를 추가 회수하세요.\n"
+            )
+            text_block += f"```\n{broad_source}\n```\n\n"
         if has_content:
             text_block += f"추가 지시사항: {content_text}\n\n"
         text_block += "반드시 JSON만 출력하세요.\n"
@@ -16185,8 +16298,8 @@ text 구성: 본문 내용만
 - 위 양식 제목의 **구조적 의도**(목적, 배경, 현황, 추진, 계획 등)를 보존하세요.
 - 제목 텍스트는 새 소스 주제에 맞게 자연스럽게 **adaptation 가능**합니다 (연도, 기관명, 정책명 등 교체 허용).
 - 하지만 양식 전체의 **장 순서와 흐름**을 변경하거나 재구성하지 마세요.
-- 소스에서 이 장에 해당하는 내용을 찾아 배치하세요. 관련 내용이 없거나 매우 부족하면 빈 JSON array `[]`를 반환하세요 — **억지로 내용을 만들지 마세요**.
-- 이 장은 전체 문서의 일부입니다. 다른 장에서 다룰 내용을 중복으로 넣지 마세요."""
+- 소스에서 이 장 작성에 **활용 가능한 모든 정보**를 찾아 배치하세요. source 의 주장 방향이 이 장의 결론과 다르더라도, 배경 / 수치 / 사례 / 비교 / 반론 / 한계 / 맥락 정보로 사용할 수 있으면 포함하세요. **정말로 활용 가능한 정보가 전혀 없을 때만** 빈 JSON array `[]` 반환 — 억지로 내용을 만들지 마세요.
+- 같은 source 사실이 여러 장에서 서로 다른 역할 (한 장은 근거로, 다른 장은 배경/대조로) 로 필요하면 **중복 사용 OK**. 단 같은 문장을 같은 의미로 두 장에 그대로 박지 말고, 각 장의 구조적 역할에 맞게 가공하세요."""
 
         system_prompt += _tcc_block
 
@@ -16328,20 +16441,27 @@ JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+
 - 기본값: 부모에는 핵심 추진 내용, 자식에는 시기 / 금액 / 근거 같은 보충 정보.
 - 양식 sample 의 분할 위치 확인 후 결정.
 
-## 4. 누락 instance 복구 (예외적 모드만)
+## 4. 누락 instance 복구 + source 재료 회수 보충
 
-b 의 기본 책임은 기존 item 의 문체/술어/분할 정제. **새 instance 추가는 다음 조건 모두 충족 시만**:
+1차 트리가 양식 sample 의 instance 분포에 못 미치면 source 원문에서 재료를 다시 회수해서 instance 를 추가하거나 본문을 보강하세요.
 
-1. 1차 트리가 양식의 target_count 를 명백히 미달 (예: 양식 3 개 인데 1차에 1 개)
-2. source 안에 기존 item 에 사용되지 않은 **독립적인** 내용이 있음
-3. 추가 내용이 기존 item 의 반복 / 요약 / 재표현이 아님
-4. 새 item 의 role 은 양식 role 카탈로그에 있는 role 만 사용
+**언제 회수·보강**:
+1. 1차 트리가 양식의 target_count 를 미달 (예: 양식 cluster_X 가 3 번 등장하는데 1차에 1 개)
+2. 1차 본문이 양식 sample 의 정보 밀도 (사실+수단+부연+결과) 에 못 미침
+3. source 안에 1차에 사용 안 된 활용 가능 정보가 있음
+
+**source 재료 회수 원칙** (중요):
+- source 내용의 주장 방향이 chapter / item 의 결론과 **같을 필요 없음**.
+- 배경 / 정의 / 수치 / 사례 / 비교 / 반론 / 한계 / 맥락 정보도 보강 재료로 사용 가능.
+- 새 item 의 role 은 양식 role 카탈로그에 있는 role 만 사용.
+- 보강한 사실은 **반드시 source 원문 또는 1차 트리에 존재** — 없는 내용 생성 X.
+- 기존 item 의 의미를 바꾸지 말고 정보 밀도만 양식 sample 수준으로 보강.
 
 **금지**:
-- 양식 갯수 맞추기 위해 source 에 없는 내용 생성 X
-- 기존 item 내용 쪼개거나 반복해서 가짜 instance 추가 X
-- sample 의 단어 / 한자 / 영어 가져와 instance 생성 X
-- source 근거 불충분하면 추가하지 않고 기존만 정제
+- 양식 갯수 맞추기 위해 source 에 없는 내용 생성 X.
+- 기존 item 내용 쪼개거나 반복해서 가짜 instance 추가 X.
+- sample 의 단어 / 한자 / 영어 가져와 instance 생성 X.
+- source 근거 불충분하면 추가하지 않고 기존만 정제.
 
 ## 5. 자유도 한계 (소스 원문 글자 보존)
 
