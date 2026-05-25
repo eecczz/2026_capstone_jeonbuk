@@ -3734,7 +3734,7 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
 ## parent_idx 판단 — local_anchor 최우선
 
 **parent_idx 는 local_anchor 를 최우선으로 한다.**
-marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **보조 신호**다.
+marker / 번호 체계, cluster_id 는 모두 local_anchor 판단의 **보조 신호**다.
 
 ### local_anchor 정의
 
@@ -3771,9 +3771,7 @@ marker / 번호 체계, cluster_id, 1c hint 는 모두 local_anchor 판단의 **
 - `marker`: paragraph 앞 마커
 - `text`: paragraph 본문
 
-각 paragraph 의 1c hint:
-- `1c_hint_parent_idx`: 1c 가 추론한 부모 idx (wrong 가능 — 마지막 참고)
-- `1c_hint_level`: 1c 가 추론한 level (wrong 가능)
+(1c 의 parent / level 힌트는 일부러 제공 안 함. 1c 가 wrong cascade 유발 가능. **paragraph 정보 + cluster + 의미** 만 보고 결정.)
 
 ## 임무
 
@@ -3829,14 +3827,6 @@ A 와 B 가 형제 (같은 parent) 인 조건:
 - **같은 local_anchor 아래에서 병렬 나열**.
 
 같은 cluster_id 거나 같은 marker family (`*` 와 `**` 등) 라도, **local_anchor 가 다르면 다른 부모**. marker 만 보고 형제 확정 X.
-
-## 1c hint 활용
-
-1c hint 는 **마지막 참고**.
-
-- hint 가 local_anchor + 텍스트 의미 판단에 부합하면 따른다.
-- hint 가 cluster 일관성만 근거로 **더 가까운 직접 부모를 건너뛰면 무시한다**.
-- hint 의 level 이 같은 cluster 안에서 일관되더라도, **local_anchor 가 다르면 따르지 않는다**.
 
 ## 자기 점검 (출력 직전 필수)
 
@@ -3938,27 +3928,7 @@ def build_tree_rebuild_prompt(
         lines.append(f"{idx} | {ch} | {cid} | {mk} | {text}")
 
     lines.append("")
-    lines.append("# 1c 가 추론한 힌트 (wrong 가능 — 참고만)")
-    lines.append("")
-    lines.append("형식: idx | 1c_hint_parent_idx | 1c_hint_level")
-    lines.append("")
-
-    for p in paras_sorted:
-        idx = p["idx"]
-        d = decisions.get(idx) or decisions.get(str(idx)) or {}
-        hint_parent = d.get("parent_hint_idx")
-        if hint_parent is None:
-            hint_parent = d.get("parent_idx")
-        hint_level = d.get("level")
-        # paragraph 에 직접 있는 경우도 fallback (decisions 안 들어간 케이스 방어)
-        if hint_parent is None:
-            hint_parent = p.get("parent_idx")
-        if hint_level is None:
-            hint_level = p.get("level")
-        lines.append(f"{idx} | {hint_parent} | {hint_level}")
-
-    lines.append("")
-    lines.append("위 정보를 보고 hard constraint 와 의미 가이드 따라 트리를 재구성하세요.")
+    lines.append("위 정보 (paragraph + cluster) 만 보고 hard constraint 와 의미 가이드 따라 트리를 재구성하세요.")
     lines.append("**JSON 만 출력**.")
 
     return [
