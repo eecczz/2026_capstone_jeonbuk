@@ -3746,6 +3746,14 @@ marker / 번호 체계, cluster_id 는 모두 local_anchor 판단의 **보조 �
 - 가장 가까운 이전 paragraph 우선.
 - 넓게 포괄하는 오래된 heading 보다, 바로 앞의 구체 heading / 번호 항목 우선.
 
+### ⚠️ 가까운 heading 우선 — hard rule
+
+**가까운 heading / 박스 / 요약 paragraph 가 현재 paragraph 를 의미상 포괄할 가능성이 조금이라도 있으면, 그 가까운 heading 을 parent 로 잡는다. 더 오래된 상위 heading 으로 올리지 마라.**
+
+- 상위 heading 은 가까운 heading 이 **명확히 포괄 못할 때만** parent 후보가 된다.
+- "가까운 heading 이 너무 좁다" / "더 큰 카테고리가 어울린다" 같은 직관으로 상위 heading 선택 X. 가까운 heading 이 1% 라도 포괄 가능하면 그것 채택.
+- 의미상 직접 포괄 = 주제 / 범위 / 내용이 관련. 정확히 같은 단어일 필요 X.
+
 **예외**: **같은 local enumeration block 안의 같은 series 직전 항목은 local_anchor 후보에서 제외**한다.
 - 예: 같은 block 안에서 ➋ 의 local_anchor 는 직전 ➊ 이 **아니라**, ➊ 과 ➋ 를 함께 묶는 상위 paragraph.
 - 즉 같은 block 안 ➊ 의 parent 가 󰊳 이면, ➋ 의 local_anchor 도 󰊳.
@@ -3818,6 +3826,15 @@ marker / 번호 체계, cluster_id 는 모두 local_anchor 판단의 **보조 �
 - heading 과 첫 항목 사이에 보조 설명 paragraph (다른 marker family — `*`, `**`, `ㅇ`, `▪` 등) 가 있어도, **그 보조 설명이 heading 의 범위 안이면** enumeration block 은 끊기지 않는다.
 - 예: heading X 아래 **heading X 의 보조 설명 paragraph** 들이 먼저 나오고, 이후 enumeration (`➊/➋/➌` 등) 이 시작되면 enumeration 의 첫 항목 parent 는 heading X.
 
+### ⚠️ marker family 변경 ≠ heading 종료 — hard rule
+
+**같은 heading 아래에는 서로 다른 marker family 자식 paragraph 가 함께 올 수 있다.**
+
+- heading X 아래 `*`, `**`, `ㅇ`, `▪` 같은 보조 설명이 먼저 나오고 이후 `➊/➋/➌` 같은 번호 항목이 나와도, heading X 가 그 항목들을 의미상 포괄하면 **모두 heading X 의 자식**.
+- **marker family 가 바뀌었다는 이유만으로 heading X 의 범위가 끝났다고 판단하지 마라**.
+- enumeration 첫 항목 (예: `➊`) 의 parent 를 찾을 때, 바로 앞의 다른 marker family paragraph 들 (예: `*`, `**`) 은 **block 종료 신호가 아니라 heading X 의 기존 자식일 수 있다**.
+- 더 오래된 상위 heading 보다, **가까운 heading X 가 enumeration 전체를 포괄하는지 먼저 확인**한다.
+
 → 모든 경우 공통: **B 가 A 를 포괄, A 가 B 를 설명**.
 
 ## 형제 판단
@@ -3834,7 +3851,7 @@ A 와 B 가 형제 (같은 parent) 인 조건:
 2. parent_idx 가 자기보다 작은 정수 or null.
 3. level 룰 만족: parent_idx=null → level=0. parent_idx 있음 → level=parent.level+1.
 4. 각 paragraph 의 parent_idx 가 **가장 가까운 의미상 직접 부모** 인가? 더 가까운 후보 건너뛰고 오래된 heading 에 붙이지 않았는가?
-5. 같은 cluster_id paragraph 인데 parent 가 다른 경우 — **local_anchor 가 다른 반복 구조** 인지 확인 (다르면 OK, 같은데 parent 다르면 재검토). **단, 이 점검은 parent 를 바꾸기 위한 근거가 아니다. cluster_id 일관성은 local_anchor / 텍스트 의미 / 가까운 heading 판단을 이길 수 없다**.
+5. **cluster_id 는 parent 판단의 검증 기준이 아니다**. 같은 cluster_id 의 parent 는 같을 수도 있고 다를 수도 있다. cluster_id 일관성은 local_anchor / 텍스트 의미 / 가까운 heading 판단을 절대 이길 수 없다.
 6. cycle 없음.
 7. chapter_id 다른 paragraph 를 parent 로 잡지 않음 (chapter root 예외).
 8. **같은 local enumeration block 안 같은 series 항목끼리 parent-child 로 연결되지 않음**. 예: 같은 block 안 `➋` 의 parent 가 `➊` 이면 wrong → `➊` 의 parent 로 정정.
