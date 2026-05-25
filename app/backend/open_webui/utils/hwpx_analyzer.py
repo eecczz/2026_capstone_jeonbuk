@@ -3721,8 +3721,27 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
 
 ## 핵심 목적
 
-이전 1c 단계가 paragraph 단위로 level + parent 를 추론했으나 **wrong 가능성 큼** (특히 같은 박스 안 paragraph 의 위계 차이 못 잡음).
-당신은 **이미 확정된 cluster 정보 + 텍스트 의미** 만 보고 트리를 **다시 만든다**.
+이전 1c 단계가 paragraph 단위로 level + parent 를 추론했으나 **wrong 가능성 큼** (특히 같은 박스 안 paragraph 의 위계 차이 못 잡음). 1c 결과는 wrong 트리.
+당신의 역할은 **트리를 고치는 것** — 이미 확정된 cluster 정보 + 텍스트 내용 + paragraph 위치 (idx 순서) 모두 보고 부모-자식 관계를 **다시 잘 만든다**.
+
+## 부모-자식 관계 정의 (양방향)
+
+- **자식**: 부모의 내용을 **설명 / 부연 / 구체화 / 예시 / 근거 제시** 하는 paragraph.
+- **부모**: 자식들의 내용을 **포괄 / 도입 / 요약 / 묶는 헤딩** 역할의 paragraph.
+
+→ A 가 B 의 자식이라면, B 는 A 의 내용을 포괄해야 하고, A 는 B 의 내용을 설명해야 한다. **양방향 다 성립해야**.
+
+## 판단 신호 — 위치 + 내용 둘 다 봐라
+
+**위치 신호**:
+- paragraph idx 순서. 부모는 자식보다 먼저 나온다. 자식은 부모 직후 또는 그 sibling 그룹 안에 있다.
+- 같은 cluster 의 paragraph 들은 양식 전체에 흩어져 등장 — 각 등장 위치마다 직전 paragraph 가 부모일 가능성 높음.
+
+**내용 신호**:
+- 부모는 자식들이 무엇에 대한 것인지 도입 / 헤딩.
+- 자식은 그 헤딩이 가리키는 구체 사실 / 예시 / 부연.
+
+**두 신호 다 같이 봐야**. 위치만 보면 형식 함정 (paraPr 같음 등). 내용만 보면 위치 일관성 깨짐. 둘 다 일치할 때 부모-자식 확정.
 
 ## input
 
@@ -3755,19 +3774,24 @@ TREE_REBUILD_PROMPT = """당신은 양식 paragraph 의 **tree (parent_idx + lev
    - 단 chapter root (chapter 의 최상위 paragraph) 의 parent 는 다른 chapter 또는 null 가능.
 5. **cycle 금지**. parent chain 추적 시 무한 루프 발생하면 wrong.
 
-## 의미 추론 가이드 — 자식 판단
+## 자식 판단 — 구체 패턴
 
-다음 경우 paragraph A 는 paragraph B 의 **자식**:
+다음 경우 paragraph A 는 paragraph B 의 **자식** (B 가 부모):
 
-- B 가 헤딩 / 번호 제목 ("1 업무추진", "Ⅱ . ...", "[전략 1]" 등) 이고 A 가 그 본문 / 부연 / 설명 / 예시.
-- B 가 박스 / 요약 paragraph 이고 A 가 그 박스 안의 세부 내용.
-- A 가 B 의 내용을 설명하거나 연관된 얘기 (구체화 / 정리 / 보충).
-- A 가 B 다음에 오는 enumeration item (1, 2, 3 / ➊, ➋, ➌ / * 등) 인데 B 가 그 enumeration 의 헤딩.
+1. **B 가 헤딩 / 번호 제목** ("1 업무추진", "Ⅱ . ...", "[전략 1]" 등) 이고 A 가 그 본문 / 부연 / 설명 / 예시 / 사례.
+   - 부모 (B) 가 "무엇에 대한 것" 인지 알리고, 자식 (A) 가 그 구체 내용.
+2. **B 가 박스 / 요약 paragraph** 이고 A 가 그 박스가 가리키는 세부 내용.
+3. **B 가 도입 / 개요** 이고 A 가 그 안에서 다루는 항목.
+4. **A 가 B 다음 enumeration item** (1, 2, 3 / ➊, ➋, ➌ / * 등) 인데 B 가 그 enumeration 을 묶는 헤딩.
+
+→ 모든 경우 공통: **B 가 A 를 포괄, A 가 B 를 설명**. 양방향 확인.
+
+## 형제 판단
 
 다음 경우 A 는 B 의 **형제** (같은 parent):
 
-- A 와 B 가 같은 cluster (반드시).
-- A 와 B 가 다른 cluster 이지만 같은 enumeration 의 변형 (예: `*` 와 `**`).
+- A 와 B 가 같은 cluster (반드시) — 같은 cluster 면 무조건 같은 parent.
+- A 와 B 가 다른 cluster 이지만 같은 enumeration 의 변형 (예: `*` 와 `**`) — 같은 parent.
 
 ## 1c hint 활용
 
