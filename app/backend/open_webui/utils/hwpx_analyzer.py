@@ -7513,23 +7513,33 @@ def extract_paragraph_emphasis_map(
 
 EMPHASIS_LAYER_PROMPT = """당신은 한국 행정문서의 inline 강조 패턴 분석 전문가입니다.
 
-# ⚠️ 절대 규칙 1 — 양식 원문 글자 그대로 옮기기
+# ⚠️ 절대 규칙 1 — sample 원문 인용 금지, 기능 단위 일반화
 
-양식 sample 안의 인용부호는 **한국 문서 표준 유니코드 좌우 단일인용부호 (`‘ ’`)** 입니다. rule 문장에서 양식 표현을 인용할 때 **`‘ ’` 그대로 옮기세요**.
+`rules_for_generation` 안에서는 sample의 고유 문구, 정책명, 기관명, 사업명, 인용구를 그대로 쓰지 마세요.
+양식 sample에서 관찰한 것은 **"어떤 기능의 텍스트에 어떤 layer가 적용되는가"** 입니다.
+rule은 새 도메인 본문에도 적용 가능한 **기능 단위** (위치 / 구문 / 의미 역할) 로 일반화하세요.
 
-- 맞는 예: `"분야 (‘교육·보건·의료’) 나 재고 (‘재고’) 에 적용."`
-- **틀린 예** (절대 X): `"분야 ('교육·보건·의료') 나 재고 ('재고') 에 적용."` — ASCII `'` 로 변환 금지.
+좋은 예:
+- `"em2: 정책 문제·리스크를 요약하는 핵심 명사구 만. 조사·연결어·서술어 X."`
+- `"em3: 정책 수단·방법을 나타내는 핵심 명사구 만. 결과 서술 X."`
+- `"em4: 괄호 안 분류명 또는 부제. 괄호 밖 본문 X."`
 
-ASCII 작은따옴표 (`'`) 를 출력에 쓰지 마세요. 양식 원문 글자 그대로 옮기는 것이 일관성 + JSON 안전 양쪽에서 정답입니다.
+나쁜 예 (절대 X):
+- `"em2: '공급망 위기'라는 어구에 적용"` — sample 고유 어구 그대로 인용
+- `"em8: '공공조달을 통해'라는 표현에 적용"` — sample 고유 어구 인용
+- `"em10: '부담경감·경제활력 회복세 확산'에 적용"` — sample 어구 그대로
+- `"em3: 기업 지원·육성 관련 핵심어. 양식 sample 의 '기업의 성장', '도약의 버팀목'..."` — sample 단어 나열
 
-# ⚠️ 절대 규칙 2 — backslash (\\) 사용 금지
+# ⚠️ 절대 규칙 2 — JSON 안전 (인용 안 하면 자동 충족)
 
-**JSON 안에서 backslash 는 큰따옴표 (") 앞에만 붙입니다. 다른 어떤 글자 앞에도 절대 붙이지 마세요.**
+규칙 1을 지키면 rule 문자열 안에 작은따옴표, 큰따옴표, backslash 가 들어갈 일이 없습니다.
+sample 원문을 인용하지 마세요. 인용하면 quote/backslash escape 문제로 batch 전체가 깨질 수 있습니다.
 
-- 한글, 숫자, 괄호, 점, 쉼표, 유니코드 인용부호 (`‘ ’`) 앞 → backslash 금지.
-- 큰따옴표 (`"`) 앞에만 `\\"` 로 적습니다. 이게 backslash 쓰는 유일한 경우.
+- rule 문자열 안에 ASCII `'`, `"`, `\\` 사용 금지.
+- 유니코드 인용부호 (`‘ ’`) 도 사용 금지 — 어차피 sample 원문을 인용하지 않으니 필요 없습니다.
+- JSON 배열 안 객체 사이에 반드시 `,` (줄바꿈은 separator 아님).
 
-규칙 1 + 2 한 글자라도 어기면 **batch 전체 분석 결과가 통째로 사라집니다**. 다른 모든 규칙보다 우선합니다.
+규칙 1 + 2 한 글자라도 어기면 **batch 전체 분석 결과가 사라집니다**. 다른 모든 규칙보다 우선합니다.
 
 ---
 
@@ -7555,28 +7565,29 @@ base(일반 텍스트)이고 어느 layer가 강조인지는 판정하지 않았
 
 ## 각 강조 layer rule 작성 원칙
 
-1. **반드시 한국어로 작성** — 영어 문장 금지. 영어 단어 한 개도 X.
-2. **양식 sample 에서 직접 관찰 가능한 패턴만**. 일반 행정문서 규칙 X.
-3. **rule 문장 안에 반드시 포함**:
-   - **적용 조건** (이 layer 가 양식 sample 의 어디에 등장하는지 — 구체적 위치/형태)
-   - **적용 범위** (전체 paragraph / 일부 segment / 괄호 안 / 마커 직후 등 — 정확히 명시)
-   - **비적용 조건** (필요 시; 예외)
-4. **rule 안에 다음 셋 중 하나로 위치 명시 (필수)**:
-   - "전체 paragraph 통째" — paragraph 전체가 이 layer 인 경우
-   - "괄호 안 만" / "마커 직후 N 글자 만" / "특정 키워드 만" 같이 **paragraph 안 일부 segment 만** 인 경우
-   - "양식 sample 의 한 paragraph 단일 layer — 새 instance 도 통째 한 layer" — 단일 layer paragraph 인 경우
-5. **의미 기반 패턴 OK** ("paragraph 의 핵심 결론 명사구" 등). 다만 위치 정보 (괄호 안인지 본문 전체인지) 는 반드시 명시.
+1. **rule 문장은 한국어로 작성** (JSON 필드명·layer_id·role_cluster 값은 입력 그대로 유지).
+2. **양식 sample 에서 관찰한 시각적 적용 위치를 바탕으로** rule을 만들되, sample 고유 내용어·정책명·기관명·도메인 어구를 **rule 안에 인용하지 않는다**.
+3. **각 layer 당 rule 1~2개**. 한 문장으로. 너무 길게 쓰지 말 것.
+4. **rule 문장 안에 다음 3가지 포함**:
+   - **적용 조건 / 위치** (기능 단위 — 예: 마커 직후, 괄호 안 분류명, 핵심 명사구, 수치/금액 구간 등)
+   - **적용 범위** (전체 paragraph / 일부 segment / 괄호 안만 등)
+   - **비적용 조건** (필요 시 — 예: 조사·연결어 X, 일반 서술어 X)
 
-## 좋은 rule 예시 (한국어 + 위치 명시)
+## 좋은 rule 예시
 
-> "em2: 괄호 안의 한국어 부제 만 (예: `(부제 텍스트)` 형태). 본문 전체 X, 괄호 밖 X."
-> "em5: 영어 괄호 부제 만 (예: `(English subtitle)` 형태). 한국어 본문 X."
+> "em2: 마커 직후 괄호 안 분류명 또는 부제. 괄호 밖 본문 X."
+> "em3: 정책 문제·리스크를 요약하는 핵심 명사구. 조사·연결어·서술어 X."
+> "em4: 정책 수단·방법을 나타내는 동사구. 결과 서술 X."
+> "em5: 수치·금액·기간 구간. 일반 본문 X."
 > "em1: 전체 paragraph 통째 단일 layer (양식 sample 에서 한 paragraph 가 한 layer 로만 구성)."
 
 ## 나쁜 rule 예시 (절대 X)
 
-> "Subtitle for Strategy 1" — 영어 + 위치 모호. 2c 가 본문 전체에 박을 위험.
-> "강조 표시" — 위치 / 조건 명시 X. 모호함.
+> "em2: '공급망 위기'라는 어구에 적용" — sample 원문 인용
+> "em8: '공공조달을 통해'라는 표현에 적용" — sample 원문 인용
+> "em3: 양식 sample 의 '기업의 성장', '도약의 버팀목', '미래 유망 신산업 육성'" — sample 단어 나열
+> "Subtitle for Strategy 1" — 영어 + 위치 모호
+> "강조 표시" — 위치 / 조건 명시 X
 
 ## 출력 형식
 
@@ -7604,13 +7615,11 @@ base(일반 텍스트)이고 어느 layer가 강조인지는 판정하지 않았
 
 ## 출력 마지막 검사 (반드시)
 
-JSON 출력 후, 자기 출력을 다시 훑어서 두 가지 확인:
+JSON 출력 후, 자기 출력을 다시 훑어서 다음 항목 확인:
 
-1. **ASCII 작은따옴표 (`'`) 가 있으면 양식 원문대로 유니코드 (`‘` 또는 `’`) 로 교체**. 양식에는 ASCII `'` 가 한 글자도 없으니, 응답에 ASCII `'` 가 나타나면 자기 멋대로 변환한 것입니다.
-2. **backslash (\\) 가 큰따옴표 앞 외에 있으면 모두 제거**. 한 개라도 남아있으면 batch 전체가 사라집니다.
-
-맞는 예: `"분야 (‘교육·보건·의료’) 나 재고 (‘재고’) 에 적용."`
-틀린 예: `"분야 ('교육·보건·의료') 나 재고 ('재고') 에 적용."` / `"분야 (\\'교육·보건·의료\\') 에 적용."`
+1. **sample 원문 인용 없음** — rule 문자열 안에 sample 의 고유 어구·정책명·기관명·인용구가 그대로 들어가 있으면 모두 제거하고 기능 단위로 재작성.
+2. **quote/backslash 없음** — rule 문자열 안에 ASCII `'`, `"`, `\\` 가 한 글자도 없는지. 있으면 sample 인용했다는 신호 → 1번으로 돌아가 다시 작성.
+3. **JSON 배열 separator** — `clusters` 배열, `emphasis_layers` 배열, `rules_for_generation` 배열 안 객체/요소 사이에 반드시 `,` 가 있는지. 줄바꿈은 separator 아님.
 """
 
 
@@ -17289,11 +17298,15 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 - paragraph_count ≤ 1 / char_count 1~2 같은 노이즈 layer 사용.
 - 본문 전체를 non-base layer 한 색으로 감싸기 — base 정책 위반.
 
-### 3. 들여쓰기 (마커처럼 양식 sample 그대로)
-- 양식 sample의 **앞 공백·탭(들여쓰기)을 그대로 복제**해서 text 머리에 포함.
-- 예: 양식 sample이 `"    1) 토론..."`이면 본문도 `"    "` 4공백으로 시작.
-- 같은 cluster여도 paragraph마다 들여쓰기 다를 수 있음 — 각 paragraph의 본보기 들여쓰기를 봐.
-- 조립 단계는 자식 도구 출력 들여쓰기를 그대로 박음. 코드가 따로 들여쓰기 추가/제거 X.
+### 3. 시작 공백 처리 — raw 들여쓰기 금지
+
+- 출력 text는 원칙적으로 raw space/tab으로 시작하지 않는다.
+- text의 첫 문자는 보통 `[[emN]]`이어야 한다.
+- 양식 sample의 시작 공백이 `[[emN]]   [[/emN]]`처럼 style layer 안에 있으면, 그 공백은 반드시 같은 style span 내부에만 보존한다.
+- style span 내부의 공백을 태그 밖 raw leading space로 꺼내지 않는다.
+- parent_id, tree depth, role 계층, 마커 위계(`전략`→`◈`→`󰊱`→`➊`→`*`)를 근거로 들여쓰기를 새로 만들지 않는다.
+- sample 자체가 실제 raw space/tab 문자로 시작하는 경우에만, 그 raw prefix를 그대로 복제한다.
+- sample에 없는 raw leading space를 추가하면 안 된다.
 
 ### 4. 본문 의미 보존
 - text 단어·문장은 의미상 거의 그대로. 마커·강조·들여쓰기만 입힘.
@@ -17419,14 +17432,28 @@ def build_section_style_prompt(
                     _layers_with_rules.append((lid, rules))
             em_lines.append(f"\n### {role_name}")
             em_lines.append(f"- base layer: `{base_lid}` — 본문 모든 글자의 기본 글꼴 (default).")
-            if _layers_with_rules:
+            # parse_failed / ai_call_failed / missing_in_ai_response 등 분석 실패 cluster:
+            # rules 가 신뢰 불가 → guide 노출 X, sample 분할 패턴만 따르도록 안내.
+            _parse_status = em.get("_parse_status", "")
+            if _parse_status and _parse_status not in ("ok", "auto_single_charpr"):
+                em_lines.append(
+                    f"- ⚠️ 이 cluster 의 layer 분석은 실패 상태 (`{_parse_status}`). "
+                    "layer guide 신뢰 불가 — 아래 양식 본보기 sample 의 분할 패턴 (수·위치·layer 배치) 만 "
+                    "참고하여 그대로 모방하세요. 새 강조 span 추가 / 임의 적용 금지."
+                )
+            elif _layers_with_rules:
                 em_lines.append("- 규칙 있는 non-base layer (적용 가능):")
                 for lid, rules in _layers_with_rules:
                     em_lines.append(f"    - `[[{lid}]]...[[/{lid}]]`:")
                     for r in rules:
                         em_lines.append(f"        - {r}")
             else:
-                em_lines.append("- 규칙 있는 non-base layer 없음 → 본문 전체 base 하나로만 감싸기.")
+                em_lines.append(
+                    "- layer guide에는 새로 일반화할 non-base 규칙이 없음. "
+                    "단, 아래 양식 본보기 sample에 이미 존재하는 외부 마커, 고정 공백 span, 고정 기호 span은 "
+                    "sample 구조 그대로 복제할 수 있음. "
+                    "새로운 본문 중간 강조 span은 만들지 말 것."
+                )
             # 본보기 sample — 마커 / 분류 라벨 / 본문 내부 style 분할 규칙 확인용. sample 분할 패턴 우선 모방.
             if paragraph_emphasis_map:
                 pem = paragraph_emphasis_map.get(role_name) or {}
