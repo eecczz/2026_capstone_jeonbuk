@@ -16458,19 +16458,14 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 
 ## 절대 X — 인공지능 자기 멋대로 변환 금지
 
-- **한자 변환 절대 금지** — 소스가 한글이면 그대로 한글. 한국어 한자어 (`점검 결과`, `행정`, `정보시스템`, `업무` 등) 를 **한자 (`点检结果`, `行政`, `信息系统`, `業務`) 로 변환 절대 X**. 현대 한국 행정문서는 한글 위주.
+- **한자 변환 절대 금지** — 소스가 한글이면 그대로 한글. 한국어 한자어 (`점검 결과`, `행정`, `정보시스템`, `업무` 등) 를 한자 (`点检结果`, `行政`, `信息系统`, `業務`) 로 변환 절대 X. 현대 한국 행정문서는 한글 위주.
 - **영어 변환 절대 금지** — 소스가 한글이면 그대로. `클라우드` 를 `cloud` 로 변환 X.
-- **새 한자 / 새 영어 단어 생성 절대 금지** — 소스에 정확히 등장한 한자 / 영어만 그대로 쓰고, 그 외 모든 한자 / 영어 단어 만들기 X. 인공지능 중국어 / 일본어 학습 데이터의 한자 (`点检`, `信息`, `行政`, `公司`, `通信` 등) 출력 절대 X.
-
-## 양식 sample 의 단어 가져오기 금지
-
-- 양식 sample 의 한자 / 영어 / 행정 약어 등을 새 본문에 가져오기 X.
-- 양식 sample 은 트리 구조 / role 의미 이해용 참고만. **단어 / 말투 / 형식 모방은 2b-b 책임**.
-- 양식 sample 이 `(Back to the Basic)` 같은 영어 부제면 → 당신은 그것 안 따라가도 됨. 단어는 소스 원문에서만.
+- **새 한자 / 새 영어 단어 생성 절대 금지** — source 에 정확히 등장한 한자 / 영어만 그대로 쓰고, 그 외 모든 한자 / 영어 단어 만들기 X.
+- **양식 sample 의 한자 / 영어 / 행정 약어 가져오기 X** — 양식 sample 은 트리 구조 / role 의미 이해용 참고만.
 
 ## 자유도 한계
 
-- 소스의 사실 / 숫자 / 주체 / 시기 → 정확히 그대로 (`6 층`, `'25. 6. 5.`, `4 억 4,894 만원` 등 변경 X)
+- 소스의 사실 / 숫자 / 주체 / 시기 → 정확히 그대로 (`6 층`, `'25. 6. 5.`, `4 억 4,894 만원` 등 변경 X).
 - 짧게 만들기 위해 단어 줄이지 마세요. 정보 손실 X.
 - 말투 / 술어 / 분할 형식 변환 X — 2b-b 가 처리.
 - 의역 / 단어 교체 X.
@@ -16480,105 +16475,60 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 각 item text 는 source 의 관련 내용을 **과도하게 압축하지 않습니다**.
 
 - source 에 대상 / 시기 / 규모 / 수단 / 결과 함께 있으면 → 가능한 한 같은 item 또는 적절한 자식 item 에 **모두 보존**.
-- `계약 체결`, `사업 착공`, `추진` 처럼 **결과어만 남기고 대상 / 시기 / 규모 / 수단 누락 X**.
-- 잘못된 예: `(부지계약) 사업 착공` (대상/시기 누락)
-- 올바른 예: `(부지계약) 새만금산단 (2 공구) 용지 계약 체결` + 자식에 `(시기) '26 년 상반기` (정보 분산 보존)
-- 단, 양식 말투나 종결어미로 다듬는 건 2b-b 책임 — 정보 손실만 안 되게.
-- **길이 hint (예: `짧은 한 줄 (20~40자)`) 와 source 재료 보존이 충돌하면 source 재료 보존이 우선**. role description 의 길이 / text_type 표기는 양식 sample 평균 참고용 — hard constraint X. 양식 sample 길이에 맞추려고 source 의 대상/시기/규모/수단/결과/수치 재료를 버리기 X. 길이가 약간 늘어나도 OK — 양식 말투 / 종결어미 다듬기는 2b-b 가 처리합니다.
-
-## 출력 직전 자체 점검 (반드시)
-
-JSON 출력 직전, 모든 item 의 text 를 다시 훑어서:
-
-1. **한자가 있는가?** 있다면 → source 원문에 그 한자가 정확히 있었는지 확인. 없으면 한글 source 표현으로 되돌리기.
-2. **영어 단어가 있는가?** 있다면 → source 원문에 그 영어가 정확히 있었는지 확인. 없으면 한글 표현으로 되돌리기.
-3. **새 한자 / 새 영어가 단 한 글자라도 남으면 안 됨** — 양식 sample 의 한자/영어 가져온 것도 X. source 원문에 정확히 일치하는 글자만 허용.
-
-이 자체 점검을 거치지 않은 출력은 wrong. 출력 전에 반드시 점검하세요.
+- `계약 체결`, `사업 착공`, `추진` 처럼 결과어만 남기고 대상 / 시기 / 규모 / 수단 누락 X.
+- 길이 hint (예: `짧은 한 줄 (20~40자)`) 와 source 재료 보존이 충돌하면 source 재료 보존이 우선. 양식 말투 / 종결어미 다듬기는 2b-b 가 처리합니다.
 
 ## 핵심 규칙 (강제)
 
-1. **패턴에 명시된 role만 사용하세요** — 새 role 생성 금지
-2. **개수 제약 (강제) — target_count 우선**:
-   - `정확히 1개/부모`: 부모 인스턴스 아래 딱 1개만 생성. 2개 이상 절대 금지.
-   - `여러 개 가능`: **양식 관찰의 mean (반올림 정수) 을 target_count 로 기본 생성**. min 만 만들지 마세요.
-     - 양식이 같은 parent 아래 같은 role 을 평균 N 개 관찰했으면 → 새 출력에서도 **N 개의 독립 instance 분리 생성**.
-     - **min 까지 줄이는 건 source 에 명확히 N 개 분리할 내용이 없을 때만**. 단순히 source 가 짧다는 이유로 N 개 → 1 개 합치기 절대 X.
-     - **max 초과 절대 금지**.
-     - 단일 관찰 (min=max=N) 이면 그 값 N 그대로.
+1. **패턴에 명시된 role 만 사용** — 새 role 생성 X.
 
-   **합치기 금지 (강제 룰)**:
-   - 양식에서 같은 parent 아래 같은 child role 이 N 개 관찰됐다면, source 가 한 문단이어도 **쉼표 / 세미콜론 / 번호 / 날짜 / 기관 / 조치 단위로 분리해 N 개 instance 에 배치**.
-   - 같은 role 이 반복 등장하는 게 정상. 합치면 wrong.
-   - 잘못된 예: 하나의 detail_item 안에 세 가지 조치 다 포함 ← 절대 X
-   - 올바른 예: detail_item 1, 2, 3 으로 분리
-3. **필수/선택**:
-   - `필수(최소 1개)`: 반드시 1개 이상 포함
-   - `선택(생략 가능)`: 해당 내용이 소스에 없으면 생략
-4. **children 관계를 지키세요** — 부모 role 뒤에 자식 role이 와야 합니다
-5. **형제 자식 variant (hard constraint — 한 instance는 한 variant)**:
-   - 각 parent role의 한 인스턴스가 가질 수 있는 자식 set은 prompt의 "형제 배타 규칙" 섹션의
-     "자식 variant 목록" 에서 명시됩니다 (양식 관찰).
-   - **한 인스턴스 안에는 단 하나의 variant 자식 set만 사용**. 두 variant 섞기 금지.
+2. **instance 수 결정 우선순위** (위에서부터 적용):
+   1. `정확히 1개/부모` (per_parent=single) 인 role 은 항상 1 개.
+   2. `max` 초과 X (hard).
+   3. 필수 role 은 `min` 미만 X (hard).
+   4. source 의 독립 재료 수를 먼저 본다.
+   5. `target_count` (양식 관찰 mean 반올림) 는 default 이며 절대값이 아니다.
+   6. source 재료가 부족하면 `target_count` 보다 줄이고, 충분하면 `max` 안에서 늘릴 수 있다.
+
+   case 예시:
+   - source 7 항목, target=3 → source 를 3 개 묶음으로 재구성.
+   - source 2 항목, target=4, role 여러 개 가능 → 재료가 4 개로 분리되면 4 개, 안 되면 줄여 (단 min 유지).
+   - source 5 항목, target=3, max=5, role 여러 개 가능 → 5 개로 늘릴 수 있음.
+   - source 1 항목, role 정확히 1개/부모 → 1 개 그대로.
+
+3. **합치기 금지** (강제): 양식에서 같은 parent 아래 같은 child role 이 N 개 관찰됐고 source 가 N 개로 분리되면 N 개 instance 로 분리. 한 instance 에 합치기 X.
+
+4. **children 관계**: 부모 role 뒤에 자식 role 이 와야 합니다. 자식 role 을 root 로 박기 X.
+
+5. **형제 자식 variant (hard constraint — 한 instance 는 한 variant)**:
+   - 각 parent role 의 한 인스턴스가 가질 수 있는 자식 set 은 prompt 의 "형제 자식 variant" 섹션의 variant 목록에서 명시됩니다 (양식 관찰).
+   - 한 인스턴스 안에는 단 하나의 variant 자식 set 만 사용. 두 variant 섞기 X.
    - 새 인스턴스 만들 때마다 variant 중 하나 선택 (source 내용 성격에 맞게).
-   - 예: parent의 variant 목록이 [{A, B}, {C}]면 → 한 인스턴스는 (A+B) 또는 (C) 둘 중 하나만.
-     A+C 또는 B+C 같이는 금지.
 
 ## ⚠️ 소스와 양식의 주제가 완전히 다를 수 있음
 
 양식은 **어떤 주제** (예: 과일 가격) 를 다뤘더라도, 당신이 채울 소스는 **전혀 다른 주제** (예: 야구장 관객 수) 일 수 있습니다.
 
-- **role 의 description 은 구조적·관계적 역할만** 기술. 주제 무관.
-- **role 의 sample text 는 트리 구조 / role 의미 이해용 참고만**. **단어 / 문체 / 형식 모방 X — 다음 단계 (2b-b) 가 처리**.
+- **role 의 description 은 구조적 · 관계적 역할만** 기술. 주제 무관.
+- **role 의 sample text 는 트리 구조 / role 의미 이해용 참고만**. 단어 / 문체 / 형식 모방 X — 2b-b 가 처리.
 - sample 이 어떤 주제든 → 당신은 **소스의 단어 / 글자** 그대로 사용.
-- sample 의 양식 단어 (영어 / 한자 / 행정 약어 등) 가져오기 절대 X.
-
-## source 내용 재구성 (양식 구조 우선)
-
-source 는 양식과 다른 도메인일 가능성이 큽니다. source 의 자연 단위 갯수와 양식 instance 갯수가 일치하지 않을 수 있어요.
-
-**원칙: 양식 instance 갯수는 기본 target_count. source 분량에 따라 조정 가능 — 단 아래 hard 제약은 항상 지킴.**
-
-- 기본: 양식 관찰 갯수 평균 (반올림) 을 target_count 로 시작.
-- source 에 독립 재료가 **부족** → target 보다 줄일 수 있음 (단 `필수(최소 1개)` 면 최소 1개, `min` 미만 X).
-- source 에 독립 재료가 **충분** + 해당 role 이 `여러 개 가능` 으로 반복 가능 → target 보다 늘릴 수 있음 (단 `max 초과 X`).
-- **항상 지키는 hard 제약**: `정확히 1개/부모`, `min/max`, `필수/선택`, `형제 배타 (variant)` — 이건 source 분량과 무관하게 hard.
-
-case 예시:
-- source 7 항목, 양식 target=3 → source 를 3 개 묶음으로 재구성.
-- source 2 항목, 양식 target=4, role `여러 개 가능` → source 재료가 4 개로 분리되면 4 개, 안 되면 줄여 (단 min 유지).
-- source 5 항목, 양식 target=3, 양식 max=5, role `여러 개 가능` → 5 개로 늘릴 수 있음.
-- source 1 항목, 양식 `정확히 1개/부모` → 1 개 그대로.
-
-**판단 순서**:
-1. 양식 target_count 결정 (min~max 평균 반올림).
-2. source 재료 분량 평가 (독립 단위로 분리되는 자료 갯수).
-3. target 과 source 분량 조합 → instance 갯수 조정 (min / max / 정확히 1개/부모 / 형제 배타는 hard).
-4. source 재료를 instance 들에 묶거나 나눠 배치.
 
 ## ⚠️ chapter title 답습 금지 — 트리 단계 의미 분리
 
-당신이 작성하는 모든 item의 텍스트는 **자기 부모 item의 텍스트와 의미적으로
-구별되는 더 구체적인 sub-내용**이어야 합니다. 부모 텍스트를 그대로 복제하거나
-거의 똑같이 paraphrase 하면 안 됩니다.
+당신이 작성하는 모든 item 의 텍스트는 **자기 부모 item 의 텍스트와 의미적으로 구별되는 더 구체적인 sub-내용** 이어야 합니다. 부모 텍스트를 그대로 복제하거나 거의 똑같이 paraphrase 하면 안 됩니다.
 
-특히 **root sub-item**(트리의 최상위 child, `parent_id=null`인 item)은 주어진
-chapter title을 그대로 복제하지 마세요. chapter title은 양식 전체 대제목으로
-별도 위치에 이미 박히고, 당신은 그 아래 트리 자식들만 채웁니다.
+특히 **root sub-item** (트리의 최상위 child, `parent_id=null` 인 item) 은 주어진 chapter title 을 그대로 복제하지 마세요. chapter title 은 양식 전체 대제목으로 별도 위치에 이미 박히고, 당신은 그 아래 트리 자식들만 채웁니다.
 
 판단 기준 — 양식 role 카탈로그의 sample text 는 **트리 구조 / role 의미 이해용** 참고:
 - sample 이 chapter title 자체가 아니라 chapter 안의 **별도 측면** (구체적 성과, 세부 전략, sub-과제, intro 요약 등) 을 보여주면 — 그 **위치 / 깊이** 를 트리 구조로 반영.
 - chapter title 보다 한 단계 좁고 구체적인 sub-주제로 작성.
-- **양식 sample 의 단어 / 문체 / 길이 모방 X — 다음 단계 (2b-b) 가 처리**. 당신은 소스 내용 정확히 추출만.
-- **item.text 에는 번호 / 글머리표 / 마커 / 강조 표시를 넣지 마세요** — 다음 단계 (2c) 가 자동 부착.
 
-이 규칙은 트리 모든 단계에 동일: 부모→자식으로 내려갈수록 더 구체적 정보로
-좁혀져야 하며, 같은 정보가 부모와 자식에 중복되면 안 됩니다.
+이 규칙은 트리 모든 단계에 동일: 부모→자식으로 내려갈수록 더 구체적 정보로 좁혀져야 하며, 같은 정보가 부모와 자식에 중복되면 안 됩니다.
 
 ## 출력 순서
 
-패턴의 계층 구조를 flat하게 펼친 순서로 출력하세요.
-예: pattern이 section_header → (sub_task → (detail_item, note)) 이면:
+패턴의 계층 구조를 flat 하게 펼친 순서로 출력하세요.
+예: pattern 이 section_header → (sub_task → (detail_item, note)) 이면:
 ```
 section_header
   sub_task
@@ -16594,38 +16544,28 @@ section_header
 
 ## role 선택 기준 — 내용의 성격으로 판단
 
-**role을 선택할 때 소스의 마커가 아닌 내용의 성격을 기준으로 하세요.**
-각 role의 description과 예시를 보고, 소스 내용이 어떤 role의 성격에 가장 맞는지 판단하세요.
+**role 을 선택할 때 소스의 마커가 아닌 내용의 성격을 기준으로 하세요.**
+각 role 의 description 과 예시를 보고, 소스 내용이 어떤 role 의 성격에 가장 맞는지 판단하세요.
 
-- 소스 내용이 **새로운 주제/소제목**을 시작하면 → description에 "제목", "항목 제목" 등이 있는 role
-- 소스 내용이 **구체적 사실, 경과, 현황**을 설명하면 → description에 "실행", "본문", "내용" 등이 있는 role
-- 소스 내용이 **보충 설명, 참고, 통계, 예시**이면 → description에 "보충", "참고", "설명" 등이 있는 role
-- 소스 내용이 **결론, 방향, 요약**이면 → description에 "요약", "방향", "선언" 등이 있는 role
+- 소스 내용이 **새로운 주제 / 소제목** 을 시작하면 → description 에 "제목", "항목 제목" 등이 있는 role
+- 소스 내용이 **구체적 사실, 경과, 현황** 을 설명하면 → description 에 "실행", "본문", "내용" 등이 있는 role
+- 소스 내용이 **보충 설명, 참고, 통계, 예시** 이면 → description 에 "보충", "참고", "설명" 등이 있는 role
+- 소스 내용이 **결론, 방향, 요약** 이면 → description 에 "요약", "방향", "선언" 등이 있는 role
 
-**소스의 원래 마커(※, □, ⇒, - 등)는 role 선택의 기준이 아닙니다.**
-소스에서 ※로 시작하더라도 내용이 주제 설명이면 detail_item일 수 있고,
-소스에서 ㅇ로 시작하더라도 내용이 보충 설명이면 note일 수 있습니다.
+**소스의 원래 마커 (※, □, ⇒, - 등) 는 role 선택의 기준이 아닙니다.**
+소스에서 ※ 로 시작하더라도 내용이 주제 설명이면 detail_item 일 수 있고, 소스에서 ㅇ 로 시작하더라도 내용이 보충 설명이면 note 일 수 있습니다.
 
 ## 텍스트 작성 규칙 (2b-a 책임 범위)
 
-- **role 의 description 이나 번호 ("과제 1", "전략 2" 등) 를 텍스트에 넣지 마세요**
-- **소스의 실제 내용만 작성** — 사실 / 숫자 / 주체 / 시기 정확히
-- **양식 sample 단어 / 말투 / 형식 모방하지 마세요** — 그건 다음 단계 (2b-b) 가 처리합니다.
+- **role 의 description 이나 번호 ("과제 1", "전략 2" 등) 를 텍스트에 넣지 마세요**.
+- **소스의 실제 내용만 작성** — 사실 / 숫자 / 주체 / 시기 정확히.
 - 단어는 소스에서. 형식 정제는 신경 X. 정보를 정확히 트리에 배치하는 데 집중.
+- 양식 sample 의 단어 / 말투 / 형식 모방 X — 다음 단계 (2b-b) 가 처리.
+- 2b-a 는 구조 (role / parent_id / 형제 배타 / 개수) 와 raw 정보 배치에 집중.
 
-## ⚠️ 2b-a 의 책임은 정보 + 구조
+# 출력 형식
 
-이 단계는 **1차 본문 (스켈레톤)** 작성. 양식 sample 은 트리 구조 / role 의미 이해용 참고만, **단어 / 술어 / 분할 모방 X**.
-
-- 양식 sample 이 `[전략1] ... (Back to the Basic)` 형태라도 → 새 본문은 소스 단어로 자유롭게. 양식 영어 / 한자 가져오기 금지.
-- 양식 sample 이 명사구로 끝나든 서술문이든 → 신경 쓰지 마세요. 정보 정확히 적기만.
-- 양식 sample 의 분할 패턴 (괄호 부제 / 키워드 위치) → 모방 X. 2b-b 가 처리.
-
-다음 단계 (2b-b) 가 1차 구조 초안을 바탕으로 source 와 양식의 문장 조립 방식을 다시 보고 **최종 본문**을 작성합니다. 2b-a 는 구조 (role / parent_id / 형제 배타 / 개수) 와 raw 정보 배치에 집중.
-
-## 출력 형식
-
-반드시 아래 JSON만 출력하세요.
+반드시 JSON 만 출력:
 
 ```json
 {
@@ -16637,27 +16577,14 @@ section_header
 }
 ```
 
-- **id**: 0부터 시작하는 순서 번호. 빠짐없이 순차 증가 (0, 1, 2, …)
-- **parent_id**: 이 항목의 부모 항목 id
-  - **`parent_id: null`로 둘 수 있는 role은 패턴 트리의 최상위 role(들) 뿐** (hard constraint).
-  - 패턴 트리에서 자식 role로 분류된 role은 **절대 `parent_id: null`로 두지 마세요**.
-    그 role의 양식 부모 role 인스턴스 id를 parent_id로 명시해야 합니다.
-  - root role이 여러 개 있을 수 있음 — 각각 `parent_id: null` (단 위 hard 룰 충족 시)
-  - root가 아닌 항목은 반드시 부모 item의 id를 parent_id로 지정
-- **패턴 트리의 계층 관계를 parent_id로 정확히 표현하세요**
-  - root role의 자식은 parent_id = 해당 root의 id
-  - 같은 부모 아래 형제 항목은 parent_id가 같음
-  - **자식 role을 root로 박지 마세요** — 양식 트리 구조 위반. 양식 cluster_X가 cluster_Y의
-    자식이면 출력에서도 cluster_X.parent_id는 cluster_Y 인스턴스 id (절대 null X).
-  - 양식 parent의 인스턴스가 N개 필요하면 (양식 instance 갯수 hint 참조) **N개를 모두
-    생성**하세요. 그 자식들을 root에 박아 합치지 마세요. 한 instance에 다 못 박으면
-    parent instance 더 만들어서 분리.
-- role과 text는 양식의 role 카탈로그·format_rules에 따라 결정. role 이름은 양식 카탈로그에 있는 그대로 사용.
-
-## 중요
-- **소스에 없는 내용을 만들어내지 마세요**
-- **하나의 role 항목에는 하나의 계층 내용만** — 여러 계층을 합치지 마세요
-- 반드시 JSON만 출력. 다른 설명 포함 금지
+- `role`, `parent_id`, `text` 의미는 유지.
+- root role 은 `parent_id: null`. 자식 role 은 반드시 부모 item 의 id 를 `parent_id` 로 지정.
+- `id` 는 임의의 정수 가능 — 코드가 0-based 로 재매김.
+- `item.text` 에 번호 / 글머리표 / 마커 / 강조 표시 X (다음 단계 2c 가 자동 부착).
+- 들여쓰기 공백 / 탭 X.
+- 소스에 없는 내용을 만들어내지 마세요.
+- 하나의 role 항목에는 하나의 계층 내용만.
+- 다른 설명 포함 금지.
 """
 
 
@@ -16931,7 +16858,7 @@ def build_section_fill_prompt(
             lines.append(
                 "- 한 instance에 두 variant 섞기 금지 (양식에서 함께 등장한 적 없음).\n"
                 "- 새 instance마다 source 내용 성격에 맞는 variant 선택 (양식 sample 참고).\n"
-                "- **instance 갯수는 유동적** — 양식 관찰 갯수에 매이지 X. source 분량에 따라.\n"
+                "- **instance 갯수는 system prompt의 우선순위 표 적용** (정확히 1개/부모 / max / min hard, target_count default).\n"
                 "- ⚠️ 아래 'role 패턴'의 children 목록은 양식의 여러 instance variant의 union 표현입니다.\n"
                 "   pattern_tree만 보고 children 다 박지 마세요. 반드시 variant별 자식 set만 박기.\n"
             )
@@ -16985,9 +16912,7 @@ def build_section_fill_prompt(
         catalog_lines.append(f"- **{role_name}**{count_str}: {desc}{sample_str}")
     catalog_text = (
         "\n".join(catalog_lines)
-        + "\n\n(`양식 instance: N개`는 양식에서 이 role이 N번 등장했다는 뜻. "
-        "출력 트리에도 가능하면 N개 인스턴스를 만드세요. 한 인스턴스에 다 못 박으면 "
-        "더 만들어서 분리. 인스턴스 부족 시 자식 role을 root로 박는 거 금지.)"
+        + "\n\n(`양식 instance: N개`는 양식 관찰 갯수 — system prompt 우선순위 표의 target_count.)"
     )
 
     # 2b-a 는 말투 책임 X — style_profiles 받지만 prompt 박지 않음.
@@ -17254,16 +17179,26 @@ def parse_section_fill_from_llm(llm_response: str) -> list[dict]:
 
 SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작성자**입니다.
 
-2b-a 가 만든 1차 트리는 **구조 초안**이고 text 는 완성본이 아닙니다. 당신은 같은 source 와 양식 sample 을 다시 보고 양식의 **정보 조립 방식** (정보 조각 개수 / 연결 방식 / 종결 방식 / 정보 밀도) 에 맞춰 **최종 본문**을 작성합니다.
+2b-a 가 만든 1차 트리는 구조 초안이고 text 는 완성본이 아닙니다. 당신은 같은 source 와 양식 sample 을 다시 보고 양식의 **정보 조립 방식** (정보 조각 개수 / 연결 방식 / 종결 방식 / 정보 밀도) 에 맞춰 **최종 본문**을 작성합니다.
 
-- **구조 (role / parent_id) 는 대체로 존중**. role 대량 변경 X, parent 재설계 X, 형제 배타 재판단 X, 대량 instance 추가 X.
-- **text 는 적극 재작성 가능**. 1차가 사업명·과제명 한 단어로 짧게 남겼더라도 source 에 추가 재료 (목적/범위/대상/수단/방향/결과/시기/수치) 가 있으면 양식의 정보 조립 방식에 맞춰 다시 조립합니다.
-- **source 에 추가 재료가 없을 때만** 짧은 문장을 허용합니다. source 에 목적 / 범위 / 대상 / 수단 / 방향 / 결과 / 시기 / 수치 등 추가 재료가 있으면 **짧은 사업명만 남기지 말고** 양식의 정보 조립 방식에 맞춰 반영합니다.
+# 책임 범위 — text only polish
+
+당신은 **기존 item 의 text 만 재작성**합니다. 1차 트리의 구조와 item 개수는 모두 유지합니다.
+
+## 유지 (변경 X)
+- 1차 트리의 **role / parent_id / variant 선택** — 재판단 X.
+- 형제 배타 (variant) 결정 — 재판단 X.
+- **item 개수** — 추가 X, 삭제 X, 병합 X, 분할 X.
+- 새 role 생성 X, parent 재설계 X.
+
+## 적극 재작성 (text)
+- 1차 text 가 사업명·과제명 한 단어로 짧게 남겼더라도 source 에 추가 재료 (목적 / 범위 / 대상 / 수단 / 방향 / 결과 / 시기 / 수치) 가 있으면 양식의 정보 조립 방식에 맞춰 다시 조립.
+- source 에 추가 재료가 없을 때만 짧은 문장 허용.
 - source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 생성 X.
 
 # 핵심 책임
 
-## 1. 최종 본문 재작성 — 양식 정보 조립 방식 적용 (가장 중요)
+## 1. 양식 정보 조립 방식 적용 (가장 중요)
 
 1차 text 를 양식 sample 의 정보 조립 방식에 맞춰 다시 작성:
 
@@ -17272,9 +17207,12 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 - **양식 sample 의 정보 조각 개수 / 연결 방식** 답습 — 양식이 한 줄에 1~3 개 정보 조각을 쉼표 · 및 · 등 · 로 · 를 위한 등으로 연결한 패턴이면 새 본문도 source 재료 범위 안에서 같은 방식으로 조립.
 - **양식 sample 이 단일 layer 면 단일 layer**, 다중 segment 면 다중 segment.
 
+**답습할 것**: 정보 조각 개수, 연결 marker (쉼표 / 및 / 등 / ⇒ / 「」), 종결 방식, segment 위치 (라벨 앞 / 뒤).
+**답습 X**: 양식 sample 의 고유 단어, 한자 / 영어, 정책명 · 기관명 · 고유명사.
+
 ## 2. 정보 밀도 / 구성 단위 모방 (글자 수 기계적 모방 X)
 
-같은 role 의 양식 sample 을 볼 때 **종결 + 분할 + 정보량** 3가지 모두 모방:
+같은 role 의 양식 sample 을 볼 때 **종결 + 분할 + 정보량** 3 가지 모두 모방:
 
 1. **종결 방식**: `~함`, `~한다`, `~완료`, `~추진`, 명사형 종결 등.
 2. **분할 방식**: `(분류) 본문`, `메인 (괄호 부제)` 등.
@@ -17282,8 +17220,9 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 
 - 양식 sample 의 글자 수를 **기계적으로 맞추지 마세요**. 길이는 정보량 맞추기 위한 참고 기준.
 - 1차 text 가 `(분류) + 짧은 명사구` 수준이고 양식 sample 이 더 긴 본문 구조 → source 또는 1차 자식 item 참고해 정보 보강.
-- **종결만 맞추고 본문 지나치게 짧아지는 것은 실패** (예: `(부지계약) 사업 착공` — 대상/시기 정보 누락).
-- 보강 시 들어가는 사실 / 시기 / 대상 / 결과는 **반드시 source 또는 1차 트리에 존재** 해야. source 에 없는 내용으로 길이 늘리기 X.
+- **종결만 맞추고 본문 지나치게 짧아지는 것은 실패** (예: `(부지계약) 사업 착공` — 대상 / 시기 정보 누락).
+- **자식 item 이 여러 개로 늘어도 부모 role 의 양식 sample 이 headline 형이면 부모 text 를 단순 라벨로 축소하지 말고** source 와 자식의 핵심 재료를 압축한 headline 으로 유지.
+- 보강 시 들어가는 사실 / 시기 / 대상 / 결과는 **반드시 source 또는 1차 트리에 존재**.
 
 ## 3. 중복 방지 — 자식 정보 합치기 조건부
 
@@ -17292,126 +17231,75 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 - **양식 sample 에서 시기 / 부연이 부모 본문 안에 통합되는 패턴** → 부모에 통합 가능.
 - **양식 sample 에서 시기 / 부연이 별도 자식 (note / detail) 로 분리되는 패턴** → 자식에 유지. 부모에 중복 X.
 - 기본값: 부모에는 핵심 추진 내용, 자식에는 시기 / 금액 / 근거 같은 보충 정보.
-- 양식 sample 의 분할 위치 확인 후 결정.
 
-## 4. 누락 instance 복구 + source 재료 회수 보충
+## 4. source 재료 회수 (기존 item text 보강 시)
 
-1차 트리가 양식 sample 의 instance 분포에 못 미치면 source 원문에서 재료를 다시 회수해서 instance 를 추가하거나 본문을 보강하세요.
-
-**언제 회수·보강**:
-1. 1차 트리가 양식의 target_count 를 미달 (예: 양식 cluster_X 가 3 번 등장하는데 1차에 1 개)
-2. 1차 본문이 양식 sample 의 정보 밀도 (사실+수단+부연+결과) 에 못 미침
-3. source 안에 1차에 사용 안 된 활용 가능 정보가 있음
-
-**source 재료 회수 원칙** (중요):
-- source 내용의 주장 방향이 chapter / item 의 결론과 **같을 필요 없음**.
-- 배경 / 정의 / 수치 / 사례 / 비교 / 반론 / 한계 / 맥락 정보도 보강 재료로 사용 가능.
-- 새 item 의 role 은 양식 role 카탈로그에 있는 role 만 사용.
+- source 내용의 주장 방향이 chapter / item 의 결론과 같을 필요 없음. 배경 / 정의 / 수치 / 사례 / 비교 / 반론 / 한계 / 맥락 정보도 기존 item text 보강 재료로 사용 가능.
 - 보강한 사실은 **반드시 source 원문 또는 1차 트리에 존재** — 없는 내용 생성 X.
-- 기존 item 의 **핵심 주제와 role 의미는 유지**하되, source 에 근거가 있으면 **표현과 정보 조립은 적극 재작성**합니다.
-
-**금지**:
-- 양식 갯수 맞추기 위해 source 에 없는 내용 생성 X.
-- 기존 item 내용 쪼개거나 반복해서 가짜 instance 추가 X.
-- sample 의 단어 / 한자 / 영어 가져와 instance 생성 X.
-- source 근거 불충분하면 추가하지 않고 기존만 정제.
+- sample 의 단어 / 한자 / 영어 가져와 본문에 박기 X.
 
 ## 5. 자유도 한계
 
-- source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 → 정확히 그대로 (의역·단어 교체 X)
-- **조립 형태 / 연결어 / 술어 / 분할 위치 / segment 구성** → 양식 패턴에 맞춰 재작성 가능
-- source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 → 생성 X
-- 한자 / 영어 변환 X (출력 직전 최종 sanity check 참조)
+- source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 → 정확히 그대로 (의역 · 단어 교체 X).
+- **조립 형태 / 연결어 / 술어 / 분할 위치 / segment 구성** → 양식 패턴에 맞춰 재작성 가능.
+- source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 → 생성 X.
+- source 원문에 정확히 등장하지 않는 한자 / 일본어 / 영어 단어를 새로 만들지 않습니다. 양식 sample 의 한자 / 영어 / 고유어는 새 본문에 가져오지 않습니다.
 
-# 출력 형식 — id 최종 재번호
+# 출력 형식
+
+반드시 JSON 만 출력:
 
 ```json
 {
   "items": [
-    {"id": 0, "parent_id": null, "role": "...", "text": "<정제된 본문>"},
+    {"id": 0, "parent_id": null, "role": "...", "text": "..."},
     {"id": 1, "parent_id": 0, "role": "...", "text": "..."}
   ]
 }
 ```
 
-**id 재부여 규칙**:
-- 출력 직전, 모든 item 을 **트리 순서 (root → 자식 깊이 우선)** 대로 다시 번호.
-- id 는 0 부터 1 씩 증가. 빠짐없이.
-- parent_id 는 재부여된 새 id 기준으로 정확히 재계산.
-- 기존 1차 item 의 의미와 부모-자식 관계는 유지하되, 기존 id 값 자체는 유지 X.
-- 추가 item 도 같은 재번호 체계에 포함.
-- old_id / source_id / 메모 등 추가 필드 출력 X.
-
-**기타 규칙**:
-- **기존 item 의 role 은 변경하지 않습니다**. 추가 item 이 필요한 경우에도 양식 role 카탈로그에 있는 role 만 사용합니다.
-- item.text 에는 번호 / 글머리표 / 마커 / 강조 표시를 넣지 마세요 — 다음 단계 (2c) 가 자동 부착.
-- 들여쓰기 공백 / 탭 추가 금지 — 다음 단계가 처리.
-
-# 출력 직전 최종 sanity check — 한자 / 일본어 / 영어
-
-위 본문 작성을 마친 뒤 **JSON 출력 직전** 모든 item 의 text 를 다음 4 단계로 한 번 더 훑어 확인합니다. 본문 작성의 주된 목표가 아니라 마지막 점검입니다.
-
-## Step 1 — 한자 / 일본어 / 영어 단어 수집
-
-각 item 의 text 안에서 다음 패턴을 찾기:
-- **한자** (CJK Unified Ideographs U+4E00~U+9FFF): `業務`, `行政`, `情報`, `点检`, `信息`, `公司`, `通信`, `服務`, `提供`, `等`, `付き` (일본어 히라가나·가타카나 포함) 등.
-- **영어 단어**: `cloud`, `service`, `system` 등.
-
-## Step 2 — source 원문 그대로 매칭 검증
-
-수집한 각 단어를 **source 원문에서 같은 글자 그대로** 검색:
-- **정확 매칭만** (부분 매칭·유사 매칭 X).
-- 양식 sample 에 있어도 source 원문에 없으면 → **있는 것 아님**. 양식 단어 가져오기 X.
-- source 원문에 등장하면 → 보존 가능 (예: source 가 `(美)`, `(韓)`, `bottleneck` 직접 사용하면 그대로).
-
-## Step 3 — source 원문에 없으면 한글로 치환
-
-source 에 없는 한자 / 일본어 / 영어 단어는 한글로 치환. 대응 한글이 없으면 source 원문의 다른 한글 표현으로 paraphrase. 그래도 안 되면 그 단어 자체를 제거하고 자연스럽게 잇기.
-
-**자주 잘못 생성되는 한자 → 한글 치환 예** (참고용, source 검증 후 적용):
-- `業務` → `업무`, `行政` → `행정`, `情報` → `정보`, `信息` → `정보`, `公司` → `회사`, `通信` → `통신`
-- `服務` → `서비스`, `提供` → `제공`, `等` → `등`, `点检` → `점검`, `諮詢` → `자문`
-- 일본어 `付き` → `붙은` 또는 제거, `(美)` 가 source 에 없으면 `(미국)`
-
-**중요**: 한자가 한국어 한자어로 통용되더라도 (`業務` 같은 게 흔히 쓰여도) **source 에 한자 형태로 등장하지 않으면 무조건 한글**. 현대 한국 행정문서는 한글 위주.
-
-## Step 4 — 출력 직전 최종 스캔
-
-JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+4E00~U+9FFF) / 일본어 가나가 한 글자라도 남아있는지 확인:
-- 남아있고 source 원문에 그 글자가 정확히 등장 → 보존 OK.
-- 남아있는데 source 원문에 없음 → 다시 Step 3 으로 돌아가 치환.
-
-이 sanity check 를 거치지 않은 출력은 wrong. source 에 없는데 남은 한자가 있으면 batch 전체 실패로 처리됩니다.
-
-반드시 위 JSON 만 출력.
+- **입력 items 와 출력 items 는 1:1 대응** — 누락 / 추가 없이 같은 item 수 유지.
+- 각 item 의 `role` 과 `parent_id` 는 입력과 동일하게 유지. `text` 만 재작성.
+- `id` 는 임의의 정수 가능 — 코드가 0-based 로 재매김.
+- `text` 에 번호 / 글머리표 / 마커 / 강조 표시 X (다음 단계 2c 가 자동 부착).
+- 들여쓰기 공백 / 탭 X.
+- 다른 설명 포함 금지.
 """
 
 
 def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[dict]:
-    """2b-b: 1차 본문 트리를 받아 양식 sample 말투로 정제 + 보충 + variant 누락 추가.
+    """2b-b: 1차 본문 트리를 받아 양식 sample 정보 조립 방식 적용 + 누락 instance 보충.
 
-    2b-a (build_section_fill_prompt) 와 동일한 양식 정보 + **말투 가이드 (style_profiles)** 받음.
-    2b-b 만 말투 모방 책임 — 2b-a 는 말투 정보 안 받음.
+    build_section_fill_prompt 재사용 중단 (2b-a 입력의 template tree / variant 상세 /
+    pattern tree 상세 / broad source 등 2b-b 에 불필요한 블록 제외). polish 전용 user
+    content 사용.
+
+    user content 구성:
+      - 1차 본문 트리 JSON
+      - style_section (11.2 양식 정보 조립 방식)
+      - 대제목
+      - role 카탈로그 (description + sample, leading marker 제거)
+      - role 별 count 진단 (누락 복구 후보)
+      - 집중 source (재료 회수용)
 
     Args:
         items_1st: 2b-a (1차) 결과 트리 [{id, parent_id, role, text}, ...]
-        **fill_kwargs: build_section_fill_prompt 와 동일한 인자. style_profiles 가 들어있으면
-            polish user content 에 말투 가이드 박힘.
+        **fill_kwargs: build_section_fill_prompt 와 동일한 인자 (호환성). 그중
+            polish 에 필요한 것만 추출.
     """
     import json as _json
 
-    base_messages = build_section_fill_prompt(**fill_kwargs)
-
-    items_json = _json.dumps(
-        [{"id": it.get("id"), "parent_id": it.get("parent_id"),
-          "role": it.get("role"), "text": it.get("text", "")} for it in items_1st],
-        ensure_ascii=False, indent=2,
-    )
-
-    # 2b-b 책임: 양식 sample 의 말투/술어/분할 모방.
-    # style_profiles (11.2 결과) 가 있으면 role 별 말투 rule 박음.
+    # ─ 입력 추출 ─────────────────────────────────────────────────
+    chapter_title = fill_kwargs.get("chapter_title", "")
+    role_catalog = fill_kwargs.get("role_catalog") or {}
     style_profiles = fill_kwargs.get("style_profiles") or {}
     pattern = fill_kwargs.get("pattern") or {}
+    pdf_text = fill_kwargs.get("pdf_text") or ""
+    content_text = fill_kwargs.get("content_text") or ""
+    content_images = fill_kwargs.get("content_images") or []
+    marker_policy_1f = fill_kwargs.get("marker_policy_1f")
+
+    # ─ pattern 안 등장 role 수집 (catalog filter 용) ─────────────
     pattern_roles_local: set = set()
 
     def _collect(p, acc):
@@ -17422,12 +17310,19 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
                 _collect(ch, acc)
     _collect(pattern, pattern_roles_local)
 
+    # ─ 1차 트리 JSON ─────────────────────────────────────────────
+    items_json = _json.dumps(
+        [{"id": it.get("id"), "parent_id": it.get("parent_id"),
+          "role": it.get("role"), "text": it.get("text", "")} for it in items_1st],
+        ensure_ascii=False, indent=2,
+    )
+
+    # ─ style_section (11.2 결과) ─────────────────────────────────
     style_section = ""
     if style_profiles:
         _lines: list = []
         for role in sorted(pattern_roles_local):
             sp = style_profiles.get(role) or {}
-            # parse 실패 / missing cluster 는 skip (보수 처리)
             _status = sp.get("_parse_status")
             if _status not in (None, "ok"):
                 continue
@@ -17464,8 +17359,7 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
                 sub.append(f"- 정보 밀도: {ds}")
             if sca is True:
                 sub.append(
-                    "- 양식 sample 안에 짧은 case 관찰됨 — **단순 핑계 X**. "
-                    "**source 재료가 실제로 없을 때만** 짧은 출력 fallback. "
+                    "- 양식 sample 안에 짧은 case 관찰됨 — source 재료가 실제로 없을 때만 짧은 출력 fallback. "
                     "source 에 추가 재료 있으면 양식 정보 조립 방식으로 풍부하게 작성."
                 )
             if amb:
@@ -17478,38 +17372,109 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
 
         if _lines:
             style_section = (
-                "## role 별 양식 정보 조립 방식 (11.2 분석 — 새 본문에 적용)\n"
+                "## role 별 양식 정보 조립 방식 (11.2 분석 — 최종 본문에 적용)\n"
                 "각 role 의 1차 text 를 아래 양식 패턴 (문장 유형 / 정보 조각 개수 / 연결 방식 / 종결 방식 / 정보 밀도) 에 맞춰 재작성.\n"
-                "source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 은 보존 — 조립 형태·연결어·술어만 양식 패턴 적용.\n"
+                "source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 은 보존 — 조립 형태 · 연결어 · 술어만 양식 패턴 적용.\n"
                 + "\n".join(_lines)
                 + "\n\n"
             )
 
-    polish_user_prefix = (
-        "## 1차 본문 트리 (구조 초안)\n"
-        "아래 1차 트리는 2b-a 의 구조 초안. text 는 완성본이 아닙니다. "
-        "같은 source 와 양식 sample 을 다시 보고 양식의 정보 조립 방식에 맞춰 최종 본문을 작성하세요. "
-        "구조 (role / parent_id) 는 대체로 유지, text 는 적극 재작성.\n"
+    # ─ role catalog (description + sample, 1f marker leading 제거) ─
+    _role_markers_map: dict = {}
+    if marker_policy_1f and isinstance(marker_policy_1f, dict):
+        for _entry in (marker_policy_1f.get("roles") or []):
+            _rname = _entry.get("role", "")
+            if not _rname:
+                continue
+            _ms = []
+            for _ev in (_entry.get("evidence") or []):
+                _m = (_ev.get("detected_marker") or "").strip()
+                if _m and _m not in _ms:
+                    _ms.append(_m)
+            if _ms:
+                _role_markers_map[_rname] = sorted(set(_ms), key=len, reverse=True)
+
+    def _strip_leading_marker(text: str, role_name: str) -> str:
+        if not text or role_name not in _role_markers_map:
+            return text
+        _stripped = text.lstrip()
+        _lead_ws = text[:len(text) - len(_stripped)]
+        for _m in _role_markers_map[role_name]:
+            if _stripped.startswith(_m):
+                _rest = _stripped[len(_m):].lstrip(" \t")
+                return _lead_ws + _rest
+        return text
+
+    catalog_lines = []
+    for role_name, info in role_catalog.items():
+        if role_name not in pattern_roles_local:
+            continue
+        desc = info.get("description", "")
+        sample = info.get("sample", "")
+        if sample:
+            sample = _strip_leading_marker(sample, role_name)
+        sample_str = f'\n  예시: "{sample}"' if sample else ""
+        catalog_lines.append(f"- **{role_name}**: {desc}{sample_str}")
+    catalog_text = "\n".join(catalog_lines)
+
+    # ─ source 블록 (2b-a 와 같은 분기 — broad_source 만 제외) ──
+    has_pdf = bool(pdf_text and pdf_text.strip())
+    has_imgs = bool(content_images)
+    has_ct = bool(content_text and content_text.strip())
+
+    source_lines: list = []
+    if has_pdf:
+        source_lines.append("### 집중 자료 (2b-source 가 이 chapter 에 매핑한 영역)")
+        source_lines.append(f"```\n{pdf_text}\n```")
+    if has_imgs:
+        source_lines.append(
+            "(PDF 이미지가 아래 image_url 로 같이 제공됩니다. "
+            "양식 정보 조립 방식 적용 시 이미지의 사실 / 숫자 / 주체 / 시기 도 source 로 사용.)"
+        )
+    if has_ct:
+        if has_pdf or has_imgs:
+            source_lines.append(f"### 추가 지시사항\n{content_text}")
+        else:
+            source_lines.append(content_text)
+
+    if not source_lines:
+        source_block = "(source 없음)"
+    else:
+        source_block = "\n\n".join(source_lines)
+
+    # ─ user content 본문 ────────────────────────────────────────
+    user_text = (
+        f"## 1차 본문 트리 (구조 초안)\n"
+        f"아래 1차 트리는 2b-a 의 구조 초안. text 는 완성본이 아닙니다. "
+        f"같은 source 와 양식 sample 을 다시 보고 양식의 정보 조립 방식에 맞춰 최종 본문을 작성하세요. "
+        f"구조 (role / parent_id / variant) 는 유지, text 는 적극 재작성.\n"
         f"```json\n{items_json}\n```\n\n"
-        + style_section
-        + "---\n\n"
-        + "## 양식 정보 (2b-a 와 동일 — 참고)\n"
+        f"{style_section}"
+        f"## 양식 정보 (최종 본문 작성 기준 — segment 위치 / 연결 / 종결 적용)\n\n"
+        f"### 대제목\n"
+        f"**{chapter_title}**\n\n"
+        f"### role 카탈로그 (양식 sample — 정보 조립 방식 적용 기준)\n"
+        f"{catalog_text}\n\n"
+        f"## 소스 자료 (재료 회수 / 정보 보강용 — 2b-a 와 동일)\n"
+        f"{source_block}\n\n"
+        f"반드시 JSON 만 출력하세요.\n"
     )
 
-    base_user = base_messages[-1]
-    base_user_content = base_user.get("content", "") if isinstance(base_user, dict) else ""
-    if isinstance(base_user_content, list):
-        for part in base_user_content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                part["text"] = polish_user_prefix + part.get("text", "")
-                break
-        polished_user = {"role": "user", "content": base_user_content}
+    # ─ images 있으면 multipart, 없으면 string ─────────────────
+    if has_imgs:
+        user_parts: list = [{"type": "text", "text": user_text}]
+        for img_b64 in content_images:
+            user_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+            })
+        user_content: object = user_parts
     else:
-        polished_user = {"role": "user", "content": polish_user_prefix + base_user_content}
+        user_content = user_text
 
     return [
         {"role": "system", "content": SECTION_POLISH_PROMPT},
-        polished_user,
+        {"role": "user", "content": user_content},
     ]
 
 
