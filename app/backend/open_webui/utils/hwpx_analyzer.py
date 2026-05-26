@@ -12072,24 +12072,73 @@ def extract_per_chapter_pattern(
                 title_child_roles.append(role)
                 title_child_roles_seen.add(role)
 
+    # parent_role context에서 child cardinality 계산용 — 각 parent_role의 모든 instance idx 모음.
+    # title도 포함 (root role의 parent 역할).
+    parent_role_instances: dict[str, list[int]] = defaultdict(list)
+    for idx in [first_idx] + usable_indices:
+        p = para_by_idx.get(idx, {})
+        rname = p.get("role", "")
+        if rname:
+            parent_role_instances[rname].append(idx)
+
+    from collections import Counter as _Counter
+
+    def _compute_cardinality(role: str, parent_role: str | None) -> dict:
+        if not parent_role:
+            return {
+                "per_parent": "single",
+                "observed_counts": [],
+                "optional": False,
+                "suggested_count": 0,
+            }
+        parent_instances = parent_role_instances.get(parent_role, [])
+        observed_counts = [
+            len(sibling_groups.get((pi, role), []))
+            for pi in parent_instances
+        ]
+        has_multiple = any(c >= 2 for c in observed_counts)
+        has_zero = any(c == 0 for c in observed_counts)
+        non_zero = [c for c in observed_counts if c > 0]
+        suggested = (
+            _Counter(non_zero).most_common(1)[0][0] if non_zero else 0
+        )
+        return {
+            "per_parent": "multiple" if has_multiple else "single",
+            "observed_counts": observed_counts,
+            "optional": has_zero,
+            "suggested_count": suggested,
+        }
+
     # --- build pattern tree recursively ---
-    def _build_subtree(role: str, visited: set[str] | None = None) -> dict:
+    def _build_subtree(
+        role: str,
+        parent_role: str | None = None,
+        visited: set[str] | None = None,
+    ) -> dict:
         if visited is None:
             visited = set()
+        card = _compute_cardinality(role, parent_role)
         if role in visited:
-            return {"repeatable": role in repeatable_roles, "children": {}}
+            return {
+                "repeatable": role in repeatable_roles,
+                **card,
+                "children": {},
+            }
         visited = visited | {role}
         children: dict[str, dict] = {}
         for child_role in sorted(role_children.get(role, [])):
-            children[child_role] = _build_subtree(child_role, visited)
+            children[child_role] = _build_subtree(
+                child_role, parent_role=role, visited=visited
+            )
         return {
             "repeatable": role in repeatable_roles,
+            **card,
             "children": children,
         }
 
     local_pattern: dict[str, dict] = {}
     for root_role in title_child_roles:
-        local_pattern[root_role] = _build_subtree(root_role)
+        local_pattern[root_role] = _build_subtree(root_role, parent_role=title_role)
 
     # --- fallback: if no root roles found via parent_idx, use flat role set ---
     flat_count_fallback = False
@@ -12101,8 +12150,13 @@ def extract_per_chapter_pattern(
             if role and role != title_role:
                 role_counts[role] += 1
         for role, count in sorted(role_counts.items()):
+            # title 1 instance 기준 count — parent context 없이 flat이라 [count]
             local_pattern[role] = {
                 "repeatable": count >= 2,
+                "per_parent": "multiple" if count >= 2 else "single",
+                "observed_counts": [count],
+                "optional": False,
+                "suggested_count": count,
                 "children": {},
             }
             if count >= 2:
