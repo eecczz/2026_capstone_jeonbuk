@@ -6889,60 +6889,95 @@ def infer_semantic_tag(
 # Stage 11.2: Style Profile Observation (관측용)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 문체 분석 전문가입니다.
+STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 **문체·문장 조립 방식** 분석 전문가입니다.
+
+각 cluster 의 양식 paragraph sample 을 받아 **새 source 본문을 어떻게 조립해야 하는지** 알려주는 "양식 설명서" 를 작성합니다. 단순 말투 묘사가 아니라, **정보 조각 개수 / 연결 방식 / 종결 방식 / 정보 밀도** 같이 다음 단계 (2b-b) 가 새 본문 생성에 직접 활용할 수 있는 패턴을 뽑습니다.
 
 # ⚠️ 응답 언어 — 한국어 전용
-- rule 문장 (자체 표현) 은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
-- 양식 sample 인용은 그대로 — 자체 표현과 인용 구분.
-
-아래에 여러 role_cluster의 양식 paragraph sample이 주어집니다.
-각 cluster의 말투/문장 특징 패턴을 분석해 자연어 rule로 추출하세요.
+- 자체 표현 (관찰 문장, rule) 은 반드시 한국어. 한자 / 일본어 가나 / 외국어 단어 사용 금지.
+- 양식 sample 원문 인용은 그대로 (인용임을 명시).
+- **JSON key 와 schema enum 값** (`high`, `medium`, `low`, `unknown`, `null`, `true`, `false`) **은 지정된 영어 표기 그대로 사용**. 그 외 자체 설명 문장만 한국어. (예: `density_signal: "high"` ✓ / `density_signal: "높음"` ✗)
 
 ## 핵심 원칙
 
-1. **제공된 sample 텍스트에서 직접 관찰 가능한 패턴만**. 추측 X, 일반 행정문서 규칙 X.
-2. **각 cluster만의 고유 특징**에 집중. 모든 role 공통점 X.
-3. **마커/번호/서식 자체는 다루지 X** — 별 stage가 처리. 여기는 **말투, 문장 구조, 어휘, 어미, 어조** 등 content 패턴만.
-4. **문장 글자 수·길이 수치는 직접 묘사 X** — 양식 sample 전부 보고 있으므로 굳이 수치 적지 마세요. 단 "짧고 명사구 종결" 같이 길이가 만드는 패턴은 OK.
-5. **rule 문장 안에 반드시 다음 3가지 포함**:
-   - **적용 조건** (언제 적용)
-   - **비적용 조건** (필요 시; 예외 case가 있으면 명시)
-   - **근거 sample id** `[s2, s5, s8]` 형식 inline 인용 (필수)
-6. **각 cluster의 sample_id는 해당 cluster 안에서만 유효**. 다른 cluster sample_id 인용하지 마세요.
+1. **sample 텍스트에서 직접 관찰 가능한 패턴만**. 추측 X, 일반 행정문서 규칙 X, 양식 외 지식 X.
+2. **각 cluster 만의 고유 특징**. 모든 role 공통 X.
+3. **sample 은 본문만 제공됩니다** (마커 제거된 상태). **문장 구조 / 연결 방식 / 종결 방식 / 정보 밀도** 만 분석하세요. 마커 / 번호 / 글머리표 / 들여쓰기 / 서식은 별 stage (2c) 가 처리.
+4. **자체 표현은 기능 단위 일반화** — 양식의 고유 단어 / 정책명 / 기관명을 자체 rule 표현에 박지 X. 새 도메인에 적용 가능한 형태로.
+5. **모든 관찰에 근거 sample id 인용 필수** (`[s0, s2, s5]` 형식). cluster 안 sample id 만 유효.
+6. **확신 없으면 unknown / null / 빈 list 허용**. 억지로 high/low 찍기 X.
 
-## 좋은 rule 예시
+# 출력 schema — 8 field
 
-> "해당 cluster 본문은 명사구 또는 '~한다' / '~함' 종결로 작성. 서술형 '~다' 는 사용 X. 근거: [s0, s2, s5]"
-
-(※ 11.2 는 **문체 / 종결 / 분할 패턴만** 분석. 마커 / 번호 / 서식은 별 stage 가 처리 — rule 에 마커 언급 X.)
-
-## 나쁜 rule 예시
-
-> "괄호 안 핵심어를 강조한다." ← 적용/비적용 조건 모호 + 근거 없음
-> "공식적이고 간결한 톤." ← 모든 role에 해당하는 무의미 진술
-
-## rule이 너무 길어지거나 case별 분포가 다르면
-
-rule을 split (`case A는 X`, `case B는 Y`) 으로 분리.
-
-## 출력 형식
-
-반드시 아래 JSON만 출력하세요. **profiles 배열에 input cluster 수만큼 entry**.
-
-핵심 rule 3개 이하 — 가장 중요한 말투 패턴만 추출. 자유 자연어 / 추가 관찰 / 부수 분포 출력 금지.
+profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field + 자유 rules:
 
 ```json
 {
   "profiles": [
     {
       "role": "role_cluster_N",
-      "content_style_rules_for_generation": ["rule 1", "rule 2", "rule 3"]
+      "style_family_hint": "<open string — 예: 한 줄 정책과제 제목형 / 설명문형 / 보충문형 / 단어형 / 혼합형 등 자유 표현>",
+      "unit_count_observed": {"min": 1, "median": 2, "max": 3},
+      "join_markers_observed": ["쉼표", "및", "등", "로", "를 위한"],
+      "ending_pattern_observed": ["명사형 동작어 (강화/확대/개선/추진)"],
+      "density_signal": "high",
+      "scarcity_allowance_observed": false,
+      "evidence_sample_ids": ["s0", "s2", "s5"],
+      "ambiguity_flags": [],
+      "content_style_rules_for_generation": ["자유서술 rule 0~3 개"]
     }
   ]
 }
 ```
 
-각 cluster 의 rules 는 0~3 개. sample 부족 등으로 rule 없으면 빈 list. 다른 필드 추가 금지.
+## 각 field 의미
+
+- **style_family_hint** (string): cluster 문장 유형을 한 줄 자유 자연어. 예: `한 줄 정책과제 제목형`, `설명문형 (장문)`, `보충문형 (짧은 보충구)`, `단어형 (명사구만)`, `혼합형`. **닫힌 enum 아님** — 양식 sample 관찰 그대로 자유롭게.
+- **unit_count_observed** ({min, median, max}: int): 한 paragraph 안 **정보 조각 개수** 분포. 정보 조각 = 쉼표·및·등·로·를 위한 으로 구분되는 의미 단위 (사실 / 수단 / 결과 / 대상 / 시기 / 수치 등).
+- **join_markers_observed** (list[string]): 정보 조각을 잇는 패턴. 예: `["쉼표", "및", "등", "로", "를 위한", "에 대한", "괄호 부제", "따옴표"]`. 양식 sample 관찰된 것만. 없으면 `[]`.
+- **ending_pattern_observed** (list[string]): 문장 종결 패턴. 예: `["명사형 동작어 (강화/확대/개선/추진)"]`, `["~함 종결"]`, `["~한다 평서형"]`, `["~예정"]`, `["~완료"]`. 없으면 `[]`.
+- **density_signal** (string: `"high"` | `"medium"` | `"low"` | `"unknown"`): 정보 밀도.
+  - high: 정보 조각 ≥ 3 개가 일반적, **또는** 정보 조각 2~3 개 안에 사실 · 수단 · 대상 · 결과 · 수치 · 시기 등 다양한 기능 단위를 압축해 담는 패턴 (한 줄 정책 제목 같은 압축형 포함)
+  - medium: 정보 조각 2~3 개 안팎 + 기능 단위가 단순 (예: 명칭만 / 수치만 / 대상만)
+  - low: 정보 조각 1 개 또는 단순 명사구만
+  - **unknown**: sample 부족 / 혼재 / 판단 불가 — **억지 high/low 찍기 X**
+- **scarcity_allowance_observed** (boolean): **양식 sample 안에 짧은 case 가 관찰되는가** — 그것뿐. **"새 본문에서 짧아도 OK" 라는 정책 신호가 아님**. 2b-b 는 이 값을 받더라도 **source 재료가 실제로 없을 때만** fallback 으로 사용. 단순 "양식이 짧으니 새 본문도 짧아도 됨" 핑계로 쓰면 안 됨.
+- **evidence_sample_ids** (list[string], 필수): 위 관찰들의 근거 sample id. 최소 1개. 예: `["s0", "s2", "s5"]`.
+- **ambiguity_flags** (list[string]): cluster 안에 패턴 혼재 시 표시. 예: `["family 혼재: s0~s3 제목형 / s4~s7 설명문형"]`, `["종결 패턴 혼재"]`, `["sample 1개 — confidence 낮음"]`. 없으면 `[]`.
+- **content_style_rules_for_generation** (list[string], 0~3 개): 자유서술 rule. 위 schema 외 추가 관찰. 적용 조건 + 비적용 조건 + 근거 sample id `[sN, sN]` 인용. 비어 있어도 OK.
+
+## 좋은 예시
+
+```json
+{
+  "role": "role_cluster_19",
+  "style_family_hint": "한 줄 정책과제 제목형",
+  "unit_count_observed": {"min": 1, "median": 2, "max": 3},
+  "join_markers_observed": ["쉼표", "및", "등", "로", "를 위한"],
+  "ending_pattern_observed": ["명사형 동작어 (강화/확대/개선/추진/제고/시행)"],
+  "density_signal": "high",
+  "scarcity_allowance_observed": false,
+  "evidence_sample_ids": ["s0", "s1", "s2", "s5"],
+  "ambiguity_flags": [],
+  "content_style_rules_for_generation": [
+    "본문은 명사구 또는 명사형 동작어 종결. 서술형 '~다' 사용 X. 근거: [s0, s2, s5]"
+  ]
+}
+```
+
+## 나쁜 예시 (피하세요)
+
+- `"style_family_hint": "특수 기호로 시작"` ← 서식 — 별 stage 책임. 본문 생김새가 아님.
+- `"ending_pattern_observed": ["짧다", "공식적이고 간결"]` ← 일반화된 감상. 종결 형태 아님.
+- `"density_signal": "high"` + `"evidence_sample_ids": []` ← 근거 없음. wrong.
+- 모든 cluster 에 똑같이 `["공식적이고 간결한 톤"]` ← role 별 고유 X.
+
+## 응답 양식
+
+- profiles 배열 길이 = input cluster 수
+- schema field 빠짐없이 출력 (없으면 `null` / 빈 list / `"unknown"`)
+- 추가 field 박지 X. 부수 관찰은 content_style_rules_for_generation 안에만.
+- 반드시 JSON 만 출력.
 """
 
 
@@ -6951,6 +6986,7 @@ def _collect_style_samples(
     idx_full_texts: dict,
     semantic_tags: list[dict] | None = None,
     sample_text_char_budget: int = 80000,
+    marker_policies: dict | None = None,
 ) -> list[dict]:
     """
     role_cluster별 style analysis용 샘플을 수집합니다.
@@ -6961,6 +6997,10 @@ def _collect_style_samples(
     - text 합이 sample_text_char_budget(80K) 초과 시 stratified fallback:
         forced (shortest + longest + semantic_tag별 1) + 나머지 stratum 중간점
     - min_samples 없음 — cluster paragraph 1개라도 분석. 0인 경우만 skip.
+
+    marker_policies (1f) 가 주어지면 sample text 에서 줄 시작 marker 만 제거 — 11.2 는
+    본문 패턴만 분석. marker / 번호 / 형식은 2c 책임이므로 input 에서 분리.
+    본문 중간 기호는 보존.
 
     raw_measurements는 code 결정적 추출 — AI input 아닌 downstream용.
 
@@ -6973,6 +7013,11 @@ def _collect_style_samples(
     """
     import re
     from collections import defaultdict, Counter
+
+    if marker_policies:
+        idx_full_texts = build_marker_stripped_idx_texts(
+            paragraphs, idx_full_texts, marker_policies
+        )
 
     role_entries = defaultdict(list)
     role_meta = {}
@@ -7138,8 +7183,7 @@ def build_style_profile_prompt(
         tag_dist = (entry.get("raw_measurements") or {}).get("semantic_tag_distribution", {})
 
         header = f"## {role}"
-        if marker:
-            header += f"  (양식 marker: {marker})"
+        # marker 인용 제거 — 11.2 는 본문 패턴만 분석. marker / 번호 / 형식은 2c 책임.
         header += f"  — level {level}"
         if desc:
             header += f"\n설명: {desc}"
@@ -7176,38 +7220,38 @@ def parse_style_profile_from_llm(
     llm_response: str,
     cluster_entries: list[dict],
 ) -> dict:
-    """
-    batch AI 응답에서 cluster별 style profile 파싱.
+    """batch AI 응답에서 cluster별 style profile 파싱 (8 field schema + 보조 rules).
 
-    cluster_entries를 base truth로 사용 — AI가 cluster 빠뜨려도 빈 entry 보존.
+    cluster_entries 를 base truth — AI 가 빠뜨려도 빈 entry 보존.
 
     Returns:
-        {
-            cluster_id: {
-                "role": str,
-                "content_style_rules_for_generation": list[str],
-                "additional_observations": str,
-                "_parse_status": "ok" | "parse_failed" | "schema_violation",
-                "_evidence_missing_rule_count": int,
-            },
-            ...
-        }
+        {cluster_id: {role, style_family_hint, unit_count_observed, join_markers_observed,
+                      ending_pattern_observed, density_signal, scarcity_allowance_observed,
+                      evidence_sample_ids, ambiguity_flags, content_style_rules_for_generation,
+                      _parse_status, _raw_response_preview?}}
     """
     import re as _re
 
     expected_roles = [e.get("role", "") for e in cluster_entries if e.get("role")]
+    _allowed_density = {"high", "medium", "low", "unknown"}
 
     def _empty_for_role(role: str, status: str, raw_preview: str = "") -> dict:
         return {
             "role": role,
+            "style_family_hint": "",
+            "unit_count_observed": None,
+            "join_markers_observed": [],
+            "ending_pattern_observed": [],
+            "density_signal": "unknown",
+            "scarcity_allowance_observed": None,
+            "evidence_sample_ids": [],
+            "ambiguity_flags": [],
             "content_style_rules_for_generation": [],
-            "additional_observations": "",
             "_parse_status": status,
-            "_evidence_missing_rule_count": 0,
             "_raw_response_preview": raw_preview,
         }
 
-    text = llm_response.strip()
+    text = (llm_response or "").strip()
     m = _re.search(r"```(?:json)?\s*\n?(.*?)```", text, _re.DOTALL)
     if m:
         text = m.group(1).strip()
@@ -7216,36 +7260,79 @@ def parse_style_profile_from_llm(
         data = json.loads(text)
     except json.JSONDecodeError as e:
         log.warning(f"[STYLE-PROFILE batch] JSON 파싱 실패: {e}")
-        return {r: _empty_for_role(r, "parse_failed", llm_response[:1000]) for r in expected_roles}
+        return {r: _empty_for_role(r, "parse_failed", (llm_response or "")[:1000]) for r in expected_roles}
 
     if not isinstance(data, dict):
-        return {r: _empty_for_role(r, "schema_violation", llm_response[:1000]) for r in expected_roles}
+        return {r: _empty_for_role(r, "schema_violation", (llm_response or "")[:1000]) for r in expected_roles}
 
     ai_profiles = data.get("profiles") or data.get("data") or []
     if not isinstance(ai_profiles, list):
-        return {r: _empty_for_role(r, "schema_violation", llm_response[:1000]) for r in expected_roles}
+        return {r: _empty_for_role(r, "schema_violation", (llm_response or "")[:1000]) for r in expected_roles}
 
-    _evidence_re = _re.compile(r"\[s\d+(?:\s*,\s*s\d+)*\]")
+    def _to_int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _list_of_str(v) -> list:
+        if not isinstance(v, list):
+            return []
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    def _parse_scarcity(v):
+        if isinstance(v, bool):
+            return v
+        if v is None:
+            return None
+        s = str(v).strip().lower()
+        if s == "true":
+            return True
+        if s == "false":
+            return False
+        return None
 
     result: dict = {}
-    # AI 출력 우선 매핑
     for ai_p in ai_profiles:
         if not isinstance(ai_p, dict):
             continue
         role = ai_p.get("role", "") or ""
         if not role or role not in expected_roles:
             continue
-        rules_raw = ai_p.get("content_style_rules_for_generation", []) or []
-        rules = [str(r).strip() for r in rules_raw if str(r).strip()][:3]
+
+        unit_count = ai_p.get("unit_count_observed")
+        if isinstance(unit_count, dict):
+            uc = {
+                "min": _to_int(unit_count.get("min")),
+                "median": _to_int(unit_count.get("median")),
+                "max": _to_int(unit_count.get("max")),
+            }
+            if uc["min"] is None and uc["median"] is None and uc["max"] is None:
+                uc = None
+        else:
+            uc = None
+
+        density = str(ai_p.get("density_signal", "unknown") or "unknown").strip().lower()
+        if density not in _allowed_density:
+            density = "unknown"
+
+        rules = _list_of_str(ai_p.get("content_style_rules_for_generation"))[:3]
+
         result[role] = {
             "role": role,
+            "style_family_hint": str(ai_p.get("style_family_hint", "") or "").strip(),
+            "unit_count_observed": uc,
+            "join_markers_observed": _list_of_str(ai_p.get("join_markers_observed")),
+            "ending_pattern_observed": _list_of_str(ai_p.get("ending_pattern_observed")),
+            "density_signal": density,
+            "scarcity_allowance_observed": _parse_scarcity(ai_p.get("scarcity_allowance_observed")),
+            "evidence_sample_ids": _list_of_str(ai_p.get("evidence_sample_ids")),
+            "ambiguity_flags": _list_of_str(ai_p.get("ambiguity_flags")),
             "content_style_rules_for_generation": rules,
-            "additional_observations": "",
             "_parse_status": "ok",
-            "_evidence_missing_rule_count": 0,
         }
 
-    # AI가 빠뜨린 cluster 보전
+    # AI 가 빠뜨린 cluster 보전
     for r in expected_roles:
         if r not in result:
             result[r] = _empty_for_role(r, "missing_in_ai_response")
@@ -9110,6 +9197,172 @@ def extract_marker_policies(
                     )
 
     return result
+
+
+def strip_leading_marker(text: str, role_markers: list[str]) -> tuple[str, str | None]:
+    """줄 맨 앞 marker 만 제거. 본문 중간 기호는 절대 건드리지 X.
+
+    매칭 우선순위: 긴 marker 먼저 (star_depth 의 `***` `**` `*` 안전 처리).
+    leading whitespace 는 유지. marker 직후 공백 1개 이상은 같이 제거.
+
+    Args:
+        text: 원본 paragraph text
+        role_markers: 1f marker_policy_1f evidence 기반 unique markers list
+
+    Returns:
+        (stripped_text, detected_marker_or_None)
+        - 매칭 안 되면 (원본 text, None)
+        - 매칭되면 (marker + 뒤 공백 제거된 text, 검출된 marker 문자열)
+    """
+    if not text or not role_markers:
+        return text, None
+
+    stripped_text = text.lstrip()
+    if not stripped_text:
+        return text, None
+    leading_ws = text[: len(text) - len(stripped_text)]
+
+    for m in sorted((m for m in role_markers if m), key=len, reverse=True):
+        if stripped_text.startswith(m):
+            remaining = stripped_text[len(m):]
+            return leading_ws + remaining.lstrip(), m
+
+    return text, None
+
+
+def build_marker_stripped_idx_texts(
+    paragraphs: list[dict],
+    idx_full_texts: dict,
+    marker_policies: dict,
+) -> dict:
+    """role 별 1f marker_policy 활용해 idx_full_texts 의 줄 시작 marker 만 제거.
+
+    본문 중간 기호 (예: `발굴-구매-사후관리` 의 `-`) 는 보존.
+    no_marker / markers 빈 role 은 원본 그대로.
+
+    Args:
+        paragraphs: structure.paragraphs (role + idx)
+        idx_full_texts: idx → raw text
+        marker_policies: _combine_marker_policy_1a_and_1f 결과 — {role: {markers, policy_type, ...}}
+
+    Returns:
+        idx → stripped text (str key 표준)
+    """
+    stripped: dict = {}
+    stripped_count = 0
+    unchanged_count = 0
+
+    for p in paragraphs:
+        idx = p.get("idx")
+        if idx is None:
+            continue
+        idx_key = str(idx)
+        raw = idx_full_texts.get(idx_key)
+        if raw is None:
+            raw = idx_full_texts.get(idx, "")
+        if not raw:
+            continue
+
+        role = p.get("role", "")
+        policy = (marker_policies or {}).get(role) or {}
+        markers = policy.get("markers") or []
+        policy_type = policy.get("policy_type", "")
+
+        if policy_type == "no_marker" or not markers:
+            stripped[idx_key] = raw
+            unchanged_count += 1
+            continue
+
+        new_text, detected = strip_leading_marker(raw, markers)
+        stripped[idx_key] = new_text
+        if detected:
+            stripped_count += 1
+        else:
+            unchanged_count += 1
+
+    log.info(
+        f"[marker-strip] paragraphs={len(paragraphs)}, "
+        f"stripped={stripped_count}, unchanged={unchanged_count}"
+    )
+    return stripped
+
+
+def extract_role_markers_from_1f(marker_policy_1f: dict | None) -> dict:
+    """1f marker_policy_1f 결과에서 role -> markers list 추출 (stripping 용).
+
+    1a fallback 없이 1f evidence 의 detected_marker 만 모음. 1f 가 explicit_marker_detected
+    가 아닌 role 은 markers=[] 로 두어 stripping 안 일어남.
+
+    Returns:
+        {role: {"markers": [str, ...], "policy_type": str}}
+    """
+    if not marker_policy_1f:
+        return {}
+    result: dict = {}
+    for entry in marker_policy_1f.get("roles", []) or []:
+        role = entry.get("role", "")
+        if not role:
+            continue
+        policy_type = entry.get("policy_type", "")
+        evidence = entry.get("evidence", []) or []
+        # 순서 보존 dedup
+        seen: set = set()
+        markers: list = []
+        for e in evidence:
+            m = e.get("detected_marker") or ""
+            if m and m not in seen:
+                seen.add(m)
+                markers.append(m)
+        result[role] = {
+            "markers": markers,
+            "policy_type": policy_type,
+        }
+    return result
+
+
+def strip_role_catalog_markers(
+    role_catalog: dict,
+    marker_policies: dict | None,
+) -> dict:
+    """role_catalog 의 sample text 에서 줄 시작 marker 만 제거. 본문 중간 기호 보존.
+
+    marker_policies: extract_role_markers_from_1f 결과 또는 _combine_marker_policy_1a_and_1f
+        결과 — 둘 다 {role: {markers, policy_type, ...}} 구조라 동일 처리.
+    role_catalog 자체는 mutate X — 새 dict 반환.
+    """
+    if not role_catalog or not marker_policies:
+        return role_catalog
+
+    new_catalog: dict = {}
+    stripped_count = 0
+    unchanged_count = 0
+
+    for role_name, info in role_catalog.items():
+        policy = (marker_policies or {}).get(role_name) or {}
+        markers = policy.get("markers") or []
+        policy_type = policy.get("policy_type", "")
+        sample = (info or {}).get("sample", "")
+
+        if not sample or policy_type == "no_marker" or not markers:
+            new_catalog[role_name] = info
+            unchanged_count += 1
+            continue
+
+        new_sample, detected = strip_leading_marker(sample, markers)
+        if detected:
+            new_info = dict(info)
+            new_info["sample"] = new_sample
+            new_catalog[role_name] = new_info
+            stripped_count += 1
+        else:
+            new_catalog[role_name] = info
+            unchanged_count += 1
+
+    log.info(
+        f"[role_catalog-strip] roles={len(role_catalog)}, "
+        f"stripped={stripped_count}, unchanged={unchanged_count}"
+    )
+    return new_catalog
 
 
 def analyze_marker_in_text(
@@ -16177,6 +16430,7 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 - 잘못된 예: `(부지계약) 사업 착공` (대상/시기 누락)
 - 올바른 예: `(부지계약) 새만금산단 (2 공구) 용지 계약 체결` + 자식에 `(시기) '26 년 상반기` (정보 분산 보존)
 - 단, 양식 말투나 종결어미로 다듬는 건 2b-b 책임 — 정보 손실만 안 되게.
+- **길이 hint (예: `짧은 한 줄 (20~40자)`) 와 source 재료 보존이 충돌하면 source 재료 보존이 우선**. role description 의 길이 / text_type 표기는 양식 sample 평균 참고용 — hard constraint X. 양식 sample 길이에 맞추려고 source 의 대상/시기/규모/수단/결과/수치 재료를 버리기 X. 길이가 약간 늘어나도 OK — 양식 말투 / 종결어미 다듬기는 2b-b 가 처리합니다.
 
 ## 출력 직전 자체 점검 (반드시)
 
@@ -16227,21 +16481,26 @@ JSON 출력 직전, 모든 item 의 text 를 다시 훑어서:
 
 ## source 내용 재구성 (양식 구조 우선)
 
-source는 양식과 다른 도메인일 가능성이 큽니다. source의 자연 단위 갯수와
-양식의 instance 갯수가 일치하지 않을 수 있어요.
+source 는 양식과 다른 도메인일 가능성이 큽니다. source 의 자연 단위 갯수와 양식 instance 갯수가 일치하지 않을 수 있어요.
 
-**원칙: 양식 instance 갯수가 우선. source 자연 갯수에 매몰되지 마세요.**
+**원칙: 양식 instance 갯수는 기본 target_count. source 분량에 따라 조정 가능 — 단 아래 hard 제약은 항상 지킴.**
 
-- source가 7개 항목, 양식 instance가 3개 → source를 양식 3개 instance에
-  나눠 담도록 묶어 재구성
-- source가 2개 항목, 양식 instance가 4개 → source 내용을 양식 4개 자리에
-  맞춰 분할 (단 양식 max 초과 X)
-- source 자연 갯수가 양식 갯수와 달라도 양식 갯수에 맞춰 재배치
+- 기본: 양식 관찰 갯수 평균 (반올림) 을 target_count 로 시작.
+- source 에 독립 재료가 **부족** → target 보다 줄일 수 있음 (단 `필수(최소 1개)` 면 최소 1개, `min` 미만 X).
+- source 에 독립 재료가 **충분** + 해당 role 이 `여러 개 가능` 으로 반복 가능 → target 보다 늘릴 수 있음 (단 `max 초과 X`).
+- **항상 지키는 hard 제약**: `정확히 1개/부모`, `min/max`, `필수/선택`, `형제 배타 (variant)` — 이건 source 분량과 무관하게 hard.
+
+case 예시:
+- source 7 항목, 양식 target=3 → source 를 3 개 묶음으로 재구성.
+- source 2 항목, 양식 target=4, role `여러 개 가능` → source 재료가 4 개로 분리되면 4 개, 안 되면 줄여 (단 min 유지).
+- source 5 항목, 양식 target=3, 양식 max=5, role `여러 개 가능` → 5 개로 늘릴 수 있음.
+- source 1 항목, 양식 `정확히 1개/부모` → 1 개 그대로.
 
 **판단 순서**:
-1. 양식 role의 instance 갯수 결정 (min~max 사이에서)
-2. source의 관련 내용을 그 갯수만큼 묶거나 나눠서 각 instance에 배치
-3. **source 갯수에 맞춰 양식 갯수(min~max)를 어기는 것 금지**
+1. 양식 target_count 결정 (min~max 평균 반올림).
+2. source 재료 분량 평가 (독립 단위로 분리되는 자료 갯수).
+3. target 과 source 분량 조합 → instance 갯수 조정 (min / max / 정확히 1개/부모 / 형제 배타는 hard).
+4. source 재료를 instance 들에 묶거나 나눠 배치.
 
 ## ⚠️ chapter title 답습 금지 — 트리 단계 의미 분리
 
@@ -16257,7 +16516,7 @@ chapter title을 그대로 복제하지 마세요. chapter title은 양식 전�
 - sample 이 chapter title 자체가 아니라 chapter 안의 **별도 측면** (구체적 성과, 세부 전략, sub-과제, intro 요약 등) 을 보여주면 — 그 **위치 / 깊이** 를 트리 구조로 반영.
 - chapter title 보다 한 단계 좁고 구체적인 sub-주제로 작성.
 - **양식 sample 의 단어 / 문체 / 길이 모방 X — 다음 단계 (2b-b) 가 처리**. 당신은 소스 내용 정확히 추출만.
-- **marker 는 본문에 넣지 마세요** — 다음 단계 (형식 입히기) 가 자동 부착.
+- **item.text 에는 번호 / 글머리표 / 마커 / 강조 표시를 넣지 마세요** — 다음 단계 (2c) 가 자동 부착.
 
 이 규칙은 트리 모든 단계에 동일: 부모→자식으로 내려갈수록 더 구체적 정보로
 좁혀져야 하며, 같은 정보가 부모와 자식에 중복되면 안 됩니다.
@@ -16308,7 +16567,7 @@ section_header
 - 양식 sample 이 명사구로 끝나든 서술문이든 → 신경 쓰지 마세요. 정보 정확히 적기만.
 - 양식 sample 의 분할 패턴 (괄호 부제 / 키워드 위치) → 모방 X. 2b-b 가 처리.
 
-다음 단계 (2b-b) 가 1차 본문을 받아 양식 sample 말투/형식으로 정제합니다. 2b-a 는 raw 정보만.
+다음 단계 (2b-b) 가 1차 구조 초안을 바탕으로 source 와 양식의 문장 조립 방식을 다시 보고 **최종 본문**을 작성합니다. 2b-a 는 구조 (role / parent_id / 형제 배타 / 개수) 와 raw 정보 배치에 집중.
 
 ## 출력 형식
 
@@ -16697,7 +16956,7 @@ def build_section_fill_prompt(
             "1. **cluster 종류**: 위 트리에 등장한 cluster 만 사용. 새 cluster 추가 금지.\n"
             "2. **부모-자식 관계**: 위 트리에서 cluster A 가 cluster B 의 자식이면 새 본문도 동일 관계로 parent_id 부여. 트리에서 자식인 cluster 를 형제로 평탄 배치 X.\n"
             "3. **반복 가능성**: 위 트리에서 cluster X 가 여러 번 등장하면 새 본문에도 **여러 번 등장 가능** (source 자료 분량에 따라). 1번만 등장하면 새 본문도 보통 1번.\n"
-            "4. **instance 수는 source 가 결정**: 양식이 □ 3번이라고 무조건 새 본문 □ 3번 X. source 에 □ 에 해당하는 독립 자료가 3개 있으면 3번, 1개 있으면 1번, 5개 있으면 5번 (양식 cluster 가 반복 가능한 경우).\n"
+            "4. **instance 수**: 양식 target_count (관찰 평균) 가 기본. source 독립 재료 분량에 따라 조정 — 부족하면 줄임 (단 min 유지), 충분 + role `여러 개 가능` 시 늘림 (단 max 초과 X). `정확히 1개/부모` 인 cluster 는 그대로 1 개 유지.\n"
             "5. **양식 흐름 존중**: 양식의 자식 그룹 순서 (□ → ㅇ → □ → ➊ → □ 등) 가 자연스러우면 따르되, source 자료 순서가 더 합리적이면 source 따라가도 OK.\n"
             "6. **너무 짧게 끝내지 X**: source 에 활용 가능한 자료가 양식 분포 수준으로 있다면 양식 분포에 맞춰 본문 생성. source 충분한데 cluster 별 1번씩만 만들고 끝내지 X.\n\n"
         )
@@ -16939,56 +17198,24 @@ def parse_section_fill_from_llm(llm_response: str) -> list[dict]:
 #
 
 
-SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문 다듬기 전문가입니다.
+SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작성자**입니다.
 
-1차로 작성된 본문 트리 (스켈레톤) 를 받아, **양식 sample 의 말투 / 분할 / 술어 종결 / 본문 풍부함** 으로 정제합니다. **기존 item 의 문체·술어·분할 정제** 가 주된 책임. instance 추가는 예외적 복구 모드에서만.
+2b-a 가 만든 1차 트리는 **구조 초안**이고 text 는 완성본이 아닙니다. 당신은 같은 source 와 양식 sample 을 다시 보고 양식의 **정보 조립 방식** (정보 조각 개수 / 연결 방식 / 종결 방식 / 정보 밀도) 에 맞춰 **최종 본문**을 작성합니다.
 
-# ⚠️ 절대 규칙 1 — 한자 / 일본어 / 영어 자체 점검 (출력 직전 4 단계 강제)
-
-2b-b 의 **가장 중요한 책임은 한자 검증·치환**입니다. 이전 단계 (2b-a) 가 한자 / 일본어 / 영어를 자체 생성한 경우 **2b-b 가 반드시 한글로 되돌립니다**.
-
-JSON 출력 직전, 모든 item 의 text 를 4 단계로 검증·치환합니다:
-
-## Step 1 — 한자 / 일본어 / 영어 단어 수집
-
-각 item 의 text 안에서 다음 패턴을 모두 찾아 list 로 만들기:
-- **한자** (CJK Unified Ideographs U+4E00~U+9FFF): `業務`, `行政`, `情報`, `点检`, `信息`, `公司`, `通信`, `服務`, `提供`, `等`, `付き` (일본어 히라가나·가타카나도 포함) 등.
-- **영어 단어**: `cloud`, `service`, `system` 등.
-
-## Step 2 — source 원문 그대로 매칭 검증
-
-수집한 각 단어를 **source 원문에서 같은 글자 그대로** 검색:
-- **정확 매칭만** (부분 매칭·유사 매칭 X).
-- 양식 sample 에 있어도 source 원문에 없으면 → **있는 것 아님**. 양식 단어 가져오기 절대 X.
-- source 원문에 등장하면 → 보존 가능 (예: source 가 `(美)`, `(韓)`, `bottleneck` 직접 사용하면 그대로).
-
-## Step 3 — source 원문에 없으면 한글로 치환
-
-source 에 없는 한자 / 일본어 / 영어 단어는 **모두 한글로 치환**합니다. 대응 한글이 없으면 source 원문에 등장하는 다른 한글 표현으로 paraphrase. 그래도 안 되면 그 단어 자체를 제거하고 자연스럽게 잇기.
-
-**자주 잘못 생성되는 한자 → 한글 치환 예** (참고용, source 검증 후 적용):
-- `業務` → `업무`, `行政` → `행정`, `情報` → `정보`, `信息` → `정보`, `公司` → `회사`, `通信` → `통신`
-- `服務` → `서비스`, `提供` → `제공`, `等` → `등`, `点检` → `점검`, `諮詢` → `자문`
-- 일본어 `付き` → `붙은` 또는 제거, `(美)` 가 source 에 없으면 `(미국)` 로
-
-**중요**: 한자가 한국어 한자어로 통용되더라도 (`業務` 같은 게 흔히 쓰여도) **source 에 한자 형태로 등장하지 않으면 무조건 한글**. 현대 한국 행정문서는 한글 위주.
-
-## Step 4 — 출력 직전 최종 스캔
-
-JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+4E00~U+9FFF) / 일본어 가나가 한 글자라도 남아있는지 확인:
-- 남아있고 source 원문에 그 글자가 정확히 등장 → 보존 OK.
-- 남아있는데 source 원문에 없음 → **출력 무효**. 다시 Step 3 으로 돌아가 치환.
-
-이 자체 점검 거치지 않은 출력은 wrong. 한자 한 글자라도 source 에 없는데 남아있으면 batch 전체 실패로 처리됩니다.
+- **구조 (role / parent_id) 는 대체로 존중**. role 대량 변경 X, parent 재설계 X, 형제 배타 재판단 X, 대량 instance 추가 X.
+- **text 는 적극 재작성 가능**. 1차가 사업명·과제명 한 단어로 짧게 남겼더라도 source 에 추가 재료 (목적/범위/대상/수단/방향/결과/시기/수치) 가 있으면 양식의 정보 조립 방식에 맞춰 다시 조립합니다.
+- **source 에 추가 재료가 없을 때만** 짧은 문장을 허용합니다. source 에 목적 / 범위 / 대상 / 수단 / 방향 / 결과 / 시기 / 수치 등 추가 재료가 있으면 **짧은 사업명만 남기지 말고** 양식의 정보 조립 방식에 맞춰 반영합니다.
+- source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 생성 X.
 
 # 핵심 책임
 
-## 1. 말투 / 술어 / 분할 정제 (가장 중요)
+## 1. 최종 본문 재작성 — 양식 정보 조립 방식 적용 (가장 중요)
 
-각 노드의 1차 text 를 양식 sample 에 맞게 정제:
+1차 text 를 양식 sample 의 정보 조립 방식에 맞춰 다시 작성:
 
-- **양식 sample 의 술어 종결** (`~함`, `~한다`, `~완료`, `~예정`, 명사형 등) 그대로 모방.
-- **양식 sample 의 segment 분할 패턴** (`(분류) 본문`, `메인 (괄호 부제)` 등) 그대로 모방.
+- **양식 sample 의 술어 종결** (`~함`, `~한다`, `~완료`, `~예정`, 명사형 등) 답습.
+- **양식 sample 의 segment 분할 패턴** (`(분류) 본문`, `메인 (괄호 부제)` 등) 답습.
+- **양식 sample 의 정보 조각 개수 / 연결 방식** 답습 — 양식이 한 줄에 1~3 개 정보 조각을 쉼표 · 및 · 등 · 로 · 를 위한 등으로 연결한 패턴이면 새 본문도 source 재료 범위 안에서 같은 방식으로 조립.
 - **양식 sample 이 단일 layer 면 단일 layer**, 다중 segment 면 다중 segment.
 
 ## 2. 정보 밀도 / 구성 단위 모방 (글자 수 기계적 모방 X)
@@ -17027,7 +17254,7 @@ JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+
 - 배경 / 정의 / 수치 / 사례 / 비교 / 반론 / 한계 / 맥락 정보도 보강 재료로 사용 가능.
 - 새 item 의 role 은 양식 role 카탈로그에 있는 role 만 사용.
 - 보강한 사실은 **반드시 source 원문 또는 1차 트리에 존재** — 없는 내용 생성 X.
-- 기존 item 의 의미를 바꾸지 말고 정보 밀도만 양식 sample 수준으로 보강.
+- 기존 item 의 **핵심 주제와 role 의미는 유지**하되, source 에 근거가 있으면 **표현과 정보 조립은 적극 재작성**합니다.
 
 **금지**:
 - 양식 갯수 맞추기 위해 source 에 없는 내용 생성 X.
@@ -17035,11 +17262,12 @@ JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+
 - sample 의 단어 / 한자 / 영어 가져와 instance 생성 X.
 - source 근거 불충분하면 추가하지 않고 기존만 정제.
 
-## 5. 자유도 한계 (소스 원문 글자 보존)
+## 5. 자유도 한계
 
-- 소스의 사실 / 숫자 / 주체 / 시기 → 정확히 그대로
-- 의역 / 단어 교체 X — 말투 / 술어 / 분할만 정제
-- 한자 / 영어 변환 X (위 절대 규칙)
+- source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 → 정확히 그대로 (의역·단어 교체 X)
+- **조립 형태 / 연결어 / 술어 / 분할 위치 / segment 구성** → 양식 패턴에 맞춰 재작성 가능
+- source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 → 생성 X
+- 한자 / 영어 변환 X (출력 직전 최종 sanity check 참조)
 
 # 출력 형식 — id 최종 재번호
 
@@ -17061,9 +17289,45 @@ JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+
 - old_id / source_id / 메모 등 추가 필드 출력 X.
 
 **기타 규칙**:
-- role 은 1차 와 동일. 새 instance 도 양식 cluster ID 에서만.
-- 마커 / 강조 markup 추가 금지 — 다음 단계 (2c) 가 처리.
+- **기존 item 의 role 은 변경하지 않습니다**. 추가 item 이 필요한 경우에도 양식 role 카탈로그에 있는 role 만 사용합니다.
+- item.text 에는 번호 / 글머리표 / 마커 / 강조 표시를 넣지 마세요 — 다음 단계 (2c) 가 자동 부착.
 - 들여쓰기 공백 / 탭 추가 금지 — 다음 단계가 처리.
+
+# 출력 직전 최종 sanity check — 한자 / 일본어 / 영어
+
+위 본문 작성을 마친 뒤 **JSON 출력 직전** 모든 item 의 text 를 다음 4 단계로 한 번 더 훑어 확인합니다. 본문 작성의 주된 목표가 아니라 마지막 점검입니다.
+
+## Step 1 — 한자 / 일본어 / 영어 단어 수집
+
+각 item 의 text 안에서 다음 패턴을 찾기:
+- **한자** (CJK Unified Ideographs U+4E00~U+9FFF): `業務`, `行政`, `情報`, `点检`, `信息`, `公司`, `通信`, `服務`, `提供`, `等`, `付き` (일본어 히라가나·가타카나 포함) 등.
+- **영어 단어**: `cloud`, `service`, `system` 등.
+
+## Step 2 — source 원문 그대로 매칭 검증
+
+수집한 각 단어를 **source 원문에서 같은 글자 그대로** 검색:
+- **정확 매칭만** (부분 매칭·유사 매칭 X).
+- 양식 sample 에 있어도 source 원문에 없으면 → **있는 것 아님**. 양식 단어 가져오기 X.
+- source 원문에 등장하면 → 보존 가능 (예: source 가 `(美)`, `(韓)`, `bottleneck` 직접 사용하면 그대로).
+
+## Step 3 — source 원문에 없으면 한글로 치환
+
+source 에 없는 한자 / 일본어 / 영어 단어는 한글로 치환. 대응 한글이 없으면 source 원문의 다른 한글 표현으로 paraphrase. 그래도 안 되면 그 단어 자체를 제거하고 자연스럽게 잇기.
+
+**자주 잘못 생성되는 한자 → 한글 치환 예** (참고용, source 검증 후 적용):
+- `業務` → `업무`, `行政` → `행정`, `情報` → `정보`, `信息` → `정보`, `公司` → `회사`, `通信` → `통신`
+- `服務` → `서비스`, `提供` → `제공`, `等` → `등`, `点检` → `점검`, `諮詢` → `자문`
+- 일본어 `付き` → `붙은` 또는 제거, `(美)` 가 source 에 없으면 `(미국)`
+
+**중요**: 한자가 한국어 한자어로 통용되더라도 (`業務` 같은 게 흔히 쓰여도) **source 에 한자 형태로 등장하지 않으면 무조건 한글**. 현대 한국 행정문서는 한글 위주.
+
+## Step 4 — 출력 직전 최종 스캔
+
+JSON 출력 만든 직후, items 의 모든 text 를 다시 훑어서 한자 (U+4E00~U+9FFF) / 일본어 가나가 한 글자라도 남아있는지 확인:
+- 남아있고 source 원문에 그 글자가 정확히 등장 → 보존 OK.
+- 남아있는데 source 원문에 없음 → 다시 Step 3 으로 돌아가 치환.
+
+이 sanity check 를 거치지 않은 출력은 wrong. source 에 없는데 남은 한자가 있으면 batch 전체 실패로 처리됩니다.
 
 반드시 위 JSON 만 출력.
 """
@@ -17106,26 +17370,72 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
 
     style_section = ""
     if style_profiles:
-        _lines = []
+        _lines: list = []
         for role in sorted(pattern_roles_local):
             sp = style_profiles.get(role) or {}
-            rules = sp.get("content_style_rules_for_generation") or []
-            if not rules:
+            # parse 실패 / missing cluster 는 skip (보수 처리)
+            _status = sp.get("_parse_status")
+            if _status not in (None, "ok"):
                 continue
-            _lines.append(f"\n### {role}")
-            for r in rules[:3]:
-                _lines.append(f"- {r}")
+
+            sfh = (sp.get("style_family_hint") or "").strip()
+            uc = sp.get("unit_count_observed") or {}
+            jm = sp.get("join_markers_observed") or []
+            ep = sp.get("ending_pattern_observed") or []
+            ds = sp.get("density_signal", "unknown") or "unknown"
+            sca = sp.get("scarcity_allowance_observed")
+            amb = sp.get("ambiguity_flags") or []
+            rules = sp.get("content_style_rules_for_generation") or []
+
+            has_uc = bool(uc) and any(
+                uc.get(k) is not None for k in ("min", "median", "max")
+            )
+            if not (sfh or has_uc or jm or ep or rules or (ds and ds != "unknown")):
+                continue
+
+            sub: list = [f"\n### {role}"]
+            if sfh:
+                sub.append(f"- 문장 유형: {sfh}")
+            if has_uc:
+                _uc_str = ", ".join(
+                    f"{k}={uc.get(k)}" for k in ("min", "median", "max")
+                    if uc.get(k) is not None
+                )
+                sub.append(f"- 정보 조각 개수 (관찰): {_uc_str}")
+            if jm:
+                sub.append(f"- 연결 방식 (관찰): {', '.join(jm)}")
+            if ep:
+                sub.append(f"- 종결 방식 (관찰): {', '.join(ep)}")
+            if ds and ds != "unknown":
+                sub.append(f"- 정보 밀도: {ds}")
+            if sca is True:
+                sub.append(
+                    "- 양식 sample 안에 짧은 case 관찰됨 — **단순 핑계 X**. "
+                    "**source 재료가 실제로 없을 때만** 짧은 출력 fallback. "
+                    "source 에 추가 재료 있으면 양식 정보 조립 방식으로 풍부하게 작성."
+                )
+            if amb:
+                sub.append(f"- ⚠️ ambiguity: {' / '.join(amb)} — 보수적으로 처리.")
+            if rules:
+                sub.append("- 추가 관찰:")
+                for r in rules[:3]:
+                    sub.append(f"  · {r}")
+            _lines.extend(sub)
+
         if _lines:
             style_section = (
-                "## role별 말투 rule (양식 sample 분석 — 새 본문에 그대로 적용)\n"
-                "각 노드의 1차 text 를 아래 rule + 양식 sample 의 술어 종결/분할 패턴에 맞춰 정제.\n"
+                "## role 별 양식 정보 조립 방식 (11.2 분석 — 새 본문에 적용)\n"
+                "각 role 의 1차 text 를 아래 양식 패턴 (문장 유형 / 정보 조각 개수 / 연결 방식 / 종결 방식 / 정보 밀도) 에 맞춰 재작성.\n"
+                "source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 은 보존 — 조립 형태·연결어·술어만 양식 패턴 적용.\n"
                 + "\n".join(_lines)
                 + "\n\n"
             )
 
     polish_user_prefix = (
-        "## 1차 본문 트리 (스켈레톤)\n"
-        "아래 1차 본문을 받아 양식 sample 말투/술어/분할로 정제 + 짧은 본문 보충 + variant 누락 instance 추가.\n"
+        "## 1차 본문 트리 (구조 초안)\n"
+        "아래 1차 트리는 2b-a 의 구조 초안. text 는 완성본이 아닙니다. "
+        "같은 source 와 양식 sample 을 다시 보고 양식의 정보 조립 방식에 맞춰 최종 본문을 작성하세요. "
+        "구조 (role / parent_id) 는 대체로 유지, text 는 적극 재작성.\n"
         f"```json\n{items_json}\n```\n\n"
         + style_section
         + "---\n\n"
