@@ -8321,6 +8321,242 @@ def parse_emphasis_layer_from_llm(
     return result
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stage 11.2b → 2c bridge: role 별 body 강조 예산 (code only, AI 호출 X)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _compute_body_start_offset(
+    flat_text: str, indent_length: int, markers: list,
+) -> int:
+    """flat_text 에서 indent + outer_marker 길이 반환 (body 시작 char index).
+
+    indent 부분이 whitespace 가 아니면 indent 0 으로 fallback (안전).
+    markers 중 가장 긴 startswith 매칭 적용. marker 뒤 whitespace 도 skip.
+    content_label 은 분리하지 않음 (1차 정책 — 사용자 결정 2026-05-28).
+    """
+    offset = 0
+    if indent_length > 0 and indent_length <= len(flat_text):
+        if flat_text[:indent_length].strip() == "":
+            offset = indent_length
+
+    after_indent = flat_text[offset:]
+    best_marker_len = 0
+    for m in markers or []:
+        if m and after_indent.startswith(m):
+            if len(m) > best_marker_len:
+                best_marker_len = len(m)
+    if best_marker_len > 0:
+        after_marker = after_indent[best_marker_len:]
+        sep_len = len(after_marker) - len(after_marker.lstrip())
+        return offset + best_marker_len + sep_len
+
+    return offset
+
+
+def _compute_body_emphasis_stats(
+    segments: list, base_layer_id: str, body_start_offset: int,
+) -> tuple:
+    """sample paragraph segments → body 영역의
+    (nonbase_span_count, nonbase_char_count, total_body_chars) 반환.
+
+    span 정의: 연속된 same-non-base layer 는 한 span. 다른 non-base layer 로
+    바뀌면 새 span. base layer 또는 빈 text segment 는 span 으로 카운트 X.
+    """
+    flat_pos = 0
+    nonbase_span_count = 0
+    nonbase_char_count = 0
+    body_char_count = 0
+    last_nonbase_layer = None
+
+    for seg in segments:
+        seg_text = seg.get("text", "") or ""
+        seg_layer = seg.get("layer_id", "") or ""
+        seg_start = flat_pos
+        seg_end = flat_pos + len(seg_text)
+        flat_pos = seg_end
+
+        if seg_end <= body_start_offset:
+            continue
+        body_seg_start = max(seg_start, body_start_offset)
+        offset_in_seg = body_seg_start - seg_start
+        body_seg_text = seg_text[offset_in_seg:]
+        body_char_count += len(body_seg_text)
+
+        if seg_layer != base_layer_id and body_seg_text.strip():
+            nonbase_char_count += len(body_seg_text)
+            if seg_layer != last_nonbase_layer:
+                nonbase_span_count += 1
+            last_nonbase_layer = seg_layer
+        else:
+            last_nonbase_layer = None
+
+    return nonbase_span_count, nonbase_char_count, body_char_count
+
+
+def _interpolated_percentile(data: list, p: float) -> float:
+    """linear interpolation percentile (numpy 없이)."""
+    if not data:
+        return 0.0
+    data_sorted = sorted(data)
+    if len(data_sorted) == 1:
+        return float(data_sorted[0])
+    k = (len(data_sorted) - 1) * (p / 100.0)
+    lo = int(k)
+    hi = min(lo + 1, len(data_sorted) - 1)
+    frac = k - lo
+    return float(data_sorted[lo] + (data_sorted[hi] - data_sorted[lo]) * frac)
+
+
+def compute_role_body_emphasis_budgets(
+    paragraph_emphasis_map: dict | None,
+    emphasis_layers: dict | None,
+    marker_policies: dict | None = None,
+) -> dict:
+    """role 별 body 강조 예산 — 11.2b sample 의 실측 분포 기반.
+
+    body 정의: paragraph 의 indent + outer_marker 를 제거한 나머지 전체.
+    content_label 은 분리하지 않음 (1차 정책 — 사용자 결정 2026-05-28).
+    base 판정: emphasis_layers[role].base_layer_id 에 의존 (11.2b AI 결과).
+
+    각 sample paragraph 의 body 영역에서:
+      - non-base span 수
+      - non-base char ratio
+    분포를 모은 뒤,
+      - target = P50
+      - max = max(P90, target)
+      - char_ratio_max = P90
+      - min = nonzero_emphasis_paragraph_ratio >= 0.8 일 때만 1
+    산출.
+
+    multi-charpr 가 아닌 paragraph 는 base wrap 으로 보고 span=0, ratio=0 으로
+    분포에 추가 (actual paragraph 분포 반영).
+
+    Args:
+        paragraph_emphasis_map: extract_paragraph_emphasis_map 결과
+        emphasis_layers: parse_emphasis_layer_from_llm 결과
+        marker_policies: 1f marker policies — body 식별 시 outer_marker strip 용
+
+    Returns:
+        {role: {
+            "sample_paragraph_count",            # multi + single 합
+            "multi_charpr_paragraph_count",
+            "body_nonbase_span_min",
+            "body_nonbase_span_target",
+            "body_nonbase_span_max",
+            "body_nonbase_char_ratio_avg",
+            "body_nonbase_char_ratio_max",
+            "nonzero_emphasis_paragraph_ratio",
+            "sample_basis",   # measured | measured_small_sample | bucket_fallback | no_emphasis
+            "span_count_distribution",
+            "char_ratio_distribution",
+        }}
+    """
+    import math as _math
+
+    result: dict = {}
+    if not paragraph_emphasis_map or not emphasis_layers:
+        return result
+
+    for role, em_ai in emphasis_layers.items():
+        base_layer_id = (em_ai or {}).get("base_layer_id", "") or ""
+        em_list = (em_ai or {}).get("emphasis_layers") or []
+        has_nonbase_layer = any(
+            (layer.get("layer_id") or "") and (layer.get("layer_id") != base_layer_id)
+            for layer in em_list
+        )
+
+        pem = (paragraph_emphasis_map or {}).get(role) or {}
+        sample_paragraphs = pem.get("sample_paragraphs", []) or []
+        total_paragraphs = int(pem.get("total_paragraphs_in_cluster", 0) or 0)
+        multi_charpr_paragraph_count = int(pem.get("multi_charpr_paragraph_count", 0) or 0)
+        indent_length = int(pem.get("indent_length_mode", 0) or 0)
+        markers = ((marker_policies or {}).get(role) or {}).get("markers") or []
+
+        if not base_layer_id or not has_nonbase_layer:
+            result[role] = {
+                "sample_paragraph_count": total_paragraphs,
+                "multi_charpr_paragraph_count": multi_charpr_paragraph_count,
+                "body_nonbase_span_min": 0,
+                "body_nonbase_span_target": 0,
+                "body_nonbase_span_max": 0,
+                "body_nonbase_char_ratio_avg": 0.0,
+                "body_nonbase_char_ratio_max": 0.0,
+                "nonzero_emphasis_paragraph_ratio": 0.0,
+                "sample_basis": "no_emphasis",
+                "span_count_distribution": [],
+                "char_ratio_distribution": [],
+            }
+            continue
+
+        span_counts: list = []
+        char_ratios: list = []
+        for sp in sample_paragraphs:
+            segments = sp.get("segments") or []
+            if not segments:
+                continue
+            flat_text = "".join(seg.get("text", "") for seg in segments)
+            body_start = _compute_body_start_offset(flat_text, indent_length, markers)
+            n_span, n_chars, total_body_chars = _compute_body_emphasis_stats(
+                segments, base_layer_id, body_start,
+            )
+            span_counts.append(n_span)
+            char_ratios.append(
+                (n_chars / total_body_chars) if total_body_chars > 0 else 0.0
+            )
+
+        # single-cp paragraph 는 base wrap → span=0, ratio=0
+        zeros = max(0, total_paragraphs - len(span_counts))
+        span_counts.extend([0] * zeros)
+        char_ratios.extend([0.0] * zeros)
+
+        if not span_counts:
+            result[role] = {
+                "sample_paragraph_count": 0,
+                "multi_charpr_paragraph_count": multi_charpr_paragraph_count,
+                "body_nonbase_span_min": 0,
+                "body_nonbase_span_target": 1,
+                "body_nonbase_span_max": 2,
+                "body_nonbase_char_ratio_avg": 0.0,
+                "body_nonbase_char_ratio_max": 0.5,
+                "nonzero_emphasis_paragraph_ratio": 0.0,
+                "sample_basis": "bucket_fallback",
+                "span_count_distribution": [],
+                "char_ratio_distribution": [],
+            }
+            continue
+
+        span_p50 = _interpolated_percentile(span_counts, 50)
+        span_p90 = _interpolated_percentile(span_counts, 90)
+        target = int(round(span_p50))
+        max_ = max(int(_math.ceil(span_p90)), target)
+        char_ratio_max = _interpolated_percentile(char_ratios, 90)
+        char_ratio_avg = sum(char_ratios) / len(char_ratios)
+        nonzero_count = sum(1 for c in span_counts if c > 0)
+        nonzero_ratio = nonzero_count / len(span_counts)
+        min_ = 1 if nonzero_ratio >= 0.8 else 0
+
+        sample_basis = (
+            "measured" if multi_charpr_paragraph_count >= 3
+            else "measured_small_sample"
+        )
+
+        result[role] = {
+            "sample_paragraph_count": len(span_counts),
+            "multi_charpr_paragraph_count": multi_charpr_paragraph_count,
+            "body_nonbase_span_min": min_,
+            "body_nonbase_span_target": target,
+            "body_nonbase_span_max": max_,
+            "body_nonbase_char_ratio_avg": round(char_ratio_avg, 3),
+            "body_nonbase_char_ratio_max": round(char_ratio_max, 3),
+            "nonzero_emphasis_paragraph_ratio": round(nonzero_ratio, 3),
+            "sample_basis": sample_basis,
+            "span_count_distribution": list(span_counts),
+            "char_ratio_distribution": [round(c, 3) for c in char_ratios],
+        }
+
+    return result
+
+
 def _build_chapter_types(paragraphs: list[dict]) -> dict:
     """
     paragraphs의 level/role 순서를 분석하여 chapter_types를 코드로 생성.
@@ -17863,6 +18099,21 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 
 **`allowed_units` / `max_same_connector` 규칙은 candidates 블록에 포함된 item 에만 적용한다. candidates 에 없는 item 은 §1 / §2 / §7 의 일반 polish 만 적용한다.**
 
+### `및` connector 사용 규칙 (literal `및` 도피 차단)
+
+`및` 은 fallback connector 가 아니다. `및` 은 source 에서 두 표현이 실제 같은 층위의 병렬 항목일 때만 사용한다.
+
+한쪽이 다른 한쪽의 수단·절차·근거·조건·결과·목표·강화/개선 대상이면 `및` 사용은 실패다. 이 경우 source 관계와 `relation_families_observed` 에 맞는 connector 를 사용한다. 맞는 connector 가 없으면 다른 connector 로 치환하지 말고 병렬 나열을 줄여 핵심 표현만 남긴다.
+
+`및` 이 candidates 의 `connector_limits` 안에서 허용 횟수가 남아 있어도 위 규칙을 먼저 만족해야 한다. 즉, 허용 횟수가 남아 있어도 실제 동급 병렬이 아니면 `및` 을 쓰면 실패다.
+
+예:
+- 나쁜: `A 점검 및 B 강화` — A 가 B 를 강화하는 수단·근거 관계인데 평면 `및` 도피.
+- 좋은: source 에서 A 가 B 의 수단·근거이면 `A 점검으로 B 강화` 처럼 관계 반영.
+- 허용: source 에 A 와 B 가 실제 동급 병렬 업무이면 `A 및 B` 가능.
+
+(위 `으로` 는 관계 반영 illustration 일 뿐 강제 connector 가 아니다. 실제 connector 는 source 관계와 `relation_families_observed` 에 박힌 것을 사용한다.)
+
 ### rigidity 별 family 적용 강도
 
 | rigidity | slot_template 적용 | connector 자유도 | source 흐름 우선도 |
@@ -19239,6 +19490,27 @@ async def apply_section_style_to_items(
         elif isinstance(_old_pid, int):
             new_it["parent_id"] = _old_pid + 1
         items_for_2c.append(new_it)
+
+    # Step 1 (2026-05-28): role 별 body 강조 예산 계산하여 12e debug 에 dump.
+    # Step 2 에서 prompt 에 박을 예정. 현재는 검토용. 호출은 chapter 마다 동일 결과
+    # → 덮어쓰기.
+    try:
+        _budgets = compute_role_body_emphasis_budgets(
+            paragraph_emphasis_map=paragraph_emphasis_map,
+            emphasis_layers=emphasis_layers,
+            marker_policies=marker_policies,
+        )
+        import os as _bdg_os, json as _bdg_json
+        _bdg_os.makedirs("/tmp/hwpx_debug", exist_ok=True)
+        with open(
+            "/tmp/hwpx_debug/12e_emphasis_budgets.json", "w", encoding="utf-8",
+        ) as _bdg_f:
+            _bdg_json.dump({
+                "role_count": len(_budgets),
+                "role_budgets": _budgets,
+            }, _bdg_f, ensure_ascii=False, indent=2)
+    except Exception as _bdg_e:
+        log.warning(f"[12e budget] dump failed: {_bdg_e}")
 
     try:
         messages_2c = build_section_style_prompt(
