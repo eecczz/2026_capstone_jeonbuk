@@ -6972,6 +6972,31 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
 - `"density_signal": "high"` + `"evidence_sample_ids": []` ← 근거 없음. wrong.
 - 모든 cluster 에 똑같이 `["공식적이고 간결한 톤"]` ← role 별 고유 X.
 
+## segment 의미 기능 관찰 (추가 축 — 모든 role 공통, 관찰될 때만 적용)
+
+`unit_count_observed` / `join_markers_observed` / `ending_pattern_observed` 만으로는 다음 단계 (2b-b) 가 양식 sample 의 **정보 조립 골격**을 따라가기 부족할 수 있습니다. 한 paragraph 안 segment 들이 **일관된 의미 역할 분담**을 가지는지 sample 에서 관찰해서, 관찰되면 `content_style_rules_for_generation` 에 명시하세요.
+
+### 관찰 축 예시 (sample 일관 반복일 때만 적용)
+
+- 앞 segment = **방식 / 수단 / 조건 / 방향 / 대상** 을 꾸미는 형용·부사·전치구
+- 뒤 segment = **핵심 내용 / 효과 / 결과 / 기반 / 시장 / 환경 / 생태계** 같은 중심 명사구
+- 또는 **분류 라벨 (괄호 안 카테고리)** → 본문 → 보충 (시기 · 금액) 분할 패턴
+- 또는 메인 명사구 → **괄호 부제 / 약어 / 영문 슬로건** 보충
+
+### rule 작성 예 (sample 에서 일관 반복 관찰 시)
+
+- `"앞부분에 방식·수단·방향을 두고, 뒷부분에 달성할 결과·환경·시장·기반 등 핵심 명사구를 붙이는 제목형 구조. 근거: [s0, s1, s2]"`
+- `"본문 시작 직후 괄호 안 카테고리 라벨, 그 뒤 본문, 마지막에 시기·금액 보충. 근거: [s1, s4]"`
+- `"메인 명사구 뒤 괄호로 약어·기관명·영문 슬로건 보충. 근거: [s0, s2]"`
+
+### 적용 원칙
+
+- sample 에서 **직접 관찰되지 않으면 적지 X**. 일반 행정문서 규칙 / 양식 외 지식 / 추측 X.
+- "제목형이면 무조건 수식부+핵심부" 같은 카테고리 가정 X — **sample 에서 일관 반복** 일 때만.
+- 한 paragraph 안 segment 1 개 (단순 명칭형 / 단어형) 인 role 은 이 축 적용 X (관찰 안 됨 = 빈 rule).
+- 근거 sample id 필수 (`[sN, sN]` 형식).
+- 이 축으로 작성한 rule 도 `content_style_rules_for_generation` 0~3 개 한도 안에서.
+
 ## 응답 양식
 
 - profiles 배열 길이 = input cluster 수
@@ -7258,16 +7283,22 @@ def parse_style_profile_from_llm(
 
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as e:
-        log.warning(f"[STYLE-PROFILE batch] JSON 파싱 실패: {e}")
-        return {r: _empty_for_role(r, "parse_failed", (llm_response or "")[:1000]) for r in expected_roles}
+    except json.JSONDecodeError as e1:
+        log.warning(f"[STYLE-PROFILE batch] JSON 1차 파싱 실패 ({e1}), _repair_json 시도")
+        try:
+            repaired = _repair_json(text)
+            data = json.loads(repaired, strict=False)
+            log.info("[STYLE-PROFILE batch] JSON repair 성공")
+        except json.JSONDecodeError as e2:
+            log.warning(f"[STYLE-PROFILE batch] JSON repair 후에도 실패 ({e2})")
+            return {r: _empty_for_role(r, "parse_failed", (llm_response or "")[:50000]) for r in expected_roles}
 
     if not isinstance(data, dict):
-        return {r: _empty_for_role(r, "schema_violation", (llm_response or "")[:1000]) for r in expected_roles}
+        return {r: _empty_for_role(r, "schema_violation", (llm_response or "")[:50000]) for r in expected_roles}
 
     ai_profiles = data.get("profiles") or data.get("data") or []
     if not isinstance(ai_profiles, list):
-        return {r: _empty_for_role(r, "schema_violation", (llm_response or "")[:1000]) for r in expected_roles}
+        return {r: _empty_for_role(r, "schema_violation", (llm_response or "")[:50000]) for r in expected_roles}
 
     def _to_int(v):
         try:
@@ -9199,22 +9230,111 @@ def extract_marker_policies(
     return result
 
 
-def strip_leading_marker(text: str, role_markers: list[str]) -> tuple[str, str | None]:
+def _common_prefix(strs: list[str]) -> str:
+    """문자열 list 의 공통 prefix. 빈 list / 단일 원소면 빈 string 또는 그 원소 반환."""
+    if not strs:
+        return ""
+    prefix = strs[0]
+    for s in strs[1:]:
+        while prefix and not s.startswith(prefix):
+            prefix = prefix[:-1]
+        if not prefix:
+            return ""
+    return prefix
+
+
+_SEQ_CLASSES: list = []  # lazy-init in _build_sequence_patterns
+
+
+def _build_sequence_patterns(markers: list[str]) -> list:
+    """marker list 에서 시퀀스 generalization 정규식 추출.
+
+    detected_marker 가 "공통 prefix + 변동 sequence" 또는 "변동 sequence + 공통 suffix" 형태이면
+    그 패턴을 정규식으로 일반화. 1f evidence 가 일부 sample 만 제공해도 미관찰 시퀀스 ("과제 6"~
+    "과제 9") 까지 매칭.
+
+    Args:
+        markers: extract_role_markers_from_1f 의 markers list (예: ["과제 1", "과제 2", ...]
+                 또는 ["Ⅰ.", "Ⅱ.", "Ⅲ."])
+
+    Returns:
+        compiled re.Pattern list (없으면 빈 list).
+    """
+    import re as _re
+    if not markers or len(markers) < 2:
+        return []
+
+    global _SEQ_CLASSES
+    if not _SEQ_CLASSES:
+        _SEQ_CLASSES = [
+            (r'\d+', _re.compile(r'^\d+$')),
+            (r'[一二三四五六七八九十百千]+',
+             _re.compile(r'^[一二三四五六七八九十百千]+$')),
+            (r'[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]+',
+             _re.compile(r'^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]+$')),
+            (r'[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]+',
+             _re.compile(r'^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]+$')),
+            (r'[➀➁➂➃➄➅➆➇➈➉➊➋➌➍➎➏➐➑➒➓]+',
+             _re.compile(r'^[➀➁➂➃➄➅➆➇➈➉➊➋➌➍➎➏➐➑➒➓]+$')),
+            (r'[가나다라마바사아자차카타파하]+',
+             _re.compile(r'^[가나다라마바사아자차카타파하]+$')),
+            (r'[a-zA-Z]+',
+             _re.compile(r'^[a-zA-Z]+$')),
+        ]
+
+    # Case 1: 공통 prefix + 변동 sequence (예: "과제 1", "과제 2", ...)
+    prefix = _common_prefix(markers)
+    if prefix and prefix != markers[0]:
+        suffixes = [m[len(prefix):] for m in markers]
+        if all(s for s in suffixes):
+            for char_class, validator in _SEQ_CLASSES:
+                if all(validator.match(s) for s in suffixes):
+                    return [_re.compile(_re.escape(prefix) + char_class)]
+
+    # Case 2: 변동 sequence + 공통 suffix (예: "Ⅰ.", "Ⅱ.", "Ⅲ.")
+    rev = [m[::-1] for m in markers]
+    rev_pref = _common_prefix(rev)
+    suffix = rev_pref[::-1] if rev_pref else ""
+    if suffix and suffix != markers[0]:
+        prefixes = [m[: len(m) - len(suffix)] for m in markers]
+        if all(p for p in prefixes):
+            for char_class, validator in _SEQ_CLASSES:
+                if all(validator.match(p) for p in prefixes):
+                    return [_re.compile(char_class + _re.escape(suffix))]
+
+    # Case 3: prefix / suffix 둘 다 없음 — 모든 marker 가 같은 sequence char class
+    # (예: ["Ⅰ", "Ⅱ", "Ⅲ"] — 점 없음)
+    if not prefix and not suffix:
+        for char_class, validator in _SEQ_CLASSES:
+            if all(validator.match(m) for m in markers):
+                return [_re.compile(char_class)]
+
+    return []
+
+
+def strip_leading_marker(
+    text: str,
+    role_markers: list[str],
+    marker_patterns: list | None = None,
+) -> tuple[str, str | None]:
     """줄 맨 앞 marker 만 제거. 본문 중간 기호는 절대 건드리지 X.
 
-    매칭 우선순위: 긴 marker 먼저 (star_depth 의 `***` `**` `*` 안전 처리).
-    leading whitespace 는 유지. marker 직후 공백 1개 이상은 같이 제거.
+    매칭 우선순위:
+      1. literal markers (긴 것 먼저 — `***` `**` `*` 안전 처리)
+      2. compiled regex patterns (시퀀스 generalization — "과제 1"~"과제 5" evidence 로 "과제 N" 매칭)
+    leading whitespace 는 유지. marker 직후 공백 1 개 이상은 같이 제거.
 
     Args:
         text: 원본 paragraph text
         role_markers: 1f marker_policy_1f evidence 기반 unique markers list
+        marker_patterns: 선택. _build_sequence_patterns 결과 (compiled re.Pattern list).
 
     Returns:
         (stripped_text, detected_marker_or_None)
-        - 매칭 안 되면 (원본 text, None)
-        - 매칭되면 (marker + 뒤 공백 제거된 text, 검출된 marker 문자열)
     """
-    if not text or not role_markers:
+    if not text:
+        return text, None
+    if not role_markers and not marker_patterns:
         return text, None
 
     stripped_text = text.lstrip()
@@ -9222,7 +9342,18 @@ def strip_leading_marker(text: str, role_markers: list[str]) -> tuple[str, str |
         return text, None
     leading_ws = text[: len(text) - len(stripped_text)]
 
-    for m in sorted((m for m in role_markers if m), key=len, reverse=True):
+    # 1. 정규식 patterns 먼저 — "과제 1" 이 "과제 17" 의 prefix 가 되는 startswith
+    #    혼동 회피 + 시퀀스 marker 일관 처리.
+    for pat in (marker_patterns or []):
+        m = pat.match(stripped_text)
+        if m:
+            detected = m.group(0)
+            remaining = stripped_text[len(detected):]
+            return leading_ws + remaining.lstrip(), detected
+
+    # 2. literal markers (긴 것 먼저 — `***` `**` `*` 안전 처리). patterns 가 비었거나
+    #    매칭 안 된 fixed marker (□, ◈) 케이스용 fallback.
+    for m in sorted((m for m in (role_markers or []) if m), key=len, reverse=True):
         if stripped_text.startswith(m):
             remaining = stripped_text[len(m):]
             return leading_ws + remaining.lstrip(), m
@@ -9266,14 +9397,15 @@ def build_marker_stripped_idx_texts(
         role = p.get("role", "")
         policy = (marker_policies or {}).get(role) or {}
         markers = policy.get("markers") or []
+        marker_patterns = policy.get("marker_patterns") or []
         policy_type = policy.get("policy_type", "")
 
-        if policy_type == "no_marker" or not markers:
+        if policy_type == "no_marker" or (not markers and not marker_patterns):
             stripped[idx_key] = raw
             unchanged_count += 1
             continue
 
-        new_text, detected = strip_leading_marker(raw, markers)
+        new_text, detected = strip_leading_marker(raw, markers, marker_patterns)
         stripped[idx_key] = new_text
         if detected:
             stripped_count += 1
@@ -9288,13 +9420,17 @@ def build_marker_stripped_idx_texts(
 
 
 def extract_role_markers_from_1f(marker_policy_1f: dict | None) -> dict:
-    """1f marker_policy_1f 결과에서 role -> markers list 추출 (stripping 용).
+    """1f marker_policy_1f 결과에서 role -> markers list + 시퀀스 patterns 추출 (stripping 용).
 
     1a fallback 없이 1f evidence 의 detected_marker 만 모음. 1f 가 explicit_marker_detected
     가 아닌 role 은 markers=[] 로 두어 stripping 안 일어남.
 
+    evidence detected_marker 가 "공통 prefix + 변동 sequence suffix" 패턴이면 (예:
+    ["과제 1", "과제 2", "과제 3", "과제 4", "과제 5"]) marker_patterns 에 정규식
+    (`과제 \\d+`) 추가 → 1f evidence 가 sample 일부만 가져도 "과제 6"~"과제 9" 까지 stripping.
+
     Returns:
-        {role: {"markers": [str, ...], "policy_type": str}}
+        {role: {"markers": [str, ...], "marker_patterns": [re.Pattern, ...], "policy_type": str}}
     """
     if not marker_policy_1f:
         return {}
@@ -9313,8 +9449,10 @@ def extract_role_markers_from_1f(marker_policy_1f: dict | None) -> dict:
             if m and m not in seen:
                 seen.add(m)
                 markers.append(m)
+        marker_patterns = _build_sequence_patterns(markers)
         result[role] = {
             "markers": markers,
+            "marker_patterns": marker_patterns,
             "policy_type": policy_type,
         }
     return result
@@ -9340,15 +9478,16 @@ def strip_role_catalog_markers(
     for role_name, info in role_catalog.items():
         policy = (marker_policies or {}).get(role_name) or {}
         markers = policy.get("markers") or []
+        marker_patterns = policy.get("marker_patterns") or []
         policy_type = policy.get("policy_type", "")
         sample = (info or {}).get("sample", "")
 
-        if not sample or policy_type == "no_marker" or not markers:
+        if not sample or policy_type == "no_marker" or (not markers and not marker_patterns):
             new_catalog[role_name] = info
             unchanged_count += 1
             continue
 
-        new_sample, detected = strip_leading_marker(sample, markers)
+        new_sample, detected = strip_leading_marker(sample, markers, marker_patterns)
         if detected:
             new_info = dict(info)
             new_info["sample"] = new_sample
@@ -16482,25 +16621,42 @@ SECTION_FILL_PROMPT = """당신은 한국 행정문서 작성 전문가입니다
 
 1. **패턴에 명시된 role 만 사용** — 새 role 생성 X.
 
-2. **instance 수 결정 우선순위** (위에서부터 적용):
+2. **instance 수 결정 우선순위** (위에서부터 적용 — hard 제약 먼저, 그 다음 생성 압력):
    1. `정확히 1개/부모` (per_parent=single) 인 role 은 항상 1 개.
    2. `max` 초과 X (hard).
    3. 필수 role 은 `min` 미만 X (hard).
-   4. source 의 독립 재료 수를 먼저 본다.
-   5. `target_count` (양식 관찰 mean 반올림) 는 default 이며 절대값이 아니다.
-   6. source 재료가 부족하면 `target_count` 보다 줄이고, 충분하면 `max` 안에서 늘릴 수 있다.
+   4. parent-child 계층 + variant hard 제약 항상 준수.
+   5. **`target_count` 는 권장값이 아니라 기본 생성 목표.** source 독립 재료 (아래 3 번 기준) 가 `target_count` 이상이면 **`target_count` 까지 반드시 분리 생성**.
+   6. source 독립 재료가 `target_count` 보다 더 많고 role 이 `여러 개 가능` 이면 `max` 안에서 늘림.
+   7. **줄일 수 있는 경우는 source 독립 재료가 `target_count` 보다 명확히 적을 때뿐**. source 가 한 문단 / 요약형 / 같은 주제라는 이유는 줄이는 사유 X.
+
+3. **독립 재료 판정 (강제 기준)** — source 에서 다음 중 하나로 구분되면 **각각 1 개의 독립 재료로 계산**:
+   - 쉼표, 세미콜론, `및`, `또는` 으로 구분된 명사구
+   - 번호 (1), 2), ㉠, ① 등) / 글머리표 (-, *, ㅇ, □ 등) 로 분리된 항목
+   - 별도 날짜 / 기관 / 금액 / 수치 / 규모
+   - 서로 다른 조치 / 수단 / 효과 / 비용 / 단계
+   - "→", "⇒" 등 단계 전환 기호로 구분된 항목
+
+   **"한 문단이라서 1 개 재료", "하나로 합쳐도 의미가 통해서 1 개 재료" 판정 X.** 위 기준으로 분리되는 단위는 모두 따로 셈.
+
+4. **합치기 금지** (강제): 양식에서 같은 parent 아래 같은 child role 이 N 개 관찰됐고 source 독립 재료가 N 개 이상이면 N 개 instance 로 분리. 한 instance 에 합치기 X.
+
+5. **계층 누락 방지** (강제):
+   - 양식 패턴이 `parent → child → grandchild` 구조이면, grandchild 에 해당하는 세부 재료가 있을 때 **중간 child role 생략 X**.
+   - 세부 항목 (grandchild 재료) 을 상위 parent 아래에 바로 붙여 **계층 평탄화 X**.
+   - 중간 child role 의 text 가 짧더라도, 양식 트리상 필요한 묶음이면 **생성 필수** (해당 묶음을 대표하는 가장 좁은 주제명으로 작성).
+   - 자식 role 을 root 나 잘못된 상위 parent 에 박아서 해결 X.
 
    case 예시:
-   - source 7 항목, target=3 → source 를 3 개 묶음으로 재구성.
-   - source 2 항목, target=4, role 여러 개 가능 → 재료가 4 개로 분리되면 4 개, 안 되면 줄여 (단 min 유지).
-   - source 5 항목, target=3, max=5, role 여러 개 가능 → 5 개로 늘릴 수 있음.
+   - source 7 항목, target=3, role 여러 개 가능 (max=5) → 7 개 독립 재료를 3 개 묶음으로 재구성, 한 묶음당 instance 1 개.
+   - source 5 항목, target=3, max=5, role 여러 개 가능 → 5 개로 늘림 (재료가 더 많으므로).
    - source 1 항목, role 정확히 1개/부모 → 1 개 그대로.
+   - source 가 한 문단 줄글이지만 그 안에 쉼표·번호·날짜·기관·수치·조치·효과·비용·단계로 분리되는 재료가 N 개 → **N 개 독립 재료**. target_count 만큼 분리 생성.
+   - parent → child → grandchild 패턴에서 grandchild 재료 6 개 있는데 child role 생략하고 6 개를 parent 아래 평탄 배치 → **wrong**. child 2~3 instance 만들어서 grandchild 2~3 씩 분배.
 
-3. **합치기 금지** (강제): 양식에서 같은 parent 아래 같은 child role 이 N 개 관찰됐고 source 가 N 개로 분리되면 N 개 instance 로 분리. 한 instance 에 합치기 X.
+6. **children 관계**: 부모 role 뒤에 자식 role 이 와야 합니다. 자식 role 을 root 로 박기 X.
 
-4. **children 관계**: 부모 role 뒤에 자식 role 이 와야 합니다. 자식 role 을 root 로 박기 X.
-
-5. **형제 자식 variant (hard constraint — 한 instance 는 한 variant)**:
+7. **형제 자식 variant (hard constraint — 한 instance 는 한 variant)**:
    - 각 parent role 의 한 인스턴스가 가질 수 있는 자식 set 은 prompt 의 "형제 자식 variant" 섹션의 variant 목록에서 명시됩니다 (양식 관찰).
    - 한 인스턴스 안에는 단 하나의 variant 자식 set 만 사용. 두 variant 섞기 X.
    - 새 인스턴스 만들 때마다 variant 중 하나 선택 (source 내용 성격에 맞게).
@@ -16761,36 +16917,21 @@ def build_section_fill_prompt(
             if _p and len(_vs) >= 2:
                 _multi_variant_parents.add(_p)
 
-    # 양식 sample text 머리 마커 제거 helper — 1f marker_policy로 role별 markers 조회.
+    # 양식 sample text 머리 마커 제거 helper — extract_role_markers_from_1f 로 공통 처리
+    # (시퀀스 marker family "과제 N" 같은 패턴도 정규식으로 stripping).
     # AI한테 양식 sample 박을 때 머리 마커는 보내지 말 것 (책임 분리: code가 자동 부착).
-    # AI가 sample 보고 마커 따라하는 동작(예: 강조 안쪽에 마커 박기) 방지 목적.
-    _role_markers_map: dict = {}
-    if marker_policy_1f and isinstance(marker_policy_1f, dict):
-        for _entry in (marker_policy_1f.get("roles") or []):
-            _rname = _entry.get("role", "")
-            if not _rname:
-                continue
-            _ms = []
-            for _ev in (_entry.get("evidence") or []):
-                _m = (_ev.get("detected_marker") or "").strip()
-                if _m and _m not in _ms:
-                    _ms.append(_m)
-            if _ms:
-                # 긴 마커 먼저 (예: "**" 우선 후 "*")
-                _role_markers_map[_rname] = sorted(set(_ms), key=len, reverse=True)
+    _role_markers_map: dict = extract_role_markers_from_1f(marker_policy_1f)
 
     def _strip_leading_marker(text: str, role_name: str) -> str:
-        if not text or role_name not in _role_markers_map:
+        if not text:
             return text
-        _stripped = text.lstrip()
-        _lead_ws = text[:len(text) - len(_stripped)]
-        for _m in _role_markers_map[role_name]:
-            if _stripped.startswith(_m):
-                # 마커와 그 뒤 모든 공백·탭 함께 제거. 1개만 떼면 AI가 sample
-                # 따라 본문 머리에 공백 박는 경우 코드가 부착한 "* " 뒤에 공백 중복.
-                _rest = _stripped[len(_m):].lstrip(" \t")
-                return _lead_ws + _rest
-        return text
+        _policy = _role_markers_map.get(role_name) or {}
+        _markers = _policy.get("markers") or []
+        _patterns = _policy.get("marker_patterns") or []
+        if not _markers and not _patterns:
+            return text
+        _new, _ = strip_leading_marker(text, _markers, _patterns)
+        return _new
 
     # 패턴 트리 텍스트
     pattern_text = _format_pattern_tree(
@@ -17380,30 +17521,19 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             )
 
     # ─ role catalog (description + sample, 1f marker leading 제거) ─
-    _role_markers_map: dict = {}
-    if marker_policy_1f and isinstance(marker_policy_1f, dict):
-        for _entry in (marker_policy_1f.get("roles") or []):
-            _rname = _entry.get("role", "")
-            if not _rname:
-                continue
-            _ms = []
-            for _ev in (_entry.get("evidence") or []):
-                _m = (_ev.get("detected_marker") or "").strip()
-                if _m and _m not in _ms:
-                    _ms.append(_m)
-            if _ms:
-                _role_markers_map[_rname] = sorted(set(_ms), key=len, reverse=True)
+    # extract_role_markers_from_1f 로 공통 처리 (시퀀스 marker family 정규식 stripping 포함)
+    _role_markers_map: dict = extract_role_markers_from_1f(marker_policy_1f)
 
     def _strip_leading_marker(text: str, role_name: str) -> str:
-        if not text or role_name not in _role_markers_map:
+        if not text:
             return text
-        _stripped = text.lstrip()
-        _lead_ws = text[:len(text) - len(_stripped)]
-        for _m in _role_markers_map[role_name]:
-            if _stripped.startswith(_m):
-                _rest = _stripped[len(_m):].lstrip(" \t")
-                return _lead_ws + _rest
-        return text
+        _policy = _role_markers_map.get(role_name) or {}
+        _markers = _policy.get("markers") or []
+        _patterns = _policy.get("marker_patterns") or []
+        if not _markers and not _patterns:
+            return text
+        _new, _ = strip_leading_marker(text, _markers, _patterns)
+        return _new
 
     catalog_lines = []
     for role_name, info in role_catalog.items():
