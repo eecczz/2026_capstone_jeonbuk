@@ -17940,10 +17940,78 @@ _HEADLINE_REWRITE_NON_HEADLINE_CHILD_TYPES = frozenset({
 })
 
 
+# 11.2 가 뽑은 connector 이름이 한국어 의미 표현인 경우 sample text 안 실제 string 매핑.
+# 11.2 AI 가 punctuation 을 한국어 이름으로 부르는 경우 (예: "쉼표" / "쥼표" → ",") 만 처리.
+# 그 외 connector 이름 (예: "및", "등", "로", "넘어", "·", "→" 등) 은 그대로 substring count.
+_CONNECTOR_NAME_TO_LITERAL = {
+    "쉼표": ",",
+    "쥼표": ",",
+    "콤마": ",",
+    "마침표": ".",
+    "물음표": "?",
+    "느낌표": "!",
+    "괄호": "(",
+    "괄호열기": "(",
+    "괄호닫기": ")",
+    "따옴표": '"',
+    "작은따옴표": "'",
+}
+
+
+def _compute_connector_limits_per_role(
+    paragraphs: list[dict] | None,
+    idx_full_texts: dict | None,
+    style_profiles: dict | None,
+) -> dict:
+    """role 별 양식 sample 의 connector 별 max-per-item count.
+
+    11.2 `style_profile.join_markers_observed` 에 박힌 connector 이름 list 만 사용 —
+    hardcoded connector list 박지 X (양식마다 connector 다름).
+    각 connector 이름을 sample text 안에서 substring count 한 뒤 role 별 max 를 취함.
+
+    AI 호출 X — code 결정적.
+
+    Returns:
+        {role: {connector_name: max_count_per_item}}
+    """
+    from collections import defaultdict
+
+    role_samples = defaultdict(list)
+    for p in paragraphs or []:
+        role = p.get("role", "")
+        if not role:
+            continue
+        idx = p.get("idx")
+        text = (idx_full_texts or {}).get(str(idx)) or (idx_full_texts or {}).get(idx) or ""
+        if text:
+            role_samples[role].append(text)
+
+    sps = style_profiles or {}
+    result: dict = {}
+    for role, samples in role_samples.items():
+        sp = sps.get(role) or {}
+        join_markers = sp.get("join_markers_observed") or []
+        if not join_markers:
+            result[role] = {}
+            continue
+        per_connector_max: dict = {}
+        for name in join_markers:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            literal = _CONNECTOR_NAME_TO_LITERAL.get(name.strip(), name.strip())
+            counts = [s.count(literal) for s in samples]
+            mx = max(counts) if counts else 0
+            if mx > 0:
+                per_connector_max[name] = mx
+        result[role] = per_connector_max
+    return result
+
+
 def _compute_headline_rewrite_candidates(
     items_1st: list[dict],
     role_text_types: dict | None,
     style_profiles: dict | None,
+    connector_limits_by_role: dict | None = None,
 ) -> list[dict]:
     """1차 본문 트리에서 §3 headline 재작성 mode 대상 item 을 판정한다.
 
@@ -18031,6 +18099,7 @@ def _compute_headline_rewrite_candidates(
         else:
             allowed_units = computed_units
 
+        connector_limits = (connector_limits_by_role or {}).get(role) or {}
         candidates.append({
             "id": item_id,
             "role": role,
@@ -18038,6 +18107,7 @@ def _compute_headline_rewrite_candidates(
             "rewrite_mode": rewrite_mode,
             "allowed_units": allowed_units,
             "max_same_connector": 1,
+            "connector_limits": connector_limits,
             "reason": (
                 f"density={density}; unit_median={uc_median}; unit_max={uc_max}; "
                 f"family={len(families)}; child={len(children)}; "
@@ -18051,6 +18121,7 @@ def _compute_body_polish_candidates(
     items_1st: list[dict],
     role_text_types: dict | None,
     style_profiles: dict | None,
+    connector_limits_by_role: dict | None = None,
 ) -> list[dict]:
     """라벨형 실행본문 (➊ 등) 의 약한 문장화 mode 대상 판정.
 
@@ -18117,12 +18188,14 @@ def _compute_body_polish_candidates(
         else:
             allowed_units = 3
 
+        connector_limits = (connector_limits_by_role or {}).get(role) or {}
         candidates.append({
             "id": item_id,
             "role": role,
             "rewrite_mode": "body_polish",
             "allowed_units": allowed_units,
             "max_same_connector": 1,
+            "connector_limits": connector_limits,
             "reason": (
                 f"density={density}; unit_median={uc_median}; unit_max={uc_max}; "
                 f"supporting_child_count={len(children)}"
@@ -18163,6 +18236,13 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
     content_images = fill_kwargs.get("content_images") or []
     marker_policy_1f = fill_kwargs.get("marker_policy_1f")
     role_text_types = fill_kwargs.get("role_text_types") or {}
+    paragraphs_info = fill_kwargs.get("paragraphs") or []
+    idx_full_texts = fill_kwargs.get("idx_full_texts") or {}
+
+    # role 별 양식 sample connector literal count (per-item max) — 11.2 join_markers_observed 기반
+    _connector_limits_by_role = _compute_connector_limits_per_role(
+        paragraphs_info, idx_full_texts, style_profiles,
+    )
 
     # ─ pattern 안 등장 role 수집 (catalog filter 용) ─────────────
     pattern_roles_local: set = set()
@@ -18185,9 +18265,11 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
     # ─ §3 mode 분기 candidates (code-side trigger) ──────────────
     _headline_candidates = _compute_headline_rewrite_candidates(
         items_1st, role_text_types, style_profiles,
+        connector_limits_by_role=_connector_limits_by_role,
     )
     _body_polish_candidates = _compute_body_polish_candidates(
         items_1st, role_text_types, style_profiles,
+        connector_limits_by_role=_connector_limits_by_role,
     )
 
     # debug dump — chapter 단위로 candidates 기록 (mode 별 결과 검증용)
@@ -18215,7 +18297,10 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             "아래 id 의 item 은 candidates JSON 의 **숫자 한계 안에서** 작성한다. "
             "**한계 초과 = 실패**:\n"
             "- 명사구 (정보 조각) 개수 ≤ `allowed_units` — 정보 조각은 connector 나 쉼표로 분리되는 단위.\n"
-            "- 같은 connector 반복 ≤ `max_same_connector` 회.\n"
+            "- `connector_limits` 의 **각 connector 마다 한계 따로 적용** — text 안 해당 connector 등장 횟수가 `connector_limits[connector]` 를 넘으면 실패. **각 item 자기 text 안에서만 카운트** (다른 item 의 connector 사용과 무관).\n"
+            "- **`connector_limits` 에 명시되지 않은 connector 는 양식 sample 에 관찰되지 않은 형식 — 사용 X**.\n"
+            "- **한 connector 한계 초과 시 다른 connector 로 치환 금지** — 병렬 나열 자체를 줄여 source 의미가 가장 강한 핵심만 남긴다.\n"
+            "- 같은 connector 반복 ≤ `max_same_connector` 회 (보조 한계).\n"
             "- mode = `compact_heading` 은 상위 heading — 상위 목표 / 방향만 반영, 하위 세부 키워드 나열 X.\n"
             "- mode = `headline_summary` 는 중분류 heading — 직계 자식의 핵심만 반영. 자식 문장 복제 X.\n"
             "- `allowed_units` 초과 명사구 나열 X — 초과 시 source 의미가 가장 강한 핵심만 남김.\n"
@@ -18228,7 +18313,10 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             "## body polish 약 적용 대상 (code 지정 — §3 mode 분기)\n"
             "아래 id 의 item 은 라벨형 실행본문:\n"
             "- 명사구 개수 ≤ `allowed_units`.\n"
-            "- 같은 connector 반복 ≤ `max_same_connector` 회.\n"
+            "- `connector_limits` 의 각 connector 한계 따로 적용 — 각 item 자기 text 안 카운트.\n"
+            "- `connector_limits` 에 명시되지 않은 connector 는 양식 sample 에 없는 형식 — 사용 X.\n"
+            "- 한 connector 한계 초과 시 다른 connector 로 치환 X. 병렬 나열 자체 축소.\n"
+            "- 같은 connector 반복 ≤ `max_same_connector` 회 (보조 한계).\n"
             "- 라벨 segment 관찰 role 은 **라벨 필수** (라벨 생략 = 실패).\n"
             "- source 명사구 나열만 ending_pattern 따라 **최소 문장화**. **이미 실행문장이면 유지**.\n"
             "- 자식 회수 / 새 정보 / 새 효과 동사 생성 X.\n"
