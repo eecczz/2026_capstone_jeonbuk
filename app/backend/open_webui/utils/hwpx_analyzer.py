@@ -6908,9 +6908,9 @@ STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 **문체·문장 조�
 5. **모든 관찰에 근거 sample id 인용 필수** (`[s0, s2, s5]` 형식). cluster 안 sample id 만 유효.
 6. **확신 없으면 unknown / null / 빈 list 허용**. 억지로 high/low 찍기 X.
 
-# 출력 schema — 8 field
+# 출력 schema — 10 field
 
-profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field + 자유 rules:
+profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 10 field + 자유 rules:
 
 ```json
 {
@@ -6923,6 +6923,18 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
       "ending_pattern_observed": ["명사형 동작어 (강화/확대/개선/추진)"],
       "density_signal": "high",
       "scarcity_allowance_observed": false,
+      "template_rigidity_observed": "rigid",
+      "relation_families_observed": [
+        {
+          "family_name": "<자유 string — sample 관찰 그대로. enum 강제 X>",
+          "slot_template": "<sample 관찰 골격 — source-agnostic 형태>",
+          "front_segment_role": "<앞 segment 가 마지막 중심부와 맺는 관계 — 수단/조건/범위/대상/배경/병렬-대상/수식 등 관찰 표현>",
+          "central_anchor_type": "<공통 동작어 / 중심 명사구 / 보충>",
+          "applies_when": "<source 의미 구조 매칭 조건 — 'source 가 실제 병렬 대상일 때' 등>",
+          "avoid_when": "<이 family 적용을 피해야 하는 source 조건 — 'sample 에 짧은 제목 골격이 일관 반복되는 경우' 등>",
+          "evidence_sample_ids": ["s0", "s2"]
+        }
+      ],
       "evidence_sample_ids": ["s0", "s2", "s5"],
       "ambiguity_flags": [],
       "content_style_rules_for_generation": ["자유서술 rule 0~5 개"]
@@ -6943,6 +6955,12 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
   - low: 정보 조각 1 개 또는 단순 명사구만
   - **unknown**: sample 부족 / 혼재 / 판단 불가 — **억지 high/low 찍기 X**
 - **scarcity_allowance_observed** (boolean): **양식 sample 안에 짧은 case 가 관찰되는가** — 그것뿐. **"새 본문에서 짧아도 OK" 라는 정책 신호가 아님**. 2b-b 는 이 값을 받더라도 **source 재료가 실제로 없을 때만** fallback 으로 사용. 단순 "양식이 짧으니 새 본문도 짧아도 됨" 핑계로 쓰면 안 됨.
+- **template_rigidity_observed** (string enum: `"rigid"` | `"semi_flexible"` | `"flexible"` | `"unknown"`): sample 들의 문장 골격이 얼마나 강하게 반복되는지 판정. 2b-b 가 relation_families_observed 의 **적용 강도** 를 이 값으로 조절. 자세한 판정 기준은 아래 "rigidity 판정 기준" 섹션 참조.
+  - **rigid**: 중심부 위치 / connector 조합 / segment 의미 순서 모두 sample 마다 반복. slot template 강하게 적용.
+  - **semi_flexible**: 라벨 / 종결 / 정보 순서는 반복되지만 내부 connector 와 길이가 sample 마다 다양. skeleton (라벨/anchor 위치/종결 패턴) 만 적용.
+  - **flexible**: 본문 구조가 sample 마다 크게 다름. family 는 참고만, 라벨 / 종결 / 정보 밀도만 적용.
+  - **unknown**: sample 부족 또는 혼재. source 사실 보존 우선.
+- **relation_families_observed** (list[object]): paragraph 의 **마지막 중심 명사구 / 동작어 (anchor) 와 앞 segment 들이 맺는 의미 관계** family. sample 에서 일관 반복 관찰될 때만 entry 추가. 관찰 안 되면 `[]`. 자세한 추출 절차는 아래 "관계 family 관찰" 섹션 참조.
 - **evidence_sample_ids** (list[string], 필수): 위 관찰들의 근거 sample id. 최소 1개. 예: `["s0", "s2", "s5"]`.
 - **ambiguity_flags** (list[string]): cluster 안에 패턴 혼재 시 표시. 예: `["family 혼재: s0~s3 제목형 / s4~s7 설명문형"]`, `["종결 패턴 혼재"]`, `["sample 1개 — confidence 낮음"]`. 없으면 `[]`.
 - **content_style_rules_for_generation** (list[string], 0~5 개): 자유서술 rule. 위 schema 외 추가 관찰. 적용 조건 + 비적용 조건 + 근거 sample id `[sN, sN]` 인용. 비어 있어도 OK.
@@ -7027,6 +7045,86 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
 - slot 안 핵심 명사 / 동작어는 source 책임 — sample 단어 / 정책어 / 고유어 / 동작어 복사 X.
 - 근거 sample id 필수 (`[sN, sN]` 형식).
 - 이 축으로 작성한 rule 도 `content_style_rules_for_generation` 0~5 개 한도 안에서.
+
+## 관계 family 관찰 (필수 축 — sample 일관 반복일 때만 entry 추가)
+
+`unit_count_observed` / `join_markers_observed` / `ending_pattern_observed` / family slot template 만으로는 paragraph 의 **마지막 중심부 (anchor) 와 앞 segment 들이 맺는 의미 관계** 를 잡지 못합니다. 평면 connector 만 따라가면 source 가 실제 병렬이 아닌 경우에도 `[결과물] + 및 + [결과물]` 식으로 단조 출력됩니다.
+
+이 축은 `relation_families_observed` field 로 structured 하게 잡습니다. 자유 rule (`content_style_rules_for_generation`) 안에 박지 마세요.
+
+### 추출 절차 (sample 마다 — 4 단계)
+
+1. **segment 분할** — 관찰된 연결 표지 (`및`, `로`, `넘어`, `를 위한`, 쉼표, 괄호 등) 만 사용. 다른 분할 X.
+2. **마지막 중심부 (anchor) 식별** — paragraph 끝의 중심 동작어 또는 중심 명사구. 예: `~ 뒷받침`, `~ 조성`, `~ 개척`, `~ 강화` 같은 동작어형 / `~ 환경`, `~ 생태계` 같은 명사구형. **이 단어 자체를 재사용하라는 뜻 아님** — "마지막에 공통 anchor 가 있다"는 구조만 잡음.
+3. **앞 segment 와 anchor 의 관계 분류** — 앞 segment 가 anchor 를 어떻게 받치는가:
+   - 병렬 대상 → 공통 anchor 를 함께 받음
+   - 수단/조치 → 결과/환경/목적 (anchor) 으로 이어짐
+   - 범위 확장/전환 → 새 대상 (anchor) 으로 이어짐
+   - 수식/꾸밈 → 핵심 명사구 (anchor) 를 꾸밈
+   - 분류 라벨 → 본문 → 보충 단서
+   - 메인 명사구 → 괄호 부제/약어 보충
+4. **cluster sample 일관 반복일 때만 family entry 추가**. sample 1 개거나 family 가 일관되지 않으면 `ambiguity_flags` 에 기록 + `relation_families_observed` 는 `[]` 또는 가장 빈번한 family 만.
+
+### family entry sub-field 의미
+
+각 entry 는 다음 7 field:
+
+- **family_name** (string, 자유): sample 관찰 그대로 표현. 닫힌 enum 아님. 예: `공통동작어형`, `수단-결과형`, `범위확장형`, `수식-핵심형`, `라벨-내용-보충형`, `라벨-장문 실행항목형`, `메인-보충형` — 또는 그 외 관찰된 표현.
+- **slot_template** (string): sample 관찰 골격을 **source-agnostic** 형태로. sample 단어 / 정책어 / 고유어 / 동작어 자체는 박지 X. slot 형식 예: `[수단/조치] + [로/통한 등 관찰 연결 표현] + [목표/환경/결과 명사구] + [중심 동작어]`
+- **front_segment_role** (string): 앞 segment 가 마지막 중심부와 맺는 관계 — 관찰된 표현 그대로. 예: `수단`, `조건`, `범위`, `대상`, `배경`, `병렬-대상`, `수식`, `라벨` 등.
+- **central_anchor_type** (string): 마지막 중심부 형태 — `공통 동작어` / `중심 명사구` / `보충 단서` 등.
+- **applies_when** (string): **source 의미 구조 매칭 조건**. 2b-b 가 이걸 보고 source 에 적용할지 판단. 예: `"source 가 실제 병렬 대상/목표일 때만"`, `"source 가 한 조치 → 한 효과 (수단-결과) 일 때"`, `"source 가 범위 전환 + 새 대상 일 때"`, `"source 가 단일 핵심 + 수식 일 때"`.
+- **avoid_when** (string): **이 family 적용을 피해야 하는 source / sample 조건**. 다른 family 와의 경계를 명확히 함. 예: `"sample 에 짧은 제목 골격이 일관 반복되는 경우"`, `"source 가 단순 명사 병렬일 때"`, `"sample 의 본문 길이가 source 마다 크게 다른 경우"`.
+- **evidence_sample_ids** (list[string], 필수): family 관찰된 sample id 들. 최소 1개.
+
+### family 예시 (참고용 — 닫힌 enum 아님)
+
+다음은 행정문서 양식에서 자주 관찰되는 family 예. **sample 에서 직접 관찰될 때만 entry 작성**. 없는 family 만들기 X.
+
+- **공통동작어형**: 병렬 대상 2~3개가 마지막 공통 동작어를 함께 받음. 예 골격: `[대상 A] + 및 + [대상 B] + [공통 동작어]`. applies_when: `source 가 실제 병렬 대상/목표일 때만`. avoid_when: `source 가 한 조치 → 한 결과 같은 비대칭 관계일 때`.
+- **수단-결과형**: 앞 segment 가 수단/조치, 뒤 segment 가 결과/환경/목적. 예 골격: `[수단/조치] + 로/통한 + [목표/환경 명사구] + [동작어]`. applies_when: `source 가 한 조치 → 한 효과 일 때`. avoid_when: `source 가 단순 명사 병렬일 때`.
+- **범위확장형**: 앞에서 범위 확장/전환을 명시한 뒤 새 목표 대상으로 이어짐. applies_when: `source 가 범위 전환 + 새 대상 구조일 때`. avoid_when: `source 에 범위 전환 의미가 없을 때`.
+- **수식-핵심형**: 앞부분이 핵심 명사구를 꾸미고 마지막 동작어로 닫힘. applies_when: `source 가 단일 핵심 + 수식 일 때`. avoid_when: `source 가 다중 병렬 대상일 때`.
+- **라벨-내용-보충형**: 분류 라벨 → 본문 → 보충 (시기/금액). applies_when: `source 에 분류 라벨이 명시되어 있을 때`. avoid_when: `sample 본문 길이가 source 마다 크게 다른 경우 → 라벨-장문 실행항목형 검토`.
+- **라벨-장문 실행항목형**: 괄호 라벨 + source 실행 흐름 (대상/문제 → 조치/개선 → 절차/근거 → 최종 동작어). 본문 내부 connector 와 길이는 source 에 따라 다양. 예 골격: `[괄호 분류 라벨] + [source 기반 대상/문제] + [조치/개선] + [필요 시 절차/근거/확대범위] + [source 기반 최종 동작어]`. applies_when: `라벨과 종결은 반복되지만 내부 연결 방식과 길이가 source 에 따라 달라지는 경우`. avoid_when: `sample 이 짧은 제목형의 고정 골격으로 일관 반복되는 경우`. (이 family 는 보통 `template_rigidity_observed = "semi_flexible"` 와 같이 등장.)
+- **메인-보충형**: 메인 명사구 + 괄호 부제/약어 보충. applies_when: `source 에 약어/부제 가 있을 때`. avoid_when: `source 에 약어/부제 없을 때`.
+
+### 적용 원칙
+
+- **sample 에서 직접 관찰될 때만 entry 추가**. 일반 행정문서 규칙 / 양식 외 지식 / 추측 X.
+- cluster sample 이 한 family 일관 반복이면 단일 entry — **강제 다양화 X**.
+- cluster sample 이 여러 family 혼재면 각각 entry. `evidence_sample_ids` 로 구분.
+- sample 에 없는 family 만들기 X.
+- sample 의 **주제어 · 정책어 · 고유어 · 동작어를 slot_template / family_name 에 박기 X** — source-agnostic 형태로.
+- sample 1 개 / 애매한 cluster 는 `ambiguity_flags` 에 기록 + `relation_families_observed` 는 `[]` 또는 가장 빈번한 family.
+
+## rigidity 판정 기준 (필수 축 — `template_rigidity_observed`)
+
+`template_rigidity_observed` 는 sample 들의 문장 골격이 얼마나 강하게 반복되는지 판정하는 메타 축. 2b-b 는 이 값으로 relation family 의 **적용 강도** 를 조절합니다. **길이가 아니라 구조 반복성을 우선** 판정.
+
+### 판정 시 보는 신호 (우선순위 순서)
+
+1. 중심부 (anchor) 위치가 sample 마다 반복되는가
+2. connector 조합이 sample 마다 반복되는가
+3. segment 의미 순서가 sample 마다 반복되는가
+4. 라벨/종결만 반복되고 내부는 sample 마다 달라지는가
+5. sample 마다 source 재료 보존을 위해 길이/연결이 달라지는가
+
+`raw_measurements` (길이 / 종결어 / 정보 조각 수 / connector 다양도 통계) 는 **보조 신호**. 최종 판단은 위 1~5 우선. 통계가 의미 판단을 이기지 못함.
+
+### 4 단계 정의
+
+- **rigid**: 위 1, 2, 3 모두 반복. → 2b-b 가 slot_template 강하게 적용, connector 는 sample 관찰 범위 안에서 source 의미·한국어 문법에 맞게 선택.
+- **semi_flexible**: 위 4 가 핵심 — 라벨/종결/정보 순서는 반복되지만 내부 connector 와 길이가 sample 마다 다양. → 2b-b 가 family skeleton (라벨 위치 / anchor 위치 / 종결) 만 적용, 내부 connector 와 길이는 source 실행 흐름 우선. 장문 실행항목형이 보통 이 값.
+- **flexible**: 위 5 가 핵심 — sample 마다 본문 구조가 크게 다르고 source 의 정보 양에 맞춰 길이/연결이 달라짐. → 2b-b 가 family 를 강제 template 으로 적용하지 않고 참고만 함. 라벨/종결/정보밀도/source 실행 흐름 우선.
+- **unknown**: sample 부족 (1개 이하) 또는 family/구조 혼재로 판정 불가. → 2b-b 가 보수적으로 source 사실 보존 우선.
+
+### 판정 예
+
+- `과제 1 민생경제 안정 및 경기회복 가속화 뒷받침` 같은 한 줄 정책 제목 cluster: 모든 sample 이 `[대상 A] + 및/로/넘어 + [대상 B] + [공통 동작어]` 골격 → **rigid**.
+- `(예방·감시) 철근·백신 등 ... 고도화` 같은 라벨+장문 실행항목 cluster: 라벨 위치 + 명사형 종결만 반복, 내부 길이 sample 마다 다양 → **semi_flexible**.
+- 본문 길이/연결이 sample 마다 크게 차이 나고 family 도 혼재 → **flexible**.
+- sample 1개 또는 family 도 family slot template 도 판정 불가 → **unknown**.
 
 ## 응답 양식
 
@@ -7251,6 +7349,23 @@ def build_style_profile_prompt(
             tag_str = ", ".join(f"{t}:{n}" for t, n in sorted(tag_dist.items()))
             header += f"\nsemantic_tag 분포: {tag_str}"
 
+        # rigidity 판정 보조 통계 (sample 간 다양성)
+        _rm = entry.get("raw_measurements") or {}
+        _cl_min = _rm.get("char_length_min", 0)
+        _cl_p50 = _rm.get("char_length_p50", 0)
+        _cl_max = _rm.get("char_length_max", 0)
+        _endings = _rm.get("text_endings_counter", {}) or {}
+        if _cl_max or _cl_min or _cl_p50:
+            header += f"\n[rigidity 보조 통계 — 최종 판단은 의미 우선]"
+            header += f"\n  길이 분포 (글자수): min={_cl_min} / p50={_cl_p50} / max={_cl_max}"
+            if _cl_min and _cl_max:
+                _ratio = round(_cl_max / max(_cl_min, 1), 2)
+                header += f" (max/min ratio={_ratio})"
+            if _endings:
+                _top = sorted(_endings.items(), key=lambda kv: -kv[1])[:3]
+                _top_str = ", ".join(f"'{k}':{v}" for k, v in _top)
+                header += f"\n  종결어 상위 3: {_top_str}"
+
         samples_text = "\n".join(
             f"  [{s['sample_id']}] {s['text']}"
             for s in entry.get("samples", [])
@@ -7290,6 +7405,7 @@ def parse_style_profile_from_llm(
 
     expected_roles = [e.get("role", "") for e in cluster_entries if e.get("role")]
     _allowed_density = {"high", "medium", "low", "unknown"}
+    _allowed_rigidity = {"rigid", "semi_flexible", "flexible", "unknown"}
 
     def _empty_for_role(role: str, status: str, raw_preview: str = "") -> dict:
         return {
@@ -7300,6 +7416,8 @@ def parse_style_profile_from_llm(
             "ending_pattern_observed": [],
             "density_signal": "unknown",
             "scarcity_allowance_observed": None,
+            "template_rigidity_observed": "unknown",
+            "relation_families_observed": [],
             "evidence_sample_ids": [],
             "ambiguity_flags": [],
             "content_style_rules_for_generation": [],
@@ -7380,6 +7498,32 @@ def parse_style_profile_from_llm(
 
         rules = _list_of_str(ai_p.get("content_style_rules_for_generation"))[:5]
 
+        # template_rigidity_observed enum 검증
+        rigidity = str(ai_p.get("template_rigidity_observed", "unknown") or "unknown").strip().lower()
+        if rigidity not in _allowed_rigidity:
+            rigidity = "unknown"
+
+        # relation_families_observed 파싱 — 각 entry 의 sub-field 정리
+        _raw_families = ai_p.get("relation_families_observed") or []
+        rel_families: list = []
+        if isinstance(_raw_families, list):
+            for f in _raw_families:
+                if not isinstance(f, dict):
+                    continue
+                _fn = str(f.get("family_name", "") or "").strip()
+                _st = str(f.get("slot_template", "") or "").strip()
+                if not _fn and not _st:
+                    continue  # 빈 entry skip
+                rel_families.append({
+                    "family_name": _fn,
+                    "slot_template": _st,
+                    "front_segment_role": str(f.get("front_segment_role", "") or "").strip(),
+                    "central_anchor_type": str(f.get("central_anchor_type", "") or "").strip(),
+                    "applies_when": str(f.get("applies_when", "") or "").strip(),
+                    "avoid_when": str(f.get("avoid_when", "") or "").strip(),
+                    "evidence_sample_ids": _list_of_str(f.get("evidence_sample_ids")),
+                })
+
         result[role] = {
             "role": role,
             "style_family_hint": str(ai_p.get("style_family_hint", "") or "").strip(),
@@ -7388,6 +7532,8 @@ def parse_style_profile_from_llm(
             "ending_pattern_observed": _list_of_str(ai_p.get("ending_pattern_observed")),
             "density_signal": density,
             "scarcity_allowance_observed": _parse_scarcity(ai_p.get("scarcity_allowance_observed")),
+            "template_rigidity_observed": rigidity,
+            "relation_families_observed": rel_families,
             "evidence_sample_ids": _list_of_str(ai_p.get("evidence_sample_ids")),
             "ambiguity_flags": _list_of_str(ai_p.get("ambiguity_flags")),
             "content_style_rules_for_generation": rules,
@@ -17577,6 +17723,50 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 - source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 → 생성 X.
 - source 원문에 정확히 등장하지 않는 한자 / 일본어 / 영어 단어를 새로 만들지 않습니다. 양식 sample 의 한자 / 영어 / 고유어는 새 본문에 가져오지 않습니다.
 
+## 7. 관계 family + rigidity + source 매칭 (단순 connector 모방 금지 — 가장 중요)
+
+`style_profile.relation_families_observed` 가 있으면 family 마다 `applies_when` / `avoid_when` 보고 source 의미 구조 매칭. **connector 만 기계적으로 따라하면 안 됨**. 마지막 중심 명사구 / 동작어 (anchor) 와 앞 재료의 관계가 source 의미와 맞게 구성되어야 합니다.
+
+family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 결정합니다.
+
+### rigidity 별 family 적용 강도
+
+| rigidity | slot_template 적용 | connector 자유도 | source 흐름 우선도 |
+|---|---|---|---|
+| **rigid** | slot 강하게 적용 | sample 관찰 범위 안에서 source 의미·한국어 문법에 맞게 선택 (관찰 안 된 connector X) | 낮음 — slot 우선 |
+| **semi_flexible** | skeleton (라벨 위치 / anchor 위치 / 종결 패턴) 만 적용 | 내부 connector 자유 — source 실행 흐름 우선 | 중간 — skeleton + source |
+| **flexible** | family 를 강제 template 으로 적용하지 않고 참고만 함 | 거의 자유 | 높음 — 라벨/종결/정보밀도만 모방, source 실행 흐름이 본문 결정 |
+| **unknown** | family 약하게 적용, 보수적 | 보수적 | 최우선 — source 사실 보존 우선 |
+
+**semi_flexible / flexible 인 role 은 relation_family 를 고정 문장틀로 쓰지 마세요.** 라벨 위치 / 정보 순서 / 종결 방식만 따르고, 내부 connector 와 길이는 source 실행 흐름을 우선합니다. sample 마다 연결어가 다양하면 `join_markers_observed` 는 허용 범위로만 보고 고정 template 으로 쓰지 않습니다.
+
+### source 매칭 절차
+
+각 item 의 source 재료를 분석해 어떤 family 가 적용 가능한지 판단:
+
+1. 각 family 의 `applies_when` 보고 source 의미 구조와 매칭되는 family 식별
+2. `avoid_when` 보고 적용을 피해야 하는 경우 제외
+3. 매칭된 family + rigidity 로 적용 강도 결정
+4. source 재료가 어느 family 와도 명확히 안 맞으면 가장 가까운 family + source 의미 보존 우선. 강제 매칭 X.
+
+`relation_families_observed` 가 비어 있으면 (cluster sample 에서 family 관찰 안 됨) family 매칭 skip — 단순 정보 조각 조립만 (rigidity 따라 강도 조절).
+
+### 금지 (절대)
+
+- **source 가 비병렬인데 `[결과물] + 및 + [결과물]` 식으로 평면 병렬 처리 X** — 단순 두 명사구를 connector 로만 묶고 끝내기 금지.
+- **마지막 중심부 (anchor) 없이 두 명사구를 connector 만으로 잇고 끝 X** — 양식 sample 에 anchor 가 있으면 source 기반 anchor 박음.
+- **`relation_families_observed` 에 없는 family 만들기 X**.
+- **sample 의 동작어 / 정책어 / 고유어 자체를 복사 X** — slot 안 anchor 단어는 source 기반.
+- **semi_flexible / flexible 인 role 에 rigid family slot 강제 X** — 장문 실행항목형을 짧은 제목형 골격으로 깎으면 source 정보 손실.
+- **`avoid_when` 에 해당하는 source 에 family 강제 X** — 다른 family 검토.
+
+### 좋은 예 (참고용 — 절대 강제 X)
+
+- rigidity=rigid + family `공통동작어형` (applies_when: source 가 실제 병렬) + source `[A 안정], [B 회복], [공통 동작어]` → `[A 안정] 및 [B 회복] [공통 동작어]`
+- rigidity=rigid + family `수단-결과형` (applies_when: source 가 수단→효과) + source `[조치], [효과/환경], [동작어]` → `[조치] 로 [효과 명사구] [동작어]`
+- rigidity=semi_flexible + family `라벨-장문 실행항목형` + source 가 라벨+장문 실행항목 → `(라벨) [source 대상/문제] [source 조치/개선] [필요 시 절차] [source 최종 동작어]` — connector 와 길이는 source 흐름 우선
+- rigidity=flexible + source 실행 흐름 다양 → 라벨/종결/정보밀도만 모방, source 사실·순서 우선
+
 # 출력 형식
 
 반드시 JSON 만 출력:
@@ -17665,13 +17855,16 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             ep = sp.get("ending_pattern_observed") or []
             ds = sp.get("density_signal", "unknown") or "unknown"
             sca = sp.get("scarcity_allowance_observed")
+            rigidity = (sp.get("template_rigidity_observed") or "unknown").strip().lower()
             amb = sp.get("ambiguity_flags") or []
             rules = sp.get("content_style_rules_for_generation") or []
+            rel_families = sp.get("relation_families_observed") or []
 
             has_uc = bool(uc) and any(
                 uc.get(k) is not None for k in ("min", "median", "max")
             )
-            if not (sfh or has_uc or jm or ep or rules or (ds and ds != "unknown")):
+            _has_rigidity = rigidity in ("rigid", "semi_flexible", "flexible")
+            if not (sfh or has_uc or jm or ep or rules or rel_families or _has_rigidity or (ds and ds != "unknown")):
                 continue
 
             sub: list = [f"\n### {role}"]
@@ -17694,6 +17887,39 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
                     "- 양식 sample 안에 짧은 case 관찰됨 — source 재료가 실제로 없을 때만 짧은 출력 fallback. "
                     "source 에 추가 재료 있으면 양식 정보 조립 방식으로 풍부하게 작성."
                 )
+            if _has_rigidity:
+                _rigidity_action = {
+                    "rigid": "slot_template 강하게 적용. connector 는 관찰된 범위 안에서 source 의미·문법에 맞게 선택.",
+                    "semi_flexible": "skeleton (라벨/anchor 위치/종결) 만 적용. 내부 connector·길이는 source 실행 흐름 우선.",
+                    "flexible": "family 를 강제 template 으로 쓰지 않고 참고만 함. 라벨/종결/정보밀도만 모방, source 실행 흐름 우선.",
+                }.get(rigidity, "")
+                sub.append(
+                    f"- **template_rigidity: `{rigidity}`** — {_rigidity_action}"
+                )
+            if rel_families:
+                sub.append(
+                    "- **관계 family (마지막 중심부 + 앞 segment 관계)** — 정책 §7 source 매칭 절차 적용:"
+                )
+                for _rf in rel_families:
+                    _fn = (_rf.get("family_name") or "").strip()
+                    _st = (_rf.get("slot_template") or "").strip()
+                    _fsr = (_rf.get("front_segment_role") or "").strip()
+                    _cat = (_rf.get("central_anchor_type") or "").strip()
+                    _aw = (_rf.get("applies_when") or "").strip()
+                    _av = (_rf.get("avoid_when") or "").strip()
+                    _ev = _rf.get("evidence_sample_ids") or []
+                    _ev_str = f" [근거: {', '.join(_ev)}]" if _ev else ""
+                    sub.append(f"  · **{_fn}**{_ev_str}")
+                    if _st:
+                        sub.append(f"      slot_template: {_st}")
+                    if _fsr or _cat:
+                        sub.append(
+                            f"      front_role: {_fsr or '(미명시)'} / anchor: {_cat or '(미명시)'}"
+                        )
+                    if _aw:
+                        sub.append(f"      applies_when: {_aw}")
+                    if _av:
+                        sub.append(f"      avoid_when: {_av}")
             if amb:
                 sub.append(f"- ⚠️ ambiguity: {' / '.join(amb)} — 보수적으로 처리.")
             if rules:
