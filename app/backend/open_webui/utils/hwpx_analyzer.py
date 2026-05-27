@@ -17794,6 +17794,61 @@ def parse_section_polish_from_llm(llm_response: str) -> list[dict]:
 # - 본문 의미는 그대로 (단어/문장 안 바꿈, 마커+강조만 입힘)
 
 
+def compute_layer_usage_profile(
+    layer_stats: list, total_paragraphs: int
+) -> dict:
+    """11.2b layer_stats → 2c prompt 용 usage profile bucket.
+
+    paragraph_emphasis_map[role].layer_stats + total_paragraphs_in_cluster 를 받아
+    layer 별 (coverage_bucket, density_bucket) 계산.
+
+    coverage = paragraph_count / total_paragraphs:
+        always (>= 0.90), often (>= 0.50), occasional (>= 0.15), rare (< 0.15)
+    density = segment_count / paragraph_count (등장 paragraph 당 평균 segment 수):
+        single (<= 1.3), low (<= 2.0), medium (<= 3.0), high (> 3.0)
+
+    Returns:
+        {layer_id: {"coverage", "density",
+                    "paragraph_count", "total_paragraphs",
+                    "avg_segments_when_present"}}
+    """
+    result: dict = {}
+    if not total_paragraphs or not layer_stats:
+        return result
+    for ls in layer_stats:
+        lid = ls.get("layer_id", "")
+        if not lid:
+            continue
+        p = ls.get("paragraph_count", 0) or 0
+        s = ls.get("segment_count", 0) or 0
+        cov = (p / total_paragraphs) if total_paragraphs else 0.0
+        if cov >= 0.90:
+            cb = "always"
+        elif cov >= 0.50:
+            cb = "often"
+        elif cov >= 0.15:
+            cb = "occasional"
+        else:
+            cb = "rare"
+        avg_seg = (s / p) if p else 0.0
+        if avg_seg <= 1.3:
+            db = "single"
+        elif avg_seg <= 2.0:
+            db = "low"
+        elif avg_seg <= 3.0:
+            db = "medium"
+        else:
+            db = "high"
+        result[lid] = {
+            "coverage": cb,
+            "density": db,
+            "paragraph_count": p,
+            "total_paragraphs": total_paragraphs,
+            "avg_segments_when_present": round(avg_seg, 2),
+        }
+    return result
+
+
 SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니다.
 
 ## 역할
@@ -17820,25 +17875,40 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 ## ⚠️ 글꼴 layer 적용 정책 (가장 중요 — 다른 모든 규칙보다 우선)
 
+(정책 1~9 — 모두 동등 중요. §9 layer usage profile 은 sample 분할 패턴과 같은 강도로 사용.)
+
 1. **목표는 non-base layer 를 줄이는 것이 아니라, 양식 sample 의 style 분할 규칙을 재현하는 것이다.**
 
 2. **본문 중간 non-base layer 는 허용한다.** 단, 반드시 양식 sample 또는 role 별 layer guide 에 근거가 있어야 한다.
 
 3. **새 본문에서 "중요해 보이는 표현" 을 자유롭게 고르지 않는다.** 대신 같은 role 의 sample 에서 반복되는 분할 패턴을 따른다.
 
-4. **sample 의 분할 패턴을 우선한다.**
+4. **sample 의 분할 패턴은 기본 기준 — usage profile 과 함께 따른다.**
    - sample 에서 본문이 base / non-base / base / non-base 로 나뉘면 새 본문도 비슷한 수와 위치로 나눈다.
    - sample 에서 특정 의미 기능 segment 가 layer 를 받으면 새 본문에서도 같은 기능 segment 에 적용한다.
-   - sample 보다 더 많은 non-base span 을 만들지 않는다.
+   - sample 분할 패턴은 기본 기준이다. 단 layer usage profile 이 제공된 경우에는 usage profile 도 함께 따른다.
+   - `coverage=always/often` 또는 `density=medium/high` 인 layer 는 sample 일부 예시의 span 개수보다 적게 제한하지 말고, rule 조건에 맞는 segment 가 있으면 usage profile 에 맞게 반복 적용한다.
+   - 근거 없이 sample 보다 많은 non-base span 을 새로 만들지는 않는다 (usage profile 이 근거가 됨).
 
 5. **layer guide 의 rules_for_generation 이 있으면 그 규칙을 따른다.**
    예: content_label, 항목번호, 괄호 안 카테고리, 정책수단, 결과 명사구, 인용구, 수치 구간 등.
 
-6. **단순히 "핵심어", "중요 표현" 처럼 너무 넓은 규칙은 sample 의 분할 개수와 위치 패턴 안에서만 적용한다.** 아무 단어나 추가로 고르지 않는다.
+6. **넓은 규칙은 자유 선택 X — 의미 기능 + usage profile 근거.** 단순히 "핵심어", "중요 표현" 처럼 넓은 규칙은 자유 선택하지 않는다. 다만 `rules_for_generation` 의 의미 기능과 layer usage profile 이 함께 주어진 경우에는, sample 의 기능적 분할 패턴과 usage profile 을 근거로 적용한다. sample 예시의 정확한 span 개수만으로 제한하지 않는다.
 
 7. **불확실하면 해당 segment 만 base 로 둔다. 하지만 문단 전체를 무조건 base 로 뭉개지 않는다.**
 
 8. **base layer 의 범위 — 잘못 읽지 말 것.** base 는 body 일반 문장에 대한 기본값일 뿐, outer_marker · content_label · 고정 들여쓰기 span 을 base 로 강제하라는 뜻이 아니다. 이 구간들은 양식 sample 의 layer 배치를 우선 복제한다 (sample 에 시작 공백이 `[[em1]] [[/em1]]` 형태로 박혀 있으면 그 공백 layer 그대로 유지).
+
+9. **layer usage profile 적용 강제 — 선택 참고 X, 적용 강도 제약 O.**
+
+   role 별 layer guide 에 `usage: coverage=..., density=...` 가 박혀 있으면 선택 참고가 아니라 **적용 강도 제약** 으로 사용한다.
+
+   - `coverage=always` 인 non-base layer 는 해당 role 의 **필수 반복 style** 이다. `rules_for_generation` 에 맞는 segment 가 새 paragraph 에 있으면 **반드시 적용**하며, 조건에 맞는 segment 가 있는데 0 회 적용하는 것은 금지 (rule 조건에 맞는 segment 가 전혀 없는 경우만 예외 — 5번째 항목 참조).
+   - `coverage=often` 인 non-base layer 는 해당 role 의 **주요 반복 style** 이다. `rules_for_generation` 에 맞는 segment 가 새 paragraph 에 있으면 **적극 적용**하되, 문장에 맞는 segment 가 부족한 경우 0 회도 가능.
+   - `density=high` 또는 `medium` 인 layer 는 한 paragraph 안에서 **여러 segment 에 반복 적용**되는 패턴이다. 조건에 맞는 segment 가 여러 개 있으면 하나만 고르지 말고 sample 처럼 **여러 span 으로 나누어 적용**한다. 단, paragraph 당 정확한 개수를 맞추라는 뜻이 아니라 sample 처럼 여러 핵심 segment 로 나누어 적용하라는 뜻.
+   - `coverage=rare` 또는 `occasional` 인 layer 는 **예외 style** 이다. 표면 패턴이 보여도 과적용하지 않는다. 해당 rule 의 의미 기능이 명확할 때만 적용한다. paragraph 마다 반복 적용하지 않는다.
+   - **수치·금액·기간·비율·괄호 관련 layer 가 `rare` 또는 `occasional` 이면, 숫자나 괄호가 있다는 이유만으로 paragraph 마다 반복 적용하지 마세요.** sample 에서 같은 의미 기능으로 layer 받은 자리에만 제한적으로 적용.
+   - **usage profile 은 `rules_for_generation` 을 대체하지 않는다.** coverage 가 높아도 rule 조건에 맞는 segment 가 새 본문에 전혀 없으면 억지로 만들지 말고 base 로 둔다.
 
 ## 입력 (user 메시지)
 1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·layer 없는 본문.
@@ -18058,12 +18128,47 @@ def build_section_style_prompt(
                 f"- base layer: `{base_lid}` — body 일반 문장 골격의 기본 style. "
                 f"outer_marker · content_label · 시작 공백 span 은 sample layer 배치 우선 (base 로 덮지 X)."
             )
+            # usage profile (coverage / density bucket) — sample 빈도 힌트.
+            # paragraph_emphasis_map.layer_stats + total_paragraphs_in_cluster 기반.
+            _pem_for_usage = (paragraph_emphasis_map or {}).get(role_name) or {}
+            _usage_profile = compute_layer_usage_profile(
+                _pem_for_usage.get("layer_stats") or [],
+                _pem_for_usage.get("total_paragraphs_in_cluster", 0) or 0,
+            )
             if _layers_with_rules:
                 em_lines.append("- 규칙 있는 non-base layer (적용 가능):")
                 for lid, rules in _layers_with_rules:
                     em_lines.append(f"    - `[[{lid}]]...[[/{lid}]]`:")
                     for r in rules:
                         em_lines.append(f"        - {r}")
+                    _up = _usage_profile.get(lid)
+                    if _up:
+                        _cov = _up["coverage"]
+                        _den = _up["density"]
+                        if _cov == "always":
+                            _action = (
+                                "주력 반복 layer — 조건에 맞는 segment 가 "
+                                "새 paragraph 에 있으면 반드시 적용 (0 회 금지)"
+                            )
+                        elif _cov == "often":
+                            _action = (
+                                "주력 반복 layer — 조건에 맞는 segment 가 "
+                                "새 paragraph 에 있으면 적극 적용 (누락 주의)"
+                            )
+                        else:  # occasional, rare
+                            _action = (
+                                "예외 layer — 표면 패턴만으로 적용 X. "
+                                "rule 의미 기능이 명확할 때만 제한 적용"
+                            )
+                        if _cov in ("always", "often"):
+                            if _den in ("high", "medium"):
+                                _action += " · 한 paragraph 안 여러 span 으로 분할"
+                            elif _den == "single":
+                                _action += " · 보통 paragraph 당 1 회"
+                        em_lines.append(
+                            f"        - usage: coverage={_cov}, density={_den} "
+                            f"— {_action}"
+                        )
             else:
                 em_lines.append(
                     "- layer guide에는 새로 일반화할 non-base 규칙이 없음. "
@@ -18088,7 +18193,8 @@ def build_section_style_prompt(
                         "- 양식 본보기 sample "
                         "(마커 / 분류 라벨 / 본문 내부 style 분할 규칙 확인용. "
                         "sample 의 분할 개수·순서·layer 배치를 우선 모방하세요. "
-                        "단 sample 보다 더 많은 non-base span 을 새로 만들지 마세요):"
+                        "다만 usage profile 이 제공된 layer 는 sample 예시의 "
+                        "정확한 개수보다 usage profile 의 적용 강도를 함께 따르세요):"
                     )
                     for sp in _picked:
                         ann = sp.get("annotated_text") or ""
@@ -18104,9 +18210,12 @@ def build_section_style_prompt(
         if em_lines:
             emphasis_text = (
                 "## 글꼴 layer 가이드 (role 별)\n"
-                "위 정책 1~7 을 반드시 따릅니다. 양식 sample 의 분할 패턴 (수·위치·순서) 을 우선 모방하세요.\n"
+                "위 정책 1~9 를 반드시 따릅니다. 양식 sample 의 분할 패턴 (수·위치·순서) 을 기본 기준으로 모방하세요.\n"
                 "외부 마커 + 분류 라벨 + 본보기 반복 분할 규칙 자리는 non-base 허용. "
-                "단 sample 보다 더 많은 non-base span 을 새로 만들지 X.\n"
+                "단, usage profile 없이 근거 없는 non-base span 을 새로 만들지 X. "
+                "usage profile 이 `always/often` 또는 `medium/high` 인 layer 는 "
+                "sample 예시의 정확한 span 수에 묶이지 말고, "
+                "rules_for_generation 에 맞는 segment 에 반복 적용.\n"
                 "여는 태그와 닫는 태그는 반드시 같은 N (짝 강제).\n"
                 + "\n".join(em_lines)
                 + "\n\n"
