@@ -17761,13 +17761,55 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 - **자식 item 이 여러 개로 늘어도 부모 role 의 양식 sample 이 headline 형이면 부모 text 를 단순 라벨로 축소하지 말고** source 와 자식의 핵심 재료를 압축한 headline 으로 유지.
 - 보강 시 들어가는 사실 / 시기 / 대상 / 결과는 **반드시 source 또는 1차 트리에 존재**.
 
-## 3. 중복 방지 — 자식 정보 합치기 조건부
+## 3. 자식 있는 제목형 parent — headline 요약 회수
 
-부모 text 보강 시 자식 item 정보 참고할 수 있지만 **무조건 합치기 X**:
+user 메시지의 `headline_rewrite_candidates` 블록에 포함된 item id 는
+**기본적으로 재작성**합니다. 1 차 text 유지는 아래 Skip 4 개 중 하나에 명확히 해당할 때만 허용.
+"길어 보인다" / "그럴듯하다" / "원본 살리고 싶다" 같은 추상적 이유로 유지 X.
 
-- **양식 sample 에서 시기 / 부연이 부모 본문 안에 통합되는 패턴** → 부모에 통합 가능.
-- **양식 sample 에서 시기 / 부연이 별도 자식 (note / detail) 로 분리되는 패턴** → 자식에 유지. 부모에 중복 X.
-- 기본값: 부모에는 핵심 추진 내용, 자식에는 시기 / 금액 / 근거 같은 보충 정보.
+대상이 아닌 (목록에 없는) item 은 회수 mode 대상 아님 — 1 차 text 유지 또는 §7 기반 polish 만.
+
+### 회수 절차 (default — 대상 item)
+
+1. 직계 자식 item 의 text 를 훑어 **공통 대상 · 조치 · 목적 · 효과 anchor 후보** 추출.
+2. **핵심 대상 · 조치 · 수치 · 기관명**은 **반드시 source 또는 직계 자식 text 에 등장한 단어** 만 사용.
+   양식 sample 의 정책어 · 동작어 · 고유어 가져오기 X (§1 + §6 동일).
+3. **종결 동작어**는 source / 자식 text 의 표현을 **우선** 사용. 없으면 style_profile.ending_pattern_observed 의 종결 방식에 맞는 **보수적 명사형 동작어**. source 의미를 넘는 새 효과 만들기 X.
+4. 자식 text 의 **절 / 문장 구조를 그대로 복제 X**. 단 고유명사 · 제도명 · 시스템명 · 핵심 명사구는 그대로 사용 가능.
+5. 추출 재료를 §7 의 relation_family + rigidity 규칙으로 조립.
+6. **자식 item 은 그대로 유지** — 삭제 / 병합 / 자식의 구체 수치·시기·기관명 부모 복제 X.
+
+### Skip 조건 (4 개 — 명백한 경우만 1 차 유지)
+
+- **A. 단순 명칭형 양식**: style_profile.density=low + unit_count.max ≤ 1.
+- **B. 자식 완전 이질**: 직계 자식들의 의미가 서로 무관해서 공통 상위어를 만들 수 없음.
+- **C. 이미 부합**: 1 차 text 가 다음 셋 **모두** 만족:
+    - 직계 자식들의 핵심 범주를 **대부분 포함** (자식 2~3 개면 N-1 개 이상, 자식 4 개 이상이면 3 개 이상) **또는** 자식 전체를 포괄하는 공통 상위어가 이미 포함.
+    - style_profile.unit_count_observed.median 이상의 정보 조각.
+    - ending_pattern_observed 종결 방식 부합.
+- **D. 효과어 부재**: 재작성하려면 source · 자식 · ending_pattern 어디에도 없는 효과 동사를 새로 만들어야만 함.
+
+이 4 개 외 이유 (안전 / 보수 / 원본 살리기 등) 로 유지 X.
+
+### flexible cluster — slot 강제 금지
+
+`template_rigidity_observed == "flexible"` cluster (예: `중분류 실행항목형`) 는
+sample 마다 골격 다양. 모든 instance 를 한 골격 (`A·B·C 등 D 강화` 등) 으로 획일화 X.
+자식 의미 (수단→결과 / 병렬조치 / 보충 등) 에 맞는 family 선택. 안 맞으면 family skip — source 흐름 + ending_pattern 만.
+
+### 회수 vs 중복 (구분)
+
+- **회수 (OK)**: 자식 항목명을 키워드 수준으로 anchor 에 압축.
+  예: 자식 = `(운영보고) 월간 운영내역 보고`, `(모니터링) 콘솔 모니터링`, `(대시보드) 통합 운영 대시보드 제공`
+  → 부모 = `운영보고·모니터링·대시보드 제공 등 클라우드 시스템 운영관리 강화`.
+- **중복 (금지)**: 자식 절 / 문장 구조 그대로 복제.
+  예: 부모 = `월간 운영내역 보고 수행 및 콘솔 모니터링 및 통합 대시보드 제공 ...` (자식 문장 자체 옮김).
+- 차이: 자식 구체 수치·시기·기관명은 자식에, 부모는 **키워드 + 공통 anchor 만**.
+
+### 자기 점검 (output 후 강제)
+
+- 부모 text 가 자식의 **절 / 문장 구조를 그대로 옮긴 형태**면 키워드 발췌로 재작성.
+- 부모 text 의 종결 동작어가 source · 자식 · style_profile.ending_pattern_observed 어디에도 없는 새 효과 동사면 source 의미 내 동작어로 교체.
 
 ## 4. source 재료 회수 (기존 item text 보강 시)
 
@@ -17881,6 +17923,88 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 """
 
 
+# §3 headline 요약 회수 후보 판정에서 "자식이 supporting/note 류" 인지 거르는 기준.
+# 이 set 안에 속한 text_type 만 있는 부모는 회수 대상이 아님 (라벨형 실행본문).
+_HEADLINE_REWRITE_NON_HEADLINE_CHILD_TYPES = frozenset({
+    "supporting", "note", "caption", "footnote",
+})
+
+
+def _compute_headline_rewrite_candidates(
+    items_1st: list[dict],
+    role_text_types: dict | None,
+    style_profiles: dict | None,
+) -> list[dict]:
+    """1차 본문 트리에서 §3 headline 요약 회수 mode 대상 item 을 판정한다.
+
+    진입 조건 (모두 만족):
+      1. 직계 자식 ≥ 2
+      2. parent role 의 text_type == "heading"
+      3. 직계 자식 중 supporting/note/caption/footnote 가 아닌 자식 ≥ 1
+         (cluster_24 같은 라벨형 실행본문 — 자식이 supporting only — 은 제외)
+      4. style_profile 이 명백한 low-density 단순 명칭형 이 아님
+         (density=low + unit_count.max ≤ 1 인 경우만 차단)
+
+    11.2 metrics (density medium/high, unit_count median, family 유무) 는
+    필수 조건이 아니라 reason 강도 신호로만 사용.
+
+    Returns:
+        [{id, role, direct_child_count, rewrite_mode, reason}, ...]
+    """
+    from collections import defaultdict
+    rtt = role_text_types or {}
+    sps = style_profiles or {}
+
+    children_by_pid: dict = defaultdict(list)
+    for it in items_1st:
+        pid = it.get("parent_id")
+        if pid is not None:
+            children_by_pid[pid].append(it)
+
+    candidates: list = []
+    for it in items_1st:
+        item_id = it.get("id")
+        role = it.get("role", "")
+        children = children_by_pid.get(item_id, [])
+
+        # (1) 직계 자식 ≥ 2
+        if len(children) < 2:
+            continue
+        # (2) parent heading
+        if (rtt.get(role) or {}).get("text_type") != "heading":
+            continue
+        # (3) 자식 중 supporting/note 등이 아닌 자식 ≥ 1
+        has_non_supporting_child = any(
+            ((rtt.get(c.get("role", "")) or {}).get("text_type", "")
+             not in _HEADLINE_REWRITE_NON_HEADLINE_CHILD_TYPES)
+            for c in children
+        )
+        if not has_non_supporting_child:
+            continue
+
+        sp = sps.get(role) or {}
+        sp_ok = sp.get("_parse_status") in (None, "ok")
+        density = sp.get("density_signal", "unknown") if sp_ok else "no_profile"
+        uc = sp.get("unit_count_observed") or {}
+        families = sp.get("relation_families_observed") or []
+
+        # (4) 명백한 low-density 단순 명칭형 차단
+        if sp_ok and density == "low" and (uc.get("max") or 0) <= 1:
+            continue
+
+        candidates.append({
+            "id": item_id,
+            "role": role,
+            "direct_child_count": len(children),
+            "rewrite_mode": "headline_summary",
+            "reason": (
+                f"density={density}; unit_median={uc.get('median')}; "
+                f"family={len(families)}; child={len(children)}"
+            ),
+        })
+    return candidates
+
+
 def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[dict]:
     """2b-b: 1차 본문 트리를 받아 양식 sample 정보 조립 방식 적용 + 누락 instance 보충.
 
@@ -17912,6 +18036,7 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
     content_text = fill_kwargs.get("content_text") or ""
     content_images = fill_kwargs.get("content_images") or []
     marker_policy_1f = fill_kwargs.get("marker_policy_1f")
+    role_text_types = fill_kwargs.get("role_text_types") or {}
 
     # ─ pattern 안 등장 role 수집 (catalog filter 용) ─────────────
     pattern_roles_local: set = set()
@@ -17930,6 +18055,20 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
           "role": it.get("role"), "text": it.get("text", "")} for it in items_1st],
         ensure_ascii=False, indent=2,
     )
+
+    # ─ §3 headline 요약 회수 후보 (code-side trigger) ───────────
+    _headline_candidates = _compute_headline_rewrite_candidates(
+        items_1st, role_text_types, style_profiles,
+    )
+    candidates_section = ""
+    if _headline_candidates:
+        _cand_json = _json.dumps(_headline_candidates, ensure_ascii=False, indent=2)
+        candidates_section = (
+            "## headline 요약 회수 대상 (code 지정)\n"
+            "아래 id 의 item 은 §3 에 따라 **기본적으로 재작성**합니다. "
+            "1 차 유지는 §3 의 Skip 4 개 중 하나에 명확히 해당할 때만.\n\n"
+            f"```json\n{_cand_json}\n```\n\n"
+        )
 
     # ─ style_section (11.2 결과) ─────────────────────────────────
     style_section = ""
@@ -18104,6 +18243,7 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
         f"같은 source 와 양식 sample 을 다시 보고 양식의 정보 조립 방식에 맞춰 최종 본문을 작성하세요. "
         f"구조 (role / parent_id / variant) 는 유지, text 는 적극 재작성.\n"
         f"```json\n{items_json}\n```\n\n"
+        f"{candidates_section}"
         f"{style_section}"
         f"## 양식 정보 (최종 본문 작성 기준 — segment 위치 / 연결 / 종결 적용)\n\n"
         f"### 대제목\n"
