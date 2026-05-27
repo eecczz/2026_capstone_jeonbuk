@@ -17761,55 +17761,27 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 - **자식 item 이 여러 개로 늘어도 부모 role 의 양식 sample 이 headline 형이면 부모 text 를 단순 라벨로 축소하지 말고** source 와 자식의 핵심 재료를 압축한 headline 으로 유지.
 - 보강 시 들어가는 사실 / 시기 / 대상 / 결과는 **반드시 source 또는 1차 트리에 존재**.
 
-## 3. 자식 있는 제목형 parent — headline 요약 회수
+## 3. 자식 있는 제목형 parent — headline 요약 회수 (재료 범위 확장만)
 
-user 메시지의 `headline_rewrite_candidates` 블록에 포함된 item id 는
-**기본적으로 재작성**합니다. 1 차 text 유지는 아래 Skip 4 개 중 하나에 명확히 해당할 때만 허용.
-"길어 보인다" / "그럴듯하다" / "원본 살리고 싶다" 같은 추상적 이유로 유지 X.
+user 메시지의 `headline_rewrite_candidates` 블록에 포함된 item id 는 1 차 text 를 최종 제목으로 확정하지 말고, 직계 자식 text 를 **추가 재료**로 참고해 재작성합니다. 단,
 
-대상이 아닌 (목록에 없는) item 은 회수 mode 대상 아님 — 1 차 text 유지 또는 §7 기반 polish 만.
+- **자식 item 은 유지** — 삭제 / 병합 X.
+- 부모 text 에 자식의 **세부 문장을 그대로 복제 X**. 고유명사 · 제도명 · 시스템명 · 핵심 명사구는 사용 가능.
+- 부모 text 에 들어갈 **사실 · 대상 · 수치 · 기관명 · 핵심 명사구는 source 또는 직계 자식 text 에 근거**해야 한다. **종결 방식은 style_profile.ending_pattern_observed 를 따르되, source 의미를 넘는 새 효과를 만들지 않는다.**
+- **§3 은 connector / slot_template / 동작어 / 완성 문장 형태를 제공하지 않는다.** 양식에서 해당 role 에 관찰된 정보 조각 수, relation_family, 연결 방식, 종결 방식에 맞는 수준으로만 반영. **문장 조립은 §7 의 style_profile.relation_families_observed + rigidity 규칙에 위임**한다.
 
-### 회수 절차 (default — 대상 item)
-
-1. 직계 자식 item 의 text 를 훑어 **공통 대상 · 조치 · 목적 · 효과 anchor 후보** 추출.
-2. **핵심 대상 · 조치 · 수치 · 기관명**은 **반드시 source 또는 직계 자식 text 에 등장한 단어** 만 사용.
-   양식 sample 의 정책어 · 동작어 · 고유어 가져오기 X (§1 + §6 동일).
-3. **종결 동작어**는 source / 자식 text 의 표현을 **우선** 사용. 없으면 style_profile.ending_pattern_observed 의 종결 방식에 맞는 **보수적 명사형 동작어**. source 의미를 넘는 새 효과 만들기 X.
-4. 자식 text 의 **절 / 문장 구조를 그대로 복제 X**. 단 고유명사 · 제도명 · 시스템명 · 핵심 명사구는 그대로 사용 가능.
-5. 추출 재료를 §7 의 relation_family + rigidity 규칙으로 조립.
-6. **자식 item 은 그대로 유지** — 삭제 / 병합 / 자식의 구체 수치·시기·기관명 부모 복제 X.
-
-### Skip 조건 (4 개 — 명백한 경우만 1 차 유지)
+### Skip 조건 (1 차 text 유지)
 
 - **A. 단순 명칭형 양식**: style_profile.density=low + unit_count.max ≤ 1.
-- **B. 자식 완전 이질**: 직계 자식들의 의미가 서로 무관해서 공통 상위어를 만들 수 없음.
-- **C. 이미 부합**: 1 차 text 가 다음 셋 **모두** 만족:
-    - 직계 자식들의 핵심 범주를 **대부분 포함** (자식 2~3 개면 N-1 개 이상, 자식 4 개 이상이면 3 개 이상) **또는** 자식 전체를 포괄하는 공통 상위어가 이미 포함.
-    - style_profile.unit_count_observed.median 이상의 정보 조각.
-    - ending_pattern_observed 종결 방식 부합.
-- **D. 효과어 부재**: 재작성하려면 source · 자식 · ending_pattern 어디에도 없는 효과 동사를 새로 만들어야만 함.
+- **B. 자식이 무관한 보충뿐**: 직계 자식이 부모 제목 의미와 무관한 보충 (note / detail) 뿐.
+- **C. 이미 부합**: 1 차 text 가 직계 자식 전체를 충분히 대표하고 style_profile.unit_count_observed / ending_pattern_observed 에 부합.
 
-이 4 개 외 이유 (안전 / 보수 / 원본 살리기 등) 로 유지 X.
+이 외 이유 (안전 / 보수 / 원본 살리기 등) 로 유지 X.
 
-### flexible cluster — slot 강제 금지
+### 자기 점검
 
-`template_rigidity_observed == "flexible"` cluster (예: `중분류 실행항목형`) 는
-sample 마다 골격 다양. 모든 instance 를 한 골격 (`A·B·C 등 D 강화` 등) 으로 획일화 X.
-자식 의미 (수단→결과 / 병렬조치 / 보충 등) 에 맞는 family 선택. 안 맞으면 family skip — source 흐름 + ending_pattern 만.
-
-### 회수 vs 중복 (구분)
-
-- **회수 (OK)**: 자식 항목명을 키워드 수준으로 anchor 에 압축.
-  예: 자식 = `(운영보고) 월간 운영내역 보고`, `(모니터링) 콘솔 모니터링`, `(대시보드) 통합 운영 대시보드 제공`
-  → 부모 = `운영보고·모니터링·대시보드 제공 등 클라우드 시스템 운영관리 강화`.
-- **중복 (금지)**: 자식 절 / 문장 구조 그대로 복제.
-  예: 부모 = `월간 운영내역 보고 수행 및 콘솔 모니터링 및 통합 대시보드 제공 ...` (자식 문장 자체 옮김).
-- 차이: 자식 구체 수치·시기·기관명은 자식에, 부모는 **키워드 + 공통 anchor 만**.
-
-### 자기 점검 (output 후 강제)
-
-- 부모 text 가 자식의 **절 / 문장 구조를 그대로 옮긴 형태**면 키워드 발췌로 재작성.
-- 부모 text 의 종결 동작어가 source · 자식 · style_profile.ending_pattern_observed 어디에도 없는 새 효과 동사면 source 의미 내 동작어로 교체.
+- 부모 text 가 자식의 절 / 문장 구조 그대로 옮긴 형태면 키워드 발췌로 재작성.
+- 부모 text 의 단어 · 종결이 source · 자식 · style_profile 어디에도 근거 없는 새 표현이면 source / 자식 / style_profile 안 표현으로 교체.
 
 ## 4. source 재료 회수 (기존 item text 보강 시)
 
