@@ -18946,214 +18946,138 @@ def compute_layer_usage_profile(
     return result
 
 
-SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니다.
+SECTION_STYLE_PROMPT = """당신은 한국 행정문서 본문에 양식의 outer marker 와 inline style layer markup 을 입히는 형식 작성자입니다.
 
 ## 역할
-이미 작성된 본문 트리에 양식의 **형식** (outer_marker + inline style layer markup) 을 입힙니다.
-본문 의미·문장은 거의 그대로 보존.
+이미 작성된 본문 트리에 양식의 형식 (outer_marker + inline style layer markup) 만 입힙니다.
+본문 의미·문장은 거의 그대로 보존. 단어·문장 의미 변경 금지.
+문단 앞 공백은 출력하지 않습니다 (코드가 자동 부착).
 
-출력 text 는 outer_marker 와 inline style layer 만 포함합니다. 문단 앞 공백은 출력하지 않습니다.
-
-## 핵심 개념 분리 (먼저 익히세요)
+## 핵심 개념
 
 각 item text 는 다음 segment 로 나누어 처리:
 
-- **outer_marker**: 문단 앞 장식 기호 / 번호. 예: `□`, `➊`, `Ⅰ.`, `1)`, `[전략1]`.
-- **content_label**: 본문 초반의 분류 라벨. 예: `(부지계약)`, `(시기)`, `(투자규모)`. **본문 내용** — 삭제 / 교체 X.
-- **body**: content_label 뒤의 실제 본문.
-- **inner_parenthetical**: body 안에 들어간 보충 괄호. 예: `(2 공구)`, `(순 공사비 6 천억원 등)`.
+- **outer_marker**: 문단 앞 장식 기호 / 번호 (`□`, `➊`, `Ⅰ.`, `1)`, `[전략1]` 등).
+- **content_label**: body 초반 분류 라벨 (`(부지계약)`, `(시기)` 등). **본문 내용** — 삭제·변경 X.
+- **body**: outer_marker 와 content_label 뒤의 실제 본문.
 
-**outer_marker 와 content_label 을 혼동하지 마세요**. content_label 은 마커가 아닙니다.
+**outer_marker 와 content_label 을 혼동하지 마세요.** content_label 은 마커가 아니라 본문 라벨.
 
-## 글꼴 layer 용어 (중요)
+## 글꼴 layer 용어
 
-`[[emN]]...[[/emN]]` 은 **강조 표시가 아닙니다**. 원본 양식의 **글꼴 layer 재현용 style 표시** 입니다.
+`[[emN]]...[[/emN]]` 은 강조 표시가 아니라 원본 양식의 **글꼴 layer 재현용 style 표시**.
 
-- **base layer**: body 일반 문장 골격에 쓰는 기본 style. outer_marker · content_label 은 sample 의 layer 배치가 우선이며 base 로 덮지 않는다.
-- **non-base layer**: 양식이 특정 위치 (마커, 분류 라벨 등) 에 다른 글꼴 박은 자리.
+- **base layer**: body 일반 문장 골격의 기본 style.
+- **non-base layer**: 양식이 특정 위치 (마커 / 분류 라벨 / 본문 일부) 에 다른 글꼴 박은 자리.
 
-## ⚠️ 규칙 충돌 시 우선순위
+## 1. 마커 결정 (item 마다)
 
-1. **본문 의미와 원문 텍스트 보존** — 마커·강조만 입히고 단어·문장 의미를 바꾸지 않는다.
-2. **body 전체를 하나의 non-base layer 로 감싸기 금지** — paragraph 통째가 단일 **non-base** em wrap 으로만 끝나는 형태만 금지. paragraph 전체가 base layer 하나로 구성되는 것은 정상 (허용). body 안 여러 의미 단위 강조도 허용.
-3. **조사·연결어·서술어 어미·문장부호는 base 로 분리** — non-base span 은 의미 단위 (명사구·동사구) 만. 연결어로 시작/끝 X.
-4. **`coverage=always` / `density=high` layer 는 조건 맞는 의미 단위에 적극 적용** — 여러 span 으로 반복. 핵심 명사구를 "일반 설명" 핑계로 base 처리 X.
-5. **outer_marker · content_label 은 sample layer 우선** — base 로 덮지 않는다.
-6. **sample 분할 패턴 참고** — usage profile 이 있으면 함께 적용.
+각 item 의 role 을 보고 그 role 의 양식 sample + 마커 힌트로 판단:
 
-**핵심 정신**: "base 꼭 남겨라" = paragraph 전체 base 가 아니라 **조사·연결어만** base. "always/high 적용해라" = paragraph 전체 강조가 아니라 **의미 단위에 여러 번** 강조. 정답은 **의미 단위 강조 + 연결어 base 분리**.
-
-## ⚠️ 글꼴 layer 적용 정책 (가장 중요 — 다른 모든 규칙보다 우선)
-
-1. **목표는 non-base layer 를 줄이는 것이 아니라, 양식 sample 의 style 분할 규칙을 재현하는 것이다.**
-
-2. **본문 중간 non-base layer 는 허용한다.** 단, 반드시 양식 sample 또는 role 별 layer guide 에 근거가 있어야 한다.
-
-3. **새 본문에서 "중요해 보이는 표현" 을 자유롭게 고르지 않는다.** 대신 같은 role 의 sample 에서 반복되는 분할 패턴을 따른다.
-
-4. **sample 의 분할 패턴은 기본 기준 — usage profile 과 함께 따른다.**
-   - sample 에서 본문이 base / non-base / base / non-base 로 나뉘면 새 본문도 비슷한 수와 위치로 나눈다.
-   - sample 에서 특정 의미 기능 segment 가 layer 를 받으면 새 본문에서도 같은 기능 segment 에 적용한다.
-   - sample 분할 패턴은 기본 기준이다. 단 layer usage profile 이 제공된 경우에는 usage profile 도 함께 따른다.
-   - `coverage=always/often` 또는 `density=medium/high` 인 layer 는 sample 일부 예시의 span 개수보다 적게 제한하지 말고, rule 조건에 맞는 segment 가 있으면 usage profile 에 맞게 반복 적용한다.
-   - 근거 없이 sample 보다 많은 non-base span 을 새로 만들지는 않는다 (usage profile 이 근거가 됨).
-
-5. **layer guide 의 rules_for_generation 이 있으면 그 규칙을 따른다.**
-   예: content_label, 항목번호, 괄호 안 카테고리, 정책수단, 결과 명사구, 인용구, 수치 구간 등.
-
-6. **넓은 규칙은 자유 선택 X — 의미 기능 + usage profile 근거.** 단순히 "핵심어", "중요 표현" 처럼 넓은 규칙은 자유 선택하지 않는다. 다만 `rules_for_generation` 의 의미 기능과 layer usage profile 이 함께 주어진 경우에는, sample 의 기능적 분할 패턴과 usage profile 을 근거로 적용한다. sample 예시의 정확한 span 개수만으로 제한하지 않는다.
-
-7. **body layer 분할 — paragraph 전체 non-base wrap 금지 + 의미 단위 강조 + 연결어 base 분리.**
-
-   - **paragraph 전체가 해당 role 의 base layer 하나로만 구성되는 것은 허용한다.** 강조 없는 cluster (non-base layer 가 없거나 본문에 적용 안 되는 경우) 는 paragraph 전체 base wrap 이 정상.
-   - **금지되는 것은 body 전체를 base 가 아닌 하나의 non-base layer 로만 감싸는 경우다.** `[[em2]]paragraph 전체 본문[[/em2]]` (em2 가 non-base 일 때) 처럼 끝까지 한 non-base wrap 으로만 끝나는 형태 X.
-   - **`coverage=always` / `density=high` layer 는 body 안의 여러 의미 단위에 반복 적용한다** (§9 와 함께).
-   - **base 로 남길 것** = 조사·연결어·서술어 어미·문장부호·순수 연결 구간. 그것뿐.
-   - **핵심 명사구·정책 대상·정책 수단·사업명·기능명·행위 명사구를 "일반 설명" 이라는 이유로 base 처리하지 X**. sample 또는 usage profile 에 근거 있으면 강조.
-   - 불확실한 segment 만 base 로 둔다 (= "일반 설명" 광범위 분류 X, 진짜 모호한 segment 만).
-   - 단, 양식 sample 에서 같은 role 의 body 전체가 실제로 non-base layer 만 쓰인 특수 클러스터는 sample 을 따른다 (예외).
-
-   ### span 경계 규칙 (절대 — 사용자 발견 사례 방지)
-
-   - **non-base span 은 의미 단위 (명사구·동사구) 로만 잡는다.**
-   - **non-base span 은 조사·연결어로 시작하거나 끝나면 안 된다.**
-   - 다음은 핵심 명사구 자체가 아니면 **base layer 에 둔다**: `및`, `또는`, `그리고`, `하며`, `하고`, `통해`, `위한`, `등`, `및`, `의`, `를`, `을`, `이`, `가`, `에`, `에서`, `로`, `으로`.
-
-   **올바른 예시** — `A 및 B` 구조에서 A 와 B 가 강조 대상이면:
-   ```
-   [[emX]]A[[/emX]] 및 [[emX]]B[[/emX]]      ← 정답
-   [[emX]]A 및 B[[/emX]]                      ← 금지 (연결어 포함)
-   [[emX]]및 B[[/emX]]                        ← 금지 (연결어로 시작)
-   [[emX]]A 및[[/emX]] B                      ← 금지 (연결어로 끝)
-   ```
-
-   사용자 발견 사례 (잘못된 출력):
-   `[[em1]]서버·DB 접근제어 [[/em1]][[em2]]및 로그 수집·분석[[/em2]]`
-   → em2 가 `및` 로 시작하는 게 위반. 정답:
-   `[[em2]]서버·DB 접근제어[[/em2]] 및 [[em2]]로그 수집·분석[[/em2]]`
-
-8. **base layer 의 범위 — 잘못 읽지 말 것.** base 는 body 일반 문장에 대한 기본값일 뿐, outer_marker · content_label 을 base 로 강제하라는 뜻이 아니다. 이 구간들은 양식 sample 의 layer 배치를 우선 복제한다.
-
-9. **layer usage profile 적용 강제 — 선택 참고 X, 적용 강도 제약 O.**
-
-   role 별 layer guide 에 `usage: coverage=..., density=...` 가 박혀 있으면 선택 참고가 아니라 **적용 강도 제약** 으로 사용한다.
-
-   - `coverage=always` 인 non-base layer 는 해당 role 의 **필수 반복 style** 이다. `rules_for_generation` 에 맞는 segment 가 새 paragraph 에 있으면 **반드시 적용**하며, 조건에 맞는 segment 가 있는데 0 회 적용하는 것은 금지 (rule 조건에 맞는 segment 가 전혀 없는 경우만 예외).
-   - `coverage=often` 인 non-base layer 는 해당 role 의 **주요 반복 style** 이다. `rules_for_generation` 에 맞는 segment 가 새 paragraph 에 있으면 **적극 적용**하되, 문장에 맞는 segment 가 부족한 경우 0 회도 가능.
-   - `density=high` 또는 `medium` 인 layer 는 한 paragraph 안에서 **여러 segment 에 반복 적용**되는 패턴이다. 조건에 맞는 segment 가 여러 개 있으면 하나만 고르지 말고 sample 처럼 **여러 span 으로 나누어 적용**한다.
-   - `coverage=rare` 또는 `occasional` 인 layer 는 **예외 style** 이다. 표면 패턴이 보여도 과적용하지 않는다. 해당 rule 의 의미 기능이 명확할 때만 적용한다.
-   - **수치·금액·기간·비율·괄호 관련 layer 가 `rare` 또는 `occasional` 이면, 숫자나 괄호가 있다는 이유만으로 paragraph 마다 반복 적용하지 마세요.** sample 에서 같은 의미 기능으로 layer 받은 자리에만 제한적으로 적용.
-   - **usage profile 은 `rules_for_generation` 을 대체하지 않는다.** coverage 가 높아도 rule 조건에 맞는 segment 가 새 본문에 전혀 없으면 억지로 만들지 말고 base 로 둔다.
-   - **`coverage=always` / `density=high` 는 paragraph 통째 wrap 이 아니라 본문 안 여러 의미 단위 반복 적용을 뜻한다.** body 안의 명사구·동사구·핵심 segment 마다 적극 적용. 단 paragraph 전체를 단일 **non-base** em wrap 으로 만들지 X (§7 paragraph 전체 non-base wrap 금지 — paragraph 전체 base wrap 은 허용, 여러 의미 단위 강조는 §7 위반 아님). 핵심 명사구를 "일반 설명" 핑계로 base 처리 X — 조사·연결어만 base.
-
-## 입력 (user 메시지)
-1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·layer 없는 본문.
-2. **양식 role 카탈로그**: 각 role(cluster) 별 양식 sample (마커 + layer 포함 원본).
-3. **양식 마커 힌트**: 각 role 별 markers 리스트, family, separator.
-4. **글꼴 layer 가이드**: 각 role 의 base layer + non-base layer + 적용 규칙 (규칙 있는 것만 사용).
-5. **chapter 의미**: 대제목 텍스트.
-
-## 작업
-
-### 1. 마커 결정 (item마다)
-각 item의 role을 보고 그 role의 양식 sample + 마커 힌트로 판단:
-
-- **양식 마커 그대로 사용 (기본)** — sample 단어가 chapter·본문 의미와 어울리면 그대로.
-  예: 양식 `□`, 양식 `Ⅰ.`, 양식 `[전략1]` 그대로.
+- **양식 마커 그대로 사용 (기본)** — sample 단어가 chapter·본문 의미와 어울리면 그대로 (`□`, `Ⅰ.`, `[전략1]` 등).
 - **단어 변경은 semantic_template_marker 만 (제한적 허용)**:
-  - `[전략1]`, `[과제1]`, `[목표1]` 처럼 **단어 + 번호 결합** 된 marker 에서만 단어 변경 허용.
-  - `□`, `ㅇ`, `-`, `※`, `➊`, `Ⅰ.`, `1)` 같은 **fixed / sequence marker 는 단어 변경 X**. 그대로 사용.
-  - semantic_template_marker 의 단어 바꿀 때도:
-    - **입력 text / chapter_title / role description 에 이미 있는 한글 단어** 만 사용
-    - sample 고유 단어 / source 에 없는 한자 / 영어 새로 만들기 X
-    - 같은 cluster 의 모든 instance 는 같은 단어로 통일
-- **시퀀스 번호 — 반드시 `parent_id` 단위로 카운트 (절대 강제)**:
+  - `[전략1]`, `[과제1]`, `[목표1]` 처럼 **단어 + 번호 결합** marker 에서만 단어 변경 허용.
+  - `□`, `ㅇ`, `-`, `※`, `➊`, `Ⅰ.`, `1)` 같은 **fixed / sequence marker 는 단어 변경 X** — 그대로 사용.
+  - semantic_template_marker 의 단어 바꿀 때:
+    - **입력 text / chapter_title / role description 에 이미 있는 한글 단어** 만 사용.
+    - sample 고유 단어 / source 에 없는 한자 / 영어 새로 만들기 X.
+    - 같은 cluster 의 모든 instance 는 같은 단어로 통일.
+- **시퀀스 번호 — `parent_id` 단위로 카운트 (강제)**:
   - 각 item 의 `parent_id` 를 보고, **그 부모 아래 같은 role 형제** 만 sibling 으로 본다.
-  - `parent_id` 가 다르면 **항상 새로 첫 번째 마커부터 시작**. 같은 role 여도, 직전 형제 직후여도, 같은 sub-section 안이어도 — `parent_id` 가 다르면 reset.
-  - **흔한 실수 (절대 금지)**:
-    - 트리 전체에서 같은 role 카운트 누적 — 부모 다른데 마커 번호 이어감.
-    - 같은 sub-section 안에서 다른 부모 아래 같은 role 인데 마커 번호 이어감.
-  - **카운트 절차**:
+  - `parent_id` 가 다르면 **항상 새로 첫 번째 마커부터 시작**. 같은 role 이어도, 같은 sub-section 안이어도 — `parent_id` 가 다르면 reset.
+  - 카운트 절차:
     1. 자기 `parent_id` 확인.
-    2. **input 트리 안에서 자기와 같은 `parent_id` + 같은 `role`** 인 item 목록 나열.
+    2. input 트리 안에서 자기와 같은 `parent_id` + 같은 `role` 인 item 목록 나열.
     3. 자기가 그 목록에서 몇 번째 (1-based) = sibling_index.
     4. 양식 sample 의 시퀀스 마커 list 에서 `markers[sibling_index - 1]` 사용.
-  - **추상적 예시** (실제 마커 글자/role 이름은 양식에 따라 다름):
-    - 부모 A 아래 첫 R 형제 → sibling_index=1 → 첫 마커.
-    - 부모 B 아래 첫 R 형제 → A 와 부모 다름 → sibling_index=1 → 첫 마커 (이전 부모 카운트 무관).
-    - 부모 A 아래 두 번째 R 형제 → sibling_index=2 → 두 번째 마커.
-  - 양식 sample 시퀀스가 1~3번만 보였더라도 같은 패턴으로 4·5번 만들어 사용.
-- **마커 없음** — 양식 sample에 마커 없는 cluster는 마커 추가하지 마세요.
-- **이미 마커가 있으면** — text 앞에 마커 비슷한 게 이미 있으면: 적절하면 그대로 유지, 양식 형식과 다르면 양식 형식으로 교체, 마커가 두 개 보이면 하나만 남김.
+  - 양식 sample 시퀀스가 1~3 번만 보였더라도 같은 패턴으로 4·5 번 만들어 사용.
+- **마커 없음** — 양식 sample 에 마커 없는 cluster 는 마커 추가 X.
+- **이미 마커가 있으면** — text 앞에 마커 비슷한 게 있으면: 적절하면 유지, 다르면 양식 형식으로 교체, 두 개면 하나만 남김.
 
-### 2. 글꼴 layer 적용 (item 마다)
+## 2. outer_marker · content_label 의 layer
 
-**위 정책 1~9 와 우선순위 표를 반드시 따릅니다.**
+양식 sample 의 layer 배치를 그대로 복제. 자유 선택 X.
 
-#### 절차
+## 3. body 내부 non-base 선택 규칙 (닫힌 절차)
 
-1. **본문 시작 외부 마커** (있으면) — 본보기의 마커 layer 적용.
-2. **본문 시작 직후 분류 라벨** (`(경제상황)`, `(부지계약)` 등 본보기 일관 패턴) — 본보기 분류 layer 적용.
-3. **본문 한가운데 segment** — 본보기 sample 에서 같은 종류 단락이 반복적으로 같은 자리 / 같은 의미 기능에 layer 박는 패턴이 보이면 새 본문에도 적용. layer guide 의 rules_for_generation 있으면 그 규칙 따름.
-4. 위 패턴이 모호하거나 새 본문 segment 와 안 맞으면 그 segment 만 base. 문단 전체 base 로 뭉개지 X.
+자유 판단 금지. 아래 절차를 그대로 따른다.
 
-#### 본보기 sample 활용
+1. **후보 5종류만 만든다**:
+   A. 고유 사업명·시스템명·제도명
+   B. 최종 목표·성과 명사구
+   C. 구체 정책수단·실행수단 명사구
+   D. 수치·금액·기간 구간
+   E. 양식 sample 에서 같은 위치에 반복된 구간
 
-- 본보기 sample 의 **분할 순서·layer 배치를 우선 모방**. sample 에서 본문이 base / non-base / base / non-base 로 나뉘면 새 본문도 같은 의미 기능 자리에 같은 layer 배치를 한다.
-- **sample 의 정확한 span 개수는 절대 cap 이 아니다.** usage profile 에 맞춰 더 많게도, 새 본문에 의미 기능 segment 가 없으면 더 적게도 가능.
-- sample 의 의미 기능 (시기 / 금액 / 분류 라벨 / 정책수단 / 결과 명사구 / 인용구 / 수치 구간 등) 이 layer 받으면 새 본문에서도 같은 기능 자리에 적용.
-- 단 새 본문에 그 의미 기능 segment 가 없으면 억지로 만들지 X (base).
+2. **단독 강조 금지 단어** — 아래 단어는 단독 후보로 고르지 않는다:
+   운영, 관리, 처리, 지원, 점검, 반영, 개선, 확대, 강화, 활성화, 추진, 마련, 제공
+   앞의 구체 대상명과 결합해 하나의 명사구를 이룰 때만 후보가 될 수 있다.
 
-#### 근거 없는 추가 금지
+3. **이 role 의 예산을 반드시 지킨다** (per-role guide 에 박힌 숫자):
+   - `body_nonbase_span_min`
+   - `body_nonbase_span_target`
+   - `body_nonbase_span_max`
+   - `body_nonbase_char_ratio_max`
 
-- non-base span 은 항상 `rules_for_generation`, usage profile, sample 의 의미 기능 **중 하나 이상의 근거** 가 있어야 한다.
-- "이 단어가 핵심이니까 강조" 식 자유 선택 X. 근거가 sample 의 의미 기능 + 새 본문 segment 매칭 또는 usage profile + rules_for_generation 이어야 함.
+4. 후보가 target 보다 많으면 A → B → C → D → E 순서로 **target 개만** 선택한다.
 
-### 3. 허용·금지 patterns
+5. target 개 선택 후 char_ratio_max 를 넘으면 **우선순위 낮은 후보 (E → D → C → B → A)** 부터 base 로 되돌린다.
 
-**허용**:
-- 외부 마커 (`□`, `Ⅰ.`, `➊` 등) 에 본보기 마커 layer.
-- 본문 시작 직후 분류 라벨 (`(경제상황)`, `(부지계약)` 등) 에 본보기 분류 layer.
-- **본문 한가운데 segment** — 본보기 sample 의 반복 분할 규칙에 따른 자리 (시기 / 금액 / 정책수단 / 결과 명사구 / 인용구 / 수치 구간 등 layer guide 의 rules_for_generation 명시 자리).
-- 그 외 base layer.
+6. min=1 인데 선택 후보가 0 개이면 **A 또는 B 에 해당하는 가장 앞 명사구 1 개만** 선택한다. 그 외는 추가 X.
 
-**짝 맞춤 강제** — 여는 `[[emN]]` 과 닫는 `[[/emN]]` 은 같은 N. 짝 없는 단독 표시 출력 금지.
+7. **나머지는 모두 base**.
 
-**빈 wrap 도 close 강제** — 안에 본문 텍스트가 없거나 띄어쓰기만 있어도 열었으면 반드시 닫는다. sample 의 `[[em1]] [[/em1]]` 처럼 안에 공백 한 글자만 두고 close 박는 형태가 정답. `[[em1]][[em2]]...` 처럼 열어두고 다음 layer open 으로 넘어가는 것 금지 — em1 을 띄어쓰기/연결 용도로 쓰고 싶으면 `[[em1]] [[/em1]][[em2]]...` 처럼 close 먼저 박고 다음 open.
+### 3-1. body 강조 예산이 max=0 인 role
+body 전체 base 처리. body 안 non-base 박지 X.
 
-**nested 금지** — 한 layer wrap 안에 다른 layer wrap 을 중첩해 박지 말 것. layer 는 항상 sequential (alternating) 로 나열한다. 한 paragraph 안에서 layer 가 동시에 두 개 열려 있는 상태가 되면 안 됨.
+### 3-2. non-base span 경계 (기계적 금지 규칙)
+- 조사·연결어로 시작/끝 금지: `및`, `또는`, `그리고`, `하며`, `하고`, `통해`, `위한`, `등`, `의`, `를`, `을`, `이`, `가`, `에`, `에서`, `로`, `으로`.
+- 예: `[[em2]]A 및 B[[/em2]]` 금지 → `[[em2]]A[[/em2]] 및 [[em2]]B[[/em2]]` 정답.
 
-**금지 (절대)**:
-- 양식 sample / layer guide / usage profile 에 **근거 없는 자리** 에 non-base layer 박기.
-- "이 단어가 핵심이니까 강조" 식 자유 선택.
-- 가이드에 규칙 없는 layer 사용 (cluster 정의에 등장만 하고 적용 규칙 없는 layer 는 사용 금지).
-- paragraph_count ≤ 1 / char_count 1~2 같은 노이즈 layer 사용.
-- **paragraph 전체가 단일 non-base layer wrap 으로만 끝나기** — §7 위반. 조사·연결어·서술어 어미·문장부호는 base 로 남긴다 (단, 본문 안 의미 단위는 적극 강조 가능).
-- **non-base span 이 조사·연결어로 시작하거나 끝나기** — §7 span 경계 규칙 위반. `[[emX]]및 B[[/emX]]` 또는 `[[emX]]A 및[[/emX]]` 금지.
+## 4. 짝 맞춤 / nested 금지 / 빈 wrap
 
-### 4. 본문 의미 보존
-- text 단어·문장은 의미상 거의 그대로. 마커·강조만 입힘.
+- 여는 `[[emN]]` 과 닫는 `[[/emN]]` 은 같은 N. 짝 없는 단독 표시 출력 금지.
+- 한 layer wrap 안에 다른 layer wrap 중첩 금지. layer 는 항상 sequential.
+- 빈 wrap 도 close 강제 — 안에 텍스트 없거나 공백만 있어도 열었으면 반드시 닫는다.
+
+## 입력 (user 메시지)
+1. **본문 트리**: 각 item 에 `id, parent_id, role, text` (마커·layer 없는 본문).
+2. **양식 role 카탈로그**: 각 role 의 description.
+3. **양식 마커 힌트**: 각 role 별 markers / family / separator.
+4. **글꼴 layer 가이드**: 각 role 의 base layer id + 사용 가능 non-base layer id + body 강조 예산 숫자 + 양식 sample annotated_text.
+5. **chapter 의미**: 대제목 텍스트.
+
+## 5. 본문 의미 보존
+
+- text 의 단어·문장은 의미상 거의 그대로. 마커·layer 만 입힘.
 - 띄어쓰기·구두점 등 양식 형식상 자연스러운 미세 조정만 허용.
 - 새 내용 추가 금지. 단어 의미 변경 금지.
 
 ## 출력 형식
+
 입력 트리와 **같은 구조**, **text 필드만** 최종 형식 입힌 텍스트로 교체.
 
 ```json
 {
   "items": [
-    {"id": 0, "parent_id": null, "role": "<root>", "text": "<마커·강조 입힌 최종 텍스트>"},
+    {"id": 0, "parent_id": null, "role": "<root>", "text": "<마커·layer 입힌 최종 텍스트>"},
     {"id": 1, "parent_id": 0, "role": "<자식>", "text": "<...>"}
   ]
 }
 ```
 
-- `id`, `parent_id`, `role`은 **입력과 동일**하게 유지 (변경 금지).
-- `text`만 변경.
+- `id`, `parent_id`, `role` 은 **입력과 동일** (변경 금지).
+- `text` 만 변경.
 - 글꼴 layer 표시는 text 안에 inline.
 - 트리 항목 추가/삭제 금지.
 
-반드시 위 JSON만 출력. 다른 설명 포함 금지.
+## 출력 전 자기검사 (한 번만)
+
+- body 안 non-base span 갯수를 세어 max 를 넘지 않는지 확인. 넘으면 우선순위 낮은 span 을 base 로 되돌린다.
+- 각 non-base span 이 조사·연결어로 시작/끝 안 하는지 확인.
+- 짝 안 맞는 `[[emN]]` / `[[/emN]]` 없는지 확인.
+
+반드시 위 JSON 만 출력. 다른 설명 포함 금지.
 """
 
 
@@ -19166,6 +19090,7 @@ def build_section_style_prompt(
     style_profiles: dict | None = None,
     emphasis_layers: dict | None = None,
     paragraph_emphasis_map: dict | None = None,
+    body_emphasis_budgets: dict | None = None,
     chapter_position: int | None = None,
     total_chapters: int | None = None,
 ) -> list[dict]:
@@ -19179,9 +19104,12 @@ def build_section_style_prompt(
             chapter title은 트리 root로 합쳐서 들어감 (id=0, parent_id=null, role=chapter_title cluster)
         role_catalog: role별 양식 sample + description (원본 그대로, 마커 포함)
         marker_policies: 1f marker policies — role별 markers 리스트 + family + separator
-        style_profiles: 11.2 말투 rule (참고용)
-        emphasis_layers: 11.2b 글꼴 layer rule
+        style_profiles: 11.2 말투 rule (참고용 — prompt 박지 않음)
+        emphasis_layers: 11.2b 글꼴 layer (base_layer_id + non-base layer id 목록).
+            rules_for_generation 은 prompt 에 박지 않음 (Step 2 — 2026-05-28).
         paragraph_emphasis_map: 양식 paragraph annotated_text sample (원본, 마커 포함)
+        body_emphasis_budgets: compute_role_body_emphasis_budgets 결과 — role 별
+            (min/target/max/char_ratio_max) 숫자. 2c 가 닫힌 선택 절차로 이 숫자를 따름.
 
     Returns:
         [{"role": "system", ...}, {"role": "user", ...}]
@@ -19235,8 +19163,11 @@ def build_section_style_prompt(
             + "\n\n"
         )
 
-    # 글꼴 layer 가이드 — 규칙 있는 layer 만 노출. 정의만 있고 규칙 없는 layer 는
-    # 가이드에서 빼서 모델이 사용 불가하게 함 (2026-05-25 정책 강화).
+    # 글꼴 layer 가이드 (Step 2 — 2026-05-28):
+    # - rules_for_generation 은 prompt 에 박지 않음 (약한 모델이 후보 광역화 위험).
+    # - compute_layer_usage_profile (coverage/density bucket) 도 박지 않음.
+    # - 대신 sample 실측 body 강조 예산 (compute_role_body_emphasis_budgets) 숫자 노출.
+    # - 선택은 system prompt §3 닫힌 절차 + budget + candidate A~E + never_select_alone 으로 닫음.
     emphasis_text = ""
     if emphasis_layers:
         em_lines = []
@@ -19244,69 +19175,51 @@ def build_section_style_prompt(
             em = emphasis_layers.get(role_name) or {}
             ems_list = em.get("emphasis_layers") or []
             base_lid = em.get("base_layer_id", "")
+            budget = (body_emphasis_budgets or {}).get(role_name) or {}
             if not base_lid and not ems_list:
                 continue
-            # 규칙 있는 non-base layer 만 추림
-            _layers_with_rules = []
-            for layer in ems_list:
-                lid = layer.get("layer_id", "")
-                rules = [r for r in (layer.get("rules_for_generation") or []) if r]
-                if lid and rules:
-                    _layers_with_rules.append((lid, rules))
+
             em_lines.append(f"\n### {role_name}")
             em_lines.append(
-                f"- base layer: `{base_lid}` — body 일반 문장 골격의 기본 style. "
+                f"- base layer: `{base_lid}` "
+                f"— body 일반 문장 골격의 기본 style. "
                 f"outer_marker · content_label 은 sample layer 배치 우선 (base 로 덮지 X)."
             )
-            # usage profile (coverage / density bucket) — sample 빈도 힌트.
-            # paragraph_emphasis_map.layer_stats + total_paragraphs_in_cluster 기반.
-            _pem_for_usage = (paragraph_emphasis_map or {}).get(role_name) or {}
-            _usage_profile = compute_layer_usage_profile(
-                _pem_for_usage.get("layer_stats") or [],
-                _pem_for_usage.get("total_paragraphs_in_cluster", 0) or 0,
-            )
-            if _layers_with_rules:
-                em_lines.append("- 규칙 있는 non-base layer (적용 가능):")
-                for lid, rules in _layers_with_rules:
-                    em_lines.append(f"    - `[[{lid}]]...[[/{lid}]]`:")
-                    for r in rules:
-                        em_lines.append(f"        - {r}")
-                    _up = _usage_profile.get(lid)
-                    if _up:
-                        _cov = _up["coverage"]
-                        _den = _up["density"]
-                        if _cov == "always":
-                            _action = (
-                                "주력 반복 layer — 조건에 맞는 segment 가 "
-                                "새 paragraph 에 있으면 반드시 적용 (0 회 금지)"
-                            )
-                        elif _cov == "often":
-                            _action = (
-                                "주력 반복 layer — 조건에 맞는 segment 가 "
-                                "새 paragraph 에 있으면 적극 적용 (누락 주의)"
-                            )
-                        else:  # occasional, rare
-                            _action = (
-                                "예외 layer — 표면 패턴만으로 적용 X. "
-                                "rule 의미 기능이 명확할 때만 제한 적용"
-                            )
-                        if _cov in ("always", "often"):
-                            if _den in ("high", "medium"):
-                                _action += " · 한 paragraph 안 여러 span 으로 분할"
-                            elif _den == "single":
-                                _action += " · 보통 paragraph 당 1 회"
-                        em_lines.append(
-                            f"        - usage: coverage={_cov}, density={_den} "
-                            f"— {_action}"
-                        )
+
+            # 사용 가능 non-base layer id 만 노출 (rule 텍스트 미박음).
+            _nonbase_ids = []
+            for layer in ems_list:
+                lid = layer.get("layer_id", "")
+                if lid and lid != base_lid:
+                    _nonbase_ids.append(lid)
+            if _nonbase_ids:
+                em_lines.append(
+                    "- 사용 가능 non-base layer: "
+                    + ", ".join(f"`[[{lid}]]...[[/{lid}]]`" for lid in _nonbase_ids)
+                )
+            else:
+                em_lines.append("- non-base layer 없음 — body 전체 base 처리.")
+
+            # body 강조 예산 (Step 1 산출 — sample 실측 P50/P90).
+            _max = int(budget.get("body_nonbase_span_max", 0) or 0)
+            _target = int(budget.get("body_nonbase_span_target", 0) or 0)
+            _min = int(budget.get("body_nonbase_span_min", 0) or 0)
+            _ratio_max = float(budget.get("body_nonbase_char_ratio_max", 0.0) or 0.0)
+            _basis = budget.get("sample_basis", "unknown")
+            if _basis == "no_emphasis" or _max == 0:
+                em_lines.append(
+                    "- body 강조 예산: 양식 sample 에 body inline 강조 없음 → body 전체 base 처리."
+                )
             else:
                 em_lines.append(
-                    "- layer guide에는 새로 일반화할 non-base 규칙이 없음. "
-                    "단, 아래 양식 본보기 sample에 이미 존재하는 외부 마커, 고정 공백 span, 고정 기호 span은 "
-                    "sample 구조 그대로 복제할 수 있음. "
-                    "새로운 본문 중간 강조 span은 만들지 말 것."
+                    f"- body 강조 예산 (sample_basis={_basis}):\n"
+                    f"    body_nonbase_span_min = {_min}\n"
+                    f"    body_nonbase_span_target = {_target}\n"
+                    f"    body_nonbase_span_max = {_max}\n"
+                    f"    body_nonbase_char_ratio_max = {_ratio_max}"
                 )
-            # 본보기 sample — 마커 / 분류 라벨 / 본문 내부 style 분할 규칙 확인용. sample 분할 패턴 우선 모방.
+
+            # 양식 sample annotated_text — 들여쓰기 strip 한 채 그대로 노출 (rule 텍스트 미박음).
             if paragraph_emphasis_map:
                 pem = paragraph_emphasis_map.get(role_name) or {}
                 samples = pem.get("sample_paragraphs") or []
@@ -19319,50 +19232,33 @@ def build_section_style_prompt(
                     _picked = []
                     for pkey, pl in list(_by_parent.items())[:3]:
                         _picked.extend(pl[:2])
-                    em_lines.append(
-                        "- 양식 본보기 sample "
-                        "(마커 / 분류 라벨 / 본문 내부 style 분할 규칙 확인용. "
-                        "sample 의 분할 개수·순서·layer 배치를 우선 모방하세요. "
-                        "다만 usage profile 이 제공된 layer 는 sample 예시의 "
-                        "정확한 개수보다 usage profile 의 적용 강도를 함께 따르세요):"
-                    )
-                    # sample annotated_text 에서 들여쓰기 완전 제거 — 들여쓰기는 코드 책임이고
-                    # prompt 에서 들여쓰기 개념 자체를 노출 안 함.
-                    # (a) leading whitespace-only em span 제거 (`[[em1]]   [[/em1]]` 등 연속)
-                    # (b) 그 다음 첫 본문 em span 안의 leading whitespace 도 제거
-                    #     (들여쓰기 + 마커 합쳐 박힌 `[[em1]]    * [[/em1]]` → `[[em1]]* [[/em1]]`)
-                    # (c) raw leading whitespace 도 제거
-                    import re as _re_indent_strip
-                    _indent_block_pat = _re_indent_strip.compile(
-                        r'^(?:\[\[em\d+\]\]\s*\[\[/em\d+\]\])+'
-                    )
-                    _first_span_leading_pat = _re_indent_strip.compile(
-                        r'^(\[\[em\d+\]\])([ \t]+)'
-                    )
-                    for sp in _picked:
-                        ann = sp.get("annotated_text") or ""
-                        if ann:
-                            ann = _indent_block_pat.sub('', ann)
-                            ann = _first_span_leading_pat.sub(r'\1', ann)
-                            ann = ann.lstrip(" \t")
-                        pidx_v = sp.get("parent_idx")
-                        if ann:
-                            em_lines.append(f"    - parent={pidx_v}: {ann!r}")
-                    em_lines.append(
-                        "    **마커 시퀀스만 parent 단위 reset 패턴 따라가세요** "
-                        "(예: parent=A 아래 󰊱, 󰊲 → parent=B 아래 다시 󰊱, ...). "
-                        "본문 한가운데 layer 도 양식 sample 의 반복 분할 규칙이면 적용하세요. "
-                        "다만 규칙 없이 새 본문에서 중요 표현을 추가 선정하지 마세요."
-                    )
+                    if _picked:
+                        em_lines.append(
+                            "- 양식 sample (layer markup 그대로, 들여쓰기 제거):"
+                        )
+                        import re as _re_indent_strip
+                        _indent_block_pat = _re_indent_strip.compile(
+                            r'^(?:\[\[em\d+\]\]\s*\[\[/em\d+\]\])+'
+                        )
+                        _first_span_leading_pat = _re_indent_strip.compile(
+                            r'^(\[\[em\d+\]\])([ \t]+)'
+                        )
+                        for sp in _picked:
+                            ann = sp.get("annotated_text") or ""
+                            if ann:
+                                ann = _indent_block_pat.sub('', ann)
+                                ann = _first_span_leading_pat.sub(r'\1', ann)
+                                ann = ann.lstrip(" \t")
+                            pidx_v = sp.get("parent_idx")
+                            if ann:
+                                em_lines.append(f"    - parent={pidx_v}: {ann!r}")
+
         if em_lines:
             emphasis_text = (
                 "## 글꼴 layer 가이드 (role 별)\n"
-                "위 우선순위 표 + 정책 1~9 를 반드시 따릅니다. 양식 sample 의 분할 순서·layer 배치를 기본 기준으로 모방하세요.\n"
-                "외부 마커 + 분류 라벨 + 본보기 반복 분할 규칙 자리는 non-base 허용. "
-                "non-base span 은 항상 `rules_for_generation`, usage profile, sample 의미 기능 중 하나 이상의 근거가 있어야 함.\n"
-                "**`coverage=always/high` 는 body 전체 강조가 아니라 반복 segment 강조를 뜻함.** "
-                "body 에는 sample 처럼 base 골격 (조사·연결어·서술어·일반 설명 문장) 을 남긴다 — §7 우선.\n"
-                "여는 태그와 닫는 태그는 반드시 같은 N (짝 강제).\n"
+                "각 role 의 base layer, 사용 가능 non-base layer, body 강조 예산, 양식 sample 이 제공됩니다.\n"
+                "body 내부 non-base 선택은 system prompt §3 의 닫힌 선택 절차 (후보 5종 + 예산 숫자) 를 그대로 따르세요.\n"
+                "외부 마커 · 분류 라벨 layer 는 양식 sample 배치 그대로 복제 (§2).\n"
                 + "\n".join(em_lines)
                 + "\n\n"
             )
@@ -19491,9 +19387,10 @@ async def apply_section_style_to_items(
             new_it["parent_id"] = _old_pid + 1
         items_for_2c.append(new_it)
 
-    # Step 1 (2026-05-28): role 별 body 강조 예산 계산하여 12e debug 에 dump.
-    # Step 2 에서 prompt 에 박을 예정. 현재는 검토용. 호출은 chapter 마다 동일 결과
-    # → 덮어쓰기.
+    # Step 1 + Step 2 (2026-05-28): role 별 body 강조 예산 계산 → 12e debug 에 dump
+    # + build_section_style_prompt 에 전달 (prompt 가 닫힌 절차에 따라 사용).
+    # 호출은 chapter 마다 동일 결과 → 덮어쓰기.
+    _budgets: dict = {}
     try:
         _budgets = compute_role_body_emphasis_budgets(
             paragraph_emphasis_map=paragraph_emphasis_map,
@@ -19522,6 +19419,7 @@ async def apply_section_style_to_items(
             style_profiles=style_profiles,
             emphasis_layers=emphasis_layers,
             paragraph_emphasis_map=paragraph_emphasis_map,
+            body_emphasis_budgets=_budgets,
             chapter_position=chapter_position,
             total_chapters=total_chapters,
         )
