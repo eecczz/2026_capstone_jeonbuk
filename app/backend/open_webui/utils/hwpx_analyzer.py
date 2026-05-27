@@ -14613,17 +14613,16 @@ def build_source_range_prompt(
         f"{source_text}\n"
         "```\n\n"
         "각 chapter 를 작성할 때 활용 가능한 source 영역을 char idx 범위 (start, end) 로 찾으세요.\n\n"
-        "**핵심 원칙**: source 내용과 chapter 내용의 방향성이 달라도 됩니다. "
+        "**핵심 원칙 (강제)**: source 내용과 chapter 내용의 방향성이 달라도 됩니다. "
         "같은 주장 / 같은 결론을 말하는 부분만 고르지 마세요. "
         "chapter 에 쓸 수 있는 정보, 근거, 수치, 사례, 배경, 정의, 문제점, 반론, 비교, 맥락이면 포함하세요. "
-        "chapter 에 필요한 재료가 source 여러 위치에 흩어져 있으면 ranges 에 여러 range 로 나누세요.\n\n"
+        "애매하면 포함. 겹침 / 중복 허용. 한 source 영역이 여러 chapter 에 들어가도 OK. "
+        "chapter 에 필요한 재료가 source 여러 위치에 흩어져 있으면 ranges 에 여러 range.\n\n"
         "범위 결정 기준:\n"
         "- adapted_title 과 source 내용이 직접 일치하지 않아도, chapter 작성에 활용 가능하면 포함.\n"
         "- source 의 결론 / 관점이 chapter 와 달라도, 대조 / 근거 / 배경 / 예시 / 한계 설명에 쓸 수 있으면 포함.\n"
         "- 단순 키워드 매칭보다 '이 내용을 chapter 문단 작성에 사용할 수 있는가' 를 기준으로 판단.\n"
-        "- **chapter 작성에 직접 필요한 영역만 잡으세요.** 한 range 가 source 전체에 가까워지면 안 됩니다. 큰 영역이면 핵심 부분만으로 잘라 잡으세요.\n"
-        "- **겹침 최소화** — 한 source 영역이 여러 chapter 에 꼭 필요한 경우만 중복 잡음. 그 외는 가장 적합한 한 chapter 에만.\n"
-        "- 애매한 부분은 ranges 에 넣지 말고 제외 (chapter 작성에 직접 안 쓰일 가능성 높으면 빼는 게 안전).\n\n"
+        "- 너무 좁게 핵심 문장만 고르지 말고, 해당 정보가 이해되는 문단 / 소제목 단위까지 포함.\n\n"
         "JSON 출력:\n"
         "{\n"
         '  "chapter_ranges": [\n'
@@ -14640,10 +14639,9 @@ def build_source_range_prompt(
         '    }\n'
         "  ]\n"
         "}\n\n"
-        "- chapter_idx 는 input 과 정확히 일치 (**모든 chapter 빠짐없이 포함**).\n"
+        "- chapter_idx 는 input 과 정확히 일치 (모든 chapter 포함).\n"
         "- start/end 는 source_text 의 char idx (0-based). end >= start.\n"
-        "- ranges 는 list — 한 chapter 당 여러 range 가능. **각 range 는 chapter 작성에 직접 필요한 영역만**.\n"
-        "- **range 가 source 전체에 가까우면 안 됨** — 큰 영역은 핵심 부분으로 잘라서 잡으세요.\n"
+        "- ranges 는 list — 한 chapter 당 여러 range 가능.\n"
         "- use_type / reason 은 회수 의도 확인용. parser 는 start/end 만 사용하지만 모델이 \"어떻게 써먹을 수 있나\" 를 생각하게 합니다.\n"
     )
 
@@ -14744,12 +14742,12 @@ def parse_source_ranges_from_llm(
 def apply_source_ranges_with_safety(
     source_text: str,
     chapter_ranges: dict,
-    expand_chars: int = 500,
+    expand_chars: int = 0,
     expected_chapter_indices: list[int] | None = None,
 ) -> dict:
-    """LLM 결정 range에 안전망 ±expand_chars 적용 + chunk 텍스트 추출.
+    """LLM 결정 range 그대로 chunk 텍스트 추출. AI 가 잡은 range 신뢰.
 
-    - 각 range start/end에 ±expand_chars 확장 (chapter 경계 너무 좁게 자르는 것 방지)
+    - expand_chars 기본 0 (확장 X). AI range 그대로.
     - 같은 chapter의 여러 range 합쳐 chunk 추출
     - 빈 chapter는 전체 source fallback
     - expected_chapter_indices 가 주어지면 chapter_ranges 에 없는 chapter 도 fallback 보장
