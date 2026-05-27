@@ -17737,53 +17737,68 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 
 ## 1. 양식 정보 조립 방식 적용 (가장 중요)
 
-1차 text 를 양식 sample 의 정보 조립 방식에 맞춰 다시 작성:
+1 차 text 를 양식 sample 의 정보 조립 방식에 맞춰 다시 작성:
 
-- **양식 sample 의 술어 종결** (`~함`, `~한다`, `~완료`, `~예정`, 명사형 등) 따름.
-- **양식 sample 의 segment 분할 패턴** (`(분류) 본문`, `메인 (괄호 부제)` 등) 따름.
-- **양식 sample 의 정보 조각 개수 / 연결 방식** 은 `template_rigidity_observed` 에 맞춰 따름 — **§7 의 rigidity 별 적용 강도 표 참조**. 단순 connector 기계적 모방 금지.
+- **양식 sample 의 종결 방식**은 `style_profile.ending_pattern_observed` 를 따른다.
+- **양식 sample 의 segment 분할 패턴**은 sample 관찰 분할을 따른다 (라벨 위치 / 괄호 부제 위치 등 — 양식 sample 에서 관찰된 것만).
+- **양식 sample 의 정보 조각 개수 / 연결 방식**은 `style_profile.unit_count_observed` / `join_markers_observed` 와 §7 의 family 매칭 절차에 따른다. 단순 connector 기계적 모방 금지.
 - **양식 sample 이 단일 정보 조각이면 단일 정보 조각**, 다중 정보 조각이면 다중 정보 조각 (rigidity 에 따라 자유도 다름).
 
-**따를 것**: 정보 조각 개수, 연결 marker (쉼표 / 및 / 등 / ⇒ / 「」), 종결 방식, segment 위치 (라벨 앞 / 뒤). 단, 적용 강도는 `template_rigidity_observed` 와 §7 의 family 매칭 절차를 따른다.
+**따를 것**: 정보 조각 개수, 연결 marker, 종결 방식, segment 위치. 적용 강도는 `template_rigidity_observed` 와 §7 family 매칭 절차.
 **가져오지 X**: 양식 sample 의 고유 단어, 한자 / 영어, 정책명 · 기관명 · 고유명사.
 
 ## 2. 정보 밀도 / 구성 단위 모방 (글자 수 기계적 모방 X)
 
 같은 role 의 양식 sample 을 볼 때 **종결 + 분할 + 정보량** 3 가지 모두 모방:
 
-1. **종결 방식**: `~함`, `~한다`, `~완료`, `~추진`, 명사형 종결 등.
-2. **분할 방식**: `(분류) 본문`, `메인 (괄호 부제)` 등.
-3. **정보 구성 단위**: sample 이 `사실 + 수단 + 부연 + 결과` 구조면 source 범위 안에서 같은 수준으로 보강.
+1. **종결 방식**: `style_profile.ending_pattern_observed` 따름.
+2. **분할 방식**: sample 관찰 분할 (라벨 위치 / 괄호 부제 등) 따름.
+3. **정보 구성 단위**: sample 의 정보 조각 구조 (사실 / 수단 / 부연 / 결과 등 관찰된 분포) 와 동등한 수준으로 source 범위 안에서 보강.
 
-- 양식 sample 의 글자 수를 **기계적으로 맞추지 마세요**. 길이는 정보량 맞추기 위한 참고 기준.
-- 1차 text 가 `(분류) + 짧은 명사구` 수준이고 양식 sample 이 더 긴 본문 구조 → source 또는 1차 자식 item 참고해 정보 보강.
-- **종결만 맞추고 본문 지나치게 짧아지는 것은 실패** (예: `(부지계약) 사업 착공` — 대상 / 시기 정보 누락).
-- **자식 item 이 여러 개로 늘어도 부모 role 의 양식 sample 이 headline 형이면 부모 text 를 단순 라벨로 축소하지 말고** source 와 자식의 핵심 재료를 압축한 headline 으로 유지.
-- 보강 시 들어가는 사실 / 시기 / 대상 / 결과는 **반드시 source 또는 1차 트리에 존재**.
+- 양식 sample 의 글자 수를 **기계적으로 맞추지 X**. 길이는 정보량 맞추기 위한 참고 기준.
+- 1 차 text 가 양식 sample 보다 정보량이 부족하면 source 또는 1 차 자식 item 참고해 보강.
+- **종결만 맞추고 본문 지나치게 짧아지는 것은 실패**.
+- 보강 시 들어가는 사실 / 시기 / 대상 / 결과는 **반드시 source 또는 1 차 트리에 존재**.
+- 자식 있는 제목형 parent 의 처리 (headline 요약 회수 / compact 압축 / body 문장화) 는 §3 의 mode 분기에 따른다.
 
-## 3. 자식 있는 제목형 parent — headline 요약 회수 (재료 범위 확장만)
+## 3. 자식 있는 제목형 parent — mode 분기 (재료 범위만, 문장 조립 X)
 
-user 메시지의 `headline_rewrite_candidates` 블록에 포함된 item id 는 1 차 text 를 최종 제목으로 확정하지 말고, 직계 자식 text 를 **추가 재료**로 참고해 재작성합니다. 단,
+user 메시지의 두 candidates 블록에 포함된 item id 만 이 § 의 대상.
+대상이 아닌 (목록에 없는) item 은 §3 영향 받지 않음 — 1 차 text 유지 또는 §1/§2 기반 polish 만.
+
+§3 은 **재료 범위 / item 의 역할 한계만 명시**한다.
+connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 않는다** — 문장 조립은 양식 evidence (`style_profile.relation_families_observed`, `join_markers_observed`, `ending_pattern_observed`) 와 §7 family-first 절차에 위임.
+
+### 공통 규칙 (모든 mode)
 
 - **자식 item 은 유지** — 삭제 / 병합 X.
-- 부모 text 에 자식의 **세부 문장을 그대로 복제 X**. 고유명사 · 제도명 · 시스템명 · 핵심 명사구는 사용 가능.
-- 부모 text 에 들어갈 **사실 · 대상 · 수치 · 기관명 · 핵심 명사구는 source 또는 직계 자식 text 에 근거**해야 한다. **종결 방식은 style_profile.ending_pattern_observed 를 따르되, source 의미를 넘는 새 효과를 만들지 않는다.**
-- **§3 은 connector / slot_template / 동작어 / 완성 문장 형태를 제공하지 않는다.** 양식에서 해당 role 에 관찰된 정보 조각 수, relation_family, 연결 방식, 종결 방식에 맞는 수준으로만 반영. **문장 조립은 §7 의 style_profile.relation_families_observed + rigidity 규칙에 위임**한다.
+- 자식의 **세부 문장을 그대로 복제 X**. 고유명사 · 제도명 · 시스템명 · 핵심 명사구는 사용 가능.
+- 부모 text 의 **사실 · 대상 · 수치 · 기관명 · 핵심 명사구는 source 또는 직계 자식 text 에 근거**.
+- **종결 방식 / 연결 방식은 style_profile.ending_pattern_observed / join_markers_observed 따름** — source 의미를 넘는 새 효과 동사 X.
+- `style_profile` 은 **종결 · 연결 · family 의 근거**이지 본문 단어의 근거가 아니다.
+
+### mode 별 역할 한계 (각 mode 는 자기 역할을 넘지 X)
+
+- **compact_heading** (상위 heading — 전략 / 과제 등): 하위 항목 키워드 **나열 금지**. 직계 자식 / 손자에서 확인되는 **상위 목표 / 방향**으로 압축. 하위 키워드 끌어올리지 X. **단순 일반어로 축소 X** (`정보시스템 운영 효율화` 같은 어디나 쓸 수 있는 일반 제목 X) — source / 자식에서 확인되는 핵심 대상과 목표는 유지.
+
+- **headline_summary** (중분류 heading — 󰊱 / 󰊲 / 󰊳 등): **1 차 text 를 최종 제목으로 확정하지 X**. 직계 자식 text 를 **추가 재료로 참고**해 재작성. 자식 전체 (대부분) 를 대표하는 headline. 자식 문장 복제 X.
+
+- **body_polish** (라벨형 실행본문 — ➊ 등): 자식 요약 / 회수 X. source 명사구 나열로 끝나는 경우만 ending_pattern 에 맞춰 **최소 문장화**. 수치 · 기관 · 대상 · 시기 · 장소 삭제 / 축약 X. **이미 실행문장 형태이면 유지** — 새 정보 추가 X.
 
 ### Skip 조건 (1 차 text 유지)
 
 - **A. 단순 명칭형 양식**: style_profile.density=low + unit_count.max ≤ 1.
-- **B. 자식이 무관한 보충뿐**: 직계 자식이 부모 제목 의미와 무관한 보충 (note / detail) 뿐.
+- **B. 자식 무관 보충뿐**: 직계 자식이 부모 제목 의미와 무관한 보충 (note / detail) 뿐.
 - **C. 이미 부합**: 1 차 text 가 직계 자식 전체를 충분히 대표하고 style_profile.unit_count_observed / ending_pattern_observed 에 부합.
 
 이 외 이유 (안전 / 보수 / 원본 살리기 등) 로 유지 X.
 
-### 자기 점검
+### 자기 점검 (output 후 강제)
 
 - 부모 text 가 자식의 절 / 문장 구조 그대로 옮긴 형태면 키워드 발췌로 재작성.
-- **부모 text 의 사실 · 대상 · 수치 · 기관명 · 핵심 명사구는 source 또는 직계 자식 text 에 근거**해야 한다. source / 자식 어디에도 없는 새 명사구 · 정책어가 들어가면 제거 (양식 sample 단어 가져오기 X — §1 + §6 동일).
-- **종결 방식 / 연결 방식은 style_profile.ending_pattern_observed / join_markers_observed 따름** — 단 source 의미를 넘는 새 효과 동사 X.
-- `style_profile` 은 **종결 · 연결 · family 의 근거**이지 본문 단어의 근거가 아니다.
+- 부모 text 에 source · 자식 어디에도 없는 새 명사구 · 정책어가 들어가면 제거 (양식 sample 단어 가져오기 X — §1 + §6 동일).
+- 종결 동작어가 source · 자식 · `style_profile.ending_pattern_observed` 어디에도 없는 새 효과 동사면 교체.
+- **재작성 결과가 1 차 text 보다 source 사실을 덜 보존하거나, 하위 item 과 역할이 겹치거나, 양식 sample 의 정보 밀도보다 과도하게 길어지면** 1 차 text 를 보수적으로 다듬는 수준으로 되돌린다.
 
 ## 4. source 재료 회수 (기존 item text 보강 시)
 
@@ -17827,6 +17842,10 @@ user 메시지의 `headline_rewrite_candidates` 블록에 포함된 item id 는 
 
 `style_profile.relation_families_observed` 가 있으면 family 마다 `applies_when` / `avoid_when` 보고 source 의미 구조 매칭. **connector 만 기계적으로 따라하면 안 됨**. 마지막 중심 명사구 / 동작어 (anchor) 와 앞 재료의 관계가 source 의미와 맞게 구성되어야 합니다.
 
+### family-first 순서 (강제 X — 검토 절차)
+
+문장을 작성하기 전 connector 를 먼저 고르지 말고, source / 자식 재료의 의미 관계를 기준으로 `relation_families_observed` 중 **적용 가능한 family 를 먼저 검토**한다. 선택한 family 의 `applies_when` / `avoid_when` 에 맞지 않으면 그 family 의 slot_template 을 쓰지 X. **맞는 family 가 없으면 slot_template 강제 X — source 흐름 + ending_pattern 만 따른다.**
+
 family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 결정합니다.
 
 ### rigidity 별 family 적용 강도
@@ -17842,11 +17861,9 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 
 ### ⚠️ flexible / semi_flexible 은 짧은 라벨형 축소 허용 신호가 아니다 (정보 밀도 하한)
 
-`style_family_hint` 에 **실행항목형 / 정책과제형 / 중분류 실행항목형 / 핵심 추진과제** 등이 있고 `density_signal` 이 **medium 이상** 이면, source 에 재료가 있는 한 단순 주제명·목차명·소제목으로 축소하지 X.
+`style_profile.density_signal` 이 **medium 이상** 이고 sample 이 다중 정보 조각 구조이면, source 에 재료가 있는 한 단순 주제명·목차명·소제목으로 축소하지 X. source 기반 사실 (대상·조치·목적·결과·범위·방식·시기·근거 등) 중 sample 의 `unit_count_observed.median` 수준의 정보 조각을 포함하고, `ending_pattern_observed` 종결 방식을 따른다.
 
-- 최소 source 기반 **[대상 / 조치 / 목적 / 결과 / 범위 / 방식 / 시기 / 근거]** 중 **2 개 이상 포함**.
-- `ending_pattern_observed` 가 명사형 동작어이면 source 기반 조치·상태를 **명사형 동작어로 종결**.
-- **단순 목차형 축소 금지** — `"현황 및 목표"`, `"원칙 및 적용방향"`, `"법·제도 개편"`, `"추진계획"`, `"개요"` 같은 short label X. source 재료가 실제로 없을 때만 fallback.
+**예외 — `headline_rewrite_candidates` 의 mode 가 `compact_heading` 인 item 은 이 절 적용 X** — §3 의 상위 목표형 압축이 우선 (하위 키워드 나열 X, 하지만 source / 자식의 핵심 대상 · 목표는 유지).
 
 ### source 매칭 절차
 
@@ -17868,12 +17885,9 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 - **semi_flexible / flexible 인 role 에 rigid family slot 강제 X** — 장문 실행항목형을 짧은 제목형 골격으로 깎으면 source 정보 손실.
 - **`avoid_when` 에 해당하는 source 에 family 강제 X** — 다른 family 검토.
 
-### 좋은 예 (참고용 — 절대 강제 X)
+### 양식 evidence 기반 조립 — 고정 예시 X
 
-- rigidity=rigid + family `공통동작어형` (applies_when: source 가 실제 병렬) + source `[A 안정], [B 회복], [공통 동작어]` → `[A 안정] 및 [B 회복] [공통 동작어]`
-- rigidity=rigid + family `수단-결과형` (applies_when: source 가 수단→효과) + source `[조치], [효과/환경], [동작어]` → `[조치] 로 [효과 명사구] [동작어]`
-- rigidity=semi_flexible + family `라벨-장문 실행항목형` + source 가 라벨+장문 실행항목 → `(라벨) [source 대상/문제] [source 조치/개선] [필요 시 절차] [source 최종 동작어]` — connector 와 길이는 source 흐름 우선
-- rigidity=flexible + source 실행 흐름 다양 → 라벨/종결/정보밀도만 모방, source 사실·순서 우선
+§7 은 family-first 검토 절차와 rigidity 별 적용 강도 표만 제공한다. **양식 evidence 없는 고정 예시 / slot 골격 / connector 권장 표현은 박지 않는다** — 양식별 slot 골격은 11.2 의 `relation_families_observed[].slot_template` 에 양식 sample 단위로 박혀 있으므로 그것을 그대로 사용. 일반 행정문서의 가정 예시를 prompt 에서 주입하면 출력이 한 골격으로 collapse 된다 (이전 양식 실측).
 
 # 출력 형식
 
@@ -17897,8 +17911,7 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 """
 
 
-# §3 headline 요약 회수 후보 판정에서 "자식이 supporting/note 류" 인지 거르는 기준.
-# 이 set 안에 속한 text_type 만 있는 부모는 회수 대상이 아님 (라벨형 실행본문).
+# §3 mode 분기에서 "자식이 supporting/note 류" 인지 거르는 기준.
 _HEADLINE_REWRITE_NON_HEADLINE_CHILD_TYPES = frozenset({
     "supporting", "note", "caption", "footnote",
 })
@@ -17909,18 +17922,21 @@ def _compute_headline_rewrite_candidates(
     role_text_types: dict | None,
     style_profiles: dict | None,
 ) -> list[dict]:
-    """1차 본문 트리에서 §3 headline 요약 회수 mode 대상 item 을 판정한다.
+    """1차 본문 트리에서 §3 headline 재작성 mode 대상 item 을 판정한다.
 
     진입 조건 (모두 만족):
       1. 직계 자식 ≥ 2
       2. parent role 의 text_type == "heading"
       3. 직계 자식 중 supporting/note/caption/footnote 가 아닌 자식 ≥ 1
-         (cluster_24 같은 라벨형 실행본문 — 자식이 supporting only — 은 제외)
+         (자식이 supporting only 인 라벨형 실행본문 은 별도 함수 _compute_body_polish_candidates 가 담당)
       4. style_profile 이 명백한 low-density 단순 명칭형 이 아님
          (density=low + unit_count.max ≤ 1 인 경우만 차단)
 
-    11.2 metrics (density medium/high, unit_count median, family 유무) 는
-    필수 조건이 아니라 reason 강도 신호로만 사용.
+    mode 분기 (손자 = 자식의 자식 heading 유무):
+      - 손자 중 heading 있음 → "compact_heading" (상위 heading — 전략 / 과제)
+      - 손자가 heading 없음 (supporting only or 없음) → "headline_summary" (중분류 heading)
+
+    role 이름 하드코딩 없이 트리 구조 깊이로 자동 분류.
 
     Returns:
         [{id, role, direct_child_count, rewrite_mode, reason}, ...]
@@ -17934,6 +17950,12 @@ def _compute_headline_rewrite_candidates(
         pid = it.get("parent_id")
         if pid is not None:
             children_by_pid[pid].append(it)
+
+    def _has_heading_child(item_id) -> bool:
+        return any(
+            ((rtt.get(c.get("role", "")) or {}).get("text_type") == "heading")
+            for c in children_by_pid.get(item_id, [])
+        )
 
     candidates: list = []
     for it in items_1st:
@@ -17966,14 +17988,96 @@ def _compute_headline_rewrite_candidates(
         if sp_ok and density == "low" and (uc.get("max") or 0) <= 1:
             continue
 
+        # mode 분기 — 손자 heading 유무
+        grandchild_has_heading = any(
+            _has_heading_child(c.get("id")) for c in children
+        )
+        rewrite_mode = "compact_heading" if grandchild_has_heading else "headline_summary"
+
         candidates.append({
             "id": item_id,
             "role": role,
             "direct_child_count": len(children),
-            "rewrite_mode": "headline_summary",
+            "rewrite_mode": rewrite_mode,
             "reason": (
                 f"density={density}; unit_median={uc.get('median')}; "
-                f"family={len(families)}; child={len(children)}"
+                f"family={len(families)}; child={len(children)}; "
+                f"grandchild_heading={grandchild_has_heading}"
+            ),
+        })
+    return candidates
+
+
+def _compute_body_polish_candidates(
+    items_1st: list[dict],
+    role_text_types: dict | None,
+    style_profiles: dict | None,
+) -> list[dict]:
+    """라벨형 실행본문 (➊ 등) 의 약한 문장화 mode 대상 판정.
+
+    진입 조건 (모두 만족):
+      1. parent role 의 text_type == "heading"
+      2. 직계 자식 ≥ 1 + 자식이 모두 supporting/note/caption/footnote
+         (자식 0 leaf heading 은 진입 X — §1/§2 일반 polish 만)
+      3. style_profile.density_signal 이 medium / high
+      4. style_profile.unit_count_observed.median ≥ 2 (다중 정보 조각 sample)
+
+    역할 한계: 자식 회수 X, source 명사구 나열을 ending_pattern 따라 최소 문장화만.
+    이미 문장형 이면 유지.
+
+    Returns:
+        [{id, role, rewrite_mode, reason}, ...]
+    """
+    from collections import defaultdict
+    rtt = role_text_types or {}
+    sps = style_profiles or {}
+
+    children_by_pid: dict = defaultdict(list)
+    for it in items_1st:
+        pid = it.get("parent_id")
+        if pid is not None:
+            children_by_pid[pid].append(it)
+
+    candidates: list = []
+    for it in items_1st:
+        item_id = it.get("id")
+        role = it.get("role", "")
+        children = children_by_pid.get(item_id, [])
+
+        # (1) parent heading
+        if (rtt.get(role) or {}).get("text_type") != "heading":
+            continue
+
+        # (2) 자식 ≥ 1 + 모두 supporting 등 (자식 0 leaf 는 진입 X)
+        if not children:
+            continue
+        all_supporting = all(
+            ((rtt.get(c.get("role", "")) or {}).get("text_type", "")
+             in _HEADLINE_REWRITE_NON_HEADLINE_CHILD_TYPES)
+            for c in children
+        )
+        if not all_supporting:
+            continue
+
+        # (3)(4) style profile density medium/high + unit_count median ≥ 2
+        sp = sps.get(role) or {}
+        if sp.get("_parse_status") not in (None, "ok"):
+            continue
+        density = sp.get("density_signal", "unknown")
+        uc = sp.get("unit_count_observed") or {}
+        uc_median = uc.get("median") or 0
+        if density not in ("medium", "high"):
+            continue
+        if uc_median < 2:
+            continue
+
+        candidates.append({
+            "id": item_id,
+            "role": role,
+            "rewrite_mode": "body_polish",
+            "reason": (
+                f"density={density}; unit_median={uc_median}; "
+                f"supporting_child_count={len(children)}"
             ),
         })
     return candidates
@@ -18030,20 +18134,55 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
         ensure_ascii=False, indent=2,
     )
 
-    # ─ §3 headline 요약 회수 후보 (code-side trigger) ───────────
+    # ─ §3 mode 분기 candidates (code-side trigger) ──────────────
     _headline_candidates = _compute_headline_rewrite_candidates(
         items_1st, role_text_types, style_profiles,
     )
+    _body_polish_candidates = _compute_body_polish_candidates(
+        items_1st, role_text_types, style_profiles,
+    )
+
+    # debug dump — chapter 단위로 candidates 기록 (mode 별 결과 검증용)
+    try:
+        import os as _hr_os
+        _hr_os.makedirs("/tmp/hwpx_debug", exist_ok=True)
+        with open(
+            "/tmp/hwpx_debug/headline_rewrite_candidates.jsonl",
+            "a", encoding="utf-8",
+        ) as _hr_f:
+            _hr_f.write(_json.dumps({
+                "chapter_title": (chapter_title or "")[:80],
+                "items_count": len(items_1st),
+                "headline_candidates": _headline_candidates,
+                "body_polish_candidates": _body_polish_candidates,
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
     candidates_section = ""
     if _headline_candidates:
-        _cand_json = _json.dumps(_headline_candidates, ensure_ascii=False, indent=2)
-        candidates_section = (
-            "## headline 요약 회수 대상 (code 지정)\n"
-            "아래 id 의 item 은 §3 에 따라 **기본적으로 재작성**합니다 — "
-            "직계 자식 text 를 추가 재료로 참고해 headline 재조립. "
+        _hr_json = _json.dumps(_headline_candidates, ensure_ascii=False, indent=2)
+        candidates_section += (
+            "## headline 재작성 대상 (code 지정 — §3 mode 분기)\n"
+            "아래 id 의 item 은 §3 에 따라 **기본적으로 재작성**합니다.\n"
+            "- `rewrite_mode = compact_heading`: 상위 heading. **하위 키워드 나열 X, 상위 목표형 압축**. "
+            "단순 일반어로 축소 X — source / 자식의 핵심 대상 · 목표는 유지.\n"
+            "- `rewrite_mode = headline_summary`: 중분류 heading. **1 차 text 확정 X, "
+            "직계 자식 text 를 추가 재료로 참고**해 재작성. 문장 조립은 §7.\n"
             "1 차 유지는 §3 의 Skip 조건에 명확히 해당할 때만.\n"
-            "이 목록에 **없는** item 은 §3 영향 받지 않음 — 1 차 text 유지 또는 §7 기반 polish 만.\n\n"
-            f"```json\n{_cand_json}\n```\n\n"
+            "이 목록에 **없는** item 은 §3 영향 받지 않음 — 1 차 text 유지 또는 §1/§2 기반 polish 만.\n\n"
+            f"```json\n{_hr_json}\n```\n\n"
+        )
+    if _body_polish_candidates:
+        _bp_json = _json.dumps(_body_polish_candidates, ensure_ascii=False, indent=2)
+        candidates_section += (
+            "## body polish 약 적용 대상 (code 지정 — §3 mode 분기)\n"
+            "아래 id 의 item 은 §3 `body_polish` mode — 라벨형 실행본문.\n"
+            "**자식 회수 / 요약 X**. source 명사구 나열로 끝나는 경우만 "
+            "`style_profile.ending_pattern_observed` 에 맞춰 **최소 문장화**.\n"
+            "수치 · 기관 · 대상 · 시기 · 장소 삭제 / 축약 X. **이미 실행문장 형태이면 유지**.\n"
+            "새 정보 / 효과 동사 생성 X.\n\n"
+            f"```json\n{_bp_json}\n```\n\n"
         )
 
     # ─ style_section (11.2 결과) ─────────────────────────────────
