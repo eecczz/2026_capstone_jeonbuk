@@ -17818,11 +17818,19 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 | rigidity | slot_template 적용 | connector 자유도 | source 흐름 우선도 |
 |---|---|---|---|
 | **rigid** | slot 강하게 적용 | sample 관찰 범위 안에서 source 의미·한국어 문법에 맞게 선택 (관찰 안 된 connector X) | 낮음 — slot 우선 |
-| **semi_flexible** | skeleton (라벨 위치 / anchor 위치 / 종결 패턴) 만 적용 | 내부 connector 자유 — source 실행 흐름 우선 | 중간 — skeleton + source |
-| **flexible** | family 를 강제 template 으로 적용하지 않고 참고만 함 | 거의 자유 | 높음 — 라벨/종결/정보밀도만 모방, source 실행 흐름이 본문 결정 |
+| **semi_flexible** | skeleton (라벨 위치 / anchor 위치 / 종결 패턴) 만 적용 | 내부 connector 자유 — source 실행 흐름 우선 | 중간 — skeleton + source. 단 정보 밀도·길이 하한 유지 |
+| **flexible** | family 강제 template 적용 X, 참고만 함 | 내부 connector 자유 | source 흐름 우선, 단 `density_signal` 이 medium 이상이면 정보 밀도·길이 하한 유지 |
 | **unknown** | family 약하게 적용, 보수적 | 보수적 | 최우선 — source 사실 보존 우선 |
 
 **semi_flexible / flexible 인 role 은 relation_family 를 고정 문장틀로 쓰지 마세요.** 라벨 위치 / 정보 순서 / 종결 방식만 따르고, 내부 connector 와 길이는 source 실행 흐름을 우선합니다. sample 마다 연결어가 다양하면 `join_markers_observed` 는 허용 범위로만 보고 고정 template 으로 쓰지 않습니다.
+
+### ⚠️ flexible / semi_flexible 은 짧은 라벨형 축소 허용 신호가 아니다 (정보 밀도 하한)
+
+`style_family_hint` 에 **실행항목형 / 정책과제형 / 중분류 실행항목형 / 핵심 추진과제** 등이 있고 `density_signal` 이 **medium 이상** 이면, source 에 재료가 있는 한 단순 주제명·목차명·소제목으로 축소하지 X.
+
+- 최소 source 기반 **[대상 / 조치 / 목적 / 결과 / 범위 / 방식 / 시기 / 근거]** 중 **2 개 이상 포함**.
+- `ending_pattern_observed` 가 명사형 동작어이면 source 기반 조치·상태를 **명사형 동작어로 종결**.
+- **단순 목차형 축소 금지** — `"현황 및 목표"`, `"원칙 및 적용방향"`, `"법·제도 개편"`, `"추진계획"`, `"개요"` 같은 short label X. source 재료가 실제로 없을 때만 fallback.
 
 ### source 매칭 절차
 
@@ -17974,12 +17982,28 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             if _has_rigidity:
                 _rigidity_action = {
                     "rigid": "slot_template 강하게 적용. connector 는 관찰된 범위 안에서 source 의미·문법에 맞게 선택.",
-                    "semi_flexible": "skeleton (라벨/anchor 위치/종결) 만 적용. 내부 connector·길이는 source 실행 흐름 우선.",
-                    "flexible": "family 를 강제 template 으로 쓰지 않고 참고만 함. 라벨/종결/정보밀도만 모방, source 실행 흐름 우선.",
+                    "semi_flexible": "skeleton (라벨/anchor 위치/종결) 만 적용. 내부 connector·길이는 source 실행 흐름 우선. 단 정보 밀도·길이 하한 유지.",
+                    "flexible": "family 강제 template 적용 X, 참고만 함. 내부 connector 자유. 단 density medium 이상이면 정보 밀도·길이 하한 유지.",
                 }.get(rigidity, "")
                 sub.append(
                     f"- **template_rigidity: `{rigidity}`** — {_rigidity_action}"
                 )
+                # 정보 밀도 하한 명시 — flexible / semi_flexible 인데 density medium 이상 이고
+                # 실행항목형 / 정책과제형 / 추진과제 같은 hint 면 단순 라벨 축소 금지
+                _ds_medium_plus = ds in ("medium", "high")
+                _execution_hint = any(
+                    _kw in (sfh or "")
+                    for _kw in ("실행항목", "정책과제", "추진과제", "핵심 추진", "중분류")
+                )
+                if rigidity in ("flexible", "semi_flexible") and _ds_medium_plus and _execution_hint:
+                    sub.append(
+                        "- **밀도 하한** — 단순 주제명·목차명·소제목으로 축소 X "
+                        "(`현황 및 목표`, `원칙 및 적용방향`, `법·제도 개편`, `추진계획`, `개요` 같은 short label 금지)."
+                    )
+                    sub.append(
+                        "  source 기반 [대상 / 조치 / 목적 / 결과 / 범위 / 방식 / 시기 / 근거] 중 "
+                        "**최소 2 개 이상 포함**. ending 이 명사형 동작어이면 source 기반 조치·상태를 명사형 동작어로 종결."
+                    )
             if rel_families:
                 sub.append(
                     "- **관계 family (마지막 중심부 + 앞 segment 관계)** — 정책 §7 source 매칭 절차 적용:"
