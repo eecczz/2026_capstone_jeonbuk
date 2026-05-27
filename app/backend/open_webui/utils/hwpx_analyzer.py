@@ -17963,6 +17963,40 @@ _PUNCTUATION_DELIMITERS = frozenset({
     "쉼표", "쥼표", "콤마", "중점", "가운뎃점", "슬래시", "세미콜론", "콜론",
 })
 
+# 11.2 join_markers_observed 이름 → 정확한 token boundary 정규식 매핑.
+# 단순 substring count 는 짧은 connector ("등", "로") 에 오탐 위험 (단어 내부 음절).
+# `_collect_style_samples` 의 `_connector_patterns` 와 동일 패턴 유지 (양식 sample 측정 일관성).
+_CONNECTOR_REGEX_BY_NAME = {
+    # punctuation (11.2 가 한국어 이름으로 호명한 경우)
+    "쉼표": r",",
+    "쥼표": r",",
+    "콤마": r",",
+    "중점": r"·",
+    "가운뎃점": r"·",
+    "슬래시": r"/",
+    "세미콜론": r";",
+    "콜론": r":",
+    # 어절 connector — token boundary 매칭 (오탐 차단)
+    "및": r"\s+및\s+",
+    "등": r"\s+등(?:\s|$|,|\.)",
+    "로": r"(?<=[가-힣])로\s+",
+    "와": r"(?<=[가-힣])와\s+",
+    "과": r"(?<=[가-힣])과\s+",
+    "을 위한": r"\s*을 위한\s*",
+    "를 위한": r"\s*를 위한\s*",
+    "위한": r"\s+위한\s+",
+    "에 대한": r"\s*에 대한\s*",
+    "을 통한": r"\s*을 통한\s*",
+    "을 통해": r"\s*을 통해\s*",
+    "통한": r"\s+통한\s+",
+    "통해": r"\s+통해\s+",
+    "하고": r"\s+하고[,\s]",
+    "하여": r"\s+하여\s+",
+    "하며": r"\s+하며[,\s]",
+    "넘어": r"\s+넘어\s+",
+    "거쳐": r"\s+거쳐\s+",
+}
+
 
 def _compute_connector_limits_per_role(
     paragraphs: list[dict] | None,
@@ -17998,7 +18032,12 @@ def _compute_connector_limits_per_role(
         if text:
             role_samples[role].append(text)
 
+    import re as _re
     sps = style_profiles or {}
+    # 정규식 미리 compile
+    compiled_regex = {
+        name: _re.compile(pat) for name, pat in _CONNECTOR_REGEX_BY_NAME.items()
+    }
     result: dict = {}
     for role, samples in role_samples.items():
         sp = sps.get(role) or {}
@@ -18010,12 +18049,19 @@ def _compute_connector_limits_per_role(
                 if not isinstance(name, str) or not name.strip():
                     continue
                 name_norm = name.strip()
-                literal = _CONNECTOR_NAME_TO_LITERAL.get(name_norm, name_norm)
-                counts = [s.count(literal) for s in samples]
+                # count 방식: dict 에 있으면 정확한 token boundary 정규식, 없으면 substring fallback
+                if name_norm in compiled_regex:
+                    regex = compiled_regex[name_norm]
+                    counts = [len(regex.findall(s)) for s in samples]
+                else:
+                    # fallback substring count — 모르는 connector (오탐 가능)
+                    literal = _CONNECTOR_NAME_TO_LITERAL.get(name_norm, name_norm)
+                    counts = [s.count(literal) for s in samples]
                 mx = max(counts) if counts else 0
                 if mx <= 0:
                     continue
-                if name_norm in _PUNCTUATION_DELIMITERS or literal in _PUNCTUATION_DELIMITERS:
+                literal_check = _CONNECTOR_NAME_TO_LITERAL.get(name_norm, name_norm)
+                if name_norm in _PUNCTUATION_DELIMITERS or literal_check in _PUNCTUATION_DELIMITERS:
                     delimiter_limits[name_norm] = mx
                 else:
                     connector_limits[name_norm] = mx
@@ -18327,7 +18373,7 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             "- **작성 전 필수 작업**: `connector_limits` 의 각 connector 마다 source 본문에서 대응 가능한 관계 후보를 **먼저 찾는다**. 후보 찾기 전 text 작성 X.\n"
             "- 각 connector 의 관계 후보는 style_section 의 `relation_families_observed` 의 같은 connector 가 들어간 slot_template / applies_when / avoid_when 기준으로 판단.\n"
             "- **의미 connector 우선 사용** — `connector_limits` 의 connector 에 후보가 있는데도 `delimiter_limits` 의 단순 분리자 (쉼표 등) 만 쓰면 **실패**. delimiter 는 fallback 이지 기본값 X.\n"
-            "- **delimiter 도 양식 sample 한계 안에서만** — `delimiter_limits` 의 한계를 넘으면 실패. `A, B, C` 같은 단순 쉼표 나열로 도피 X.\n"
+            "- **delimiter 도 양식 sample 한계 안에서만** — `delimiter_limits` 의 한계를 넘으면 실패. 단순 delimiter 연속 나열로 도피 X.\n"
             "- 후보가 여러 connector 에 있으면 source 에 수치 · 결과 · 목적 · 절차가 함께 있는 후보 우선.\n"
             "- **source 후보가 전혀 없을 때만** delimiter 또는 명사구 축소 fallback. 후보 없다고 `connector_limits` / `delimiter_limits` 밖 형식 새로 만들기 X.\n"
             "- connector 한계 초과 시 delimiter 로 치환 X. delimiter 한계 초과 시 다른 delimiter / connector 로 치환 X. **항상 병렬 나열 자체를 줄여 핵심만 남긴다**.\n"
@@ -18347,7 +18393,7 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             "- `connector_limits` (의미 connector) + `delimiter_limits` (쉼표 등 단순 분리자) 각각 한계 따로 적용 — 각 item 자기 text 안 카운트. 둘 다 명시 안 된 형식 사용 X.\n"
             "- **작성 전 필수**: connector_limits 의 각 connector 마다 source 본문 후보 먼저 찾기. 찾기 전 text 작성 X.\n"
             "- **의미 connector 우선** — `connector_limits` 후보 있는데 delimiter (쉼표 등) 만 쓰면 실패. delimiter 는 fallback.\n"
-            "- delimiter 도 양식 sample 한계 안에서만 (`A, B, C` 같은 단순 나열 도피 X).\n"
+            "- delimiter 도 양식 sample 한계 안에서만 (단순 delimiter 연속 나열 도피 X).\n"
             "- source 후보 전혀 없을 때만 delimiter 또는 명사구 축소 fallback. 한계 초과 시 다른 connector / delimiter 로 치환 X — 병렬 나열 자체 축소.\n"
             "- 같은 connector 반복 ≤ `max_same_connector` 회 (보조 한계).\n"
             "- 라벨 segment 관찰 role 은 **라벨 필수** (라벨 생략 = 실패).\n"
