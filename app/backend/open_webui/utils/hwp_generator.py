@@ -1098,6 +1098,7 @@ def assemble_hwpx_hybrid(
     analyzed_sections: set[int] | None = None,
     chapter_local_exemplars: dict | None = None,
     emphasis_layers: dict | None = None,
+    paragraph_emphasis_map: dict | None = None,
     toc_replacements: list | None = None,
     toc_paragraph_idx: int | None = None,
 ) -> HwpxResult:
@@ -1815,9 +1816,11 @@ def assemble_hwpx_hybrid(
                         _parse_emphasis_markup(_ad_text_stripped, _ct_valid_layers)
                         if _ct_valid_layers else []
                     )
-                    _ct_indent_mode = _ct_em_data.get("indent_length_mode", 0) or 0
-                    _ct_indent_lid = _ct_em_data.get("indent_layer_majority_id")
-                    _ct_indent_cp_maj = _ct_em_data.get("indent_layer_majority_charpr")
+                    # indent 정보는 paragraph_emphasis_map 의 cluster entry 에 있음
+                    _ct_pem_for_indent = (paragraph_emphasis_map or {}).get(_title_role_for_anchor) or {}
+                    _ct_indent_mode = _ct_pem_for_indent.get("indent_length_mode", 0) or 0
+                    _ct_indent_lid = _ct_pem_for_indent.get("indent_layer_majority_id")
+                    _ct_indent_cp_maj = _ct_pem_for_indent.get("indent_layer_majority_charpr")
                     if _ct_indent_mode and _ct_indent_lid and _ct_indent_cp_maj:
                         _ct_charpr_map.setdefault(_ct_indent_lid, _ct_indent_cp_maj)
                         _ct_valid_layers.add(_ct_indent_lid)
@@ -2849,9 +2852,12 @@ def assemble_hwpx_hybrid(
                 _content_for_path = _content_for_path.lstrip(" \t")
                 _pre_segments = _parse_emphasis_markup(_content_for_path, _body_valid_layers) if _body_valid_layers else []
 
-                _indent_mode = (_body_cluster_em or {}).get("indent_length_mode", 0) or 0
-                _indent_lid = (_body_cluster_em or {}).get("indent_layer_majority_id")
-                _indent_cp_majority = (_body_cluster_em or {}).get("indent_layer_majority_charpr")
+                # indent 정보는 paragraph_emphasis_map 의 cluster entry 에 있음
+                # (emphasis_layers 는 AI 파싱 결과로 indent 정보 없음)
+                _body_pem_for_indent = (paragraph_emphasis_map or {}).get(_role_for_em_lookup) or {}
+                _indent_mode = _body_pem_for_indent.get("indent_length_mode", 0) or 0
+                _indent_lid = _body_pem_for_indent.get("indent_layer_majority_id")
+                _indent_cp_majority = _body_pem_for_indent.get("indent_layer_majority_charpr")
                 if _indent_mode and _indent_lid and _indent_cp_majority:
                     _body_charpr_map.setdefault(_indent_lid, _indent_cp_majority)
                     _body_valid_layers.add(_indent_lid)
