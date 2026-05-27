@@ -18103,18 +18103,31 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 
 **`allowed_units` / `max_same_connector` 규칙은 candidates 블록에 포함된 item 에만 적용한다. candidates 에 없는 item 은 §1 / §2 / §7 의 일반 polish 만 적용한다.**
 
-### `및` connector 사용 규칙 (literal `및` 도피 차단)
+### `및` connector 사용 규칙 (입증 책임 — 기본 실패)
 
-`및` 은 fallback connector 가 아니다. `및` 은 source 에서 두 표현이 실제 같은 층위의 병렬 항목일 때만 사용한다.
+#### `및` 기본 판정 (가장 먼저)
 
-한쪽이 다른 한쪽의 수단·절차·근거·조건·결과·목표·강화/개선 대상이면 `및` 사용은 실패다. 이 경우 source 관계와 `relation_families_observed` 에 맞는 connector 를 사용한다. 맞는 connector 가 없으면 다른 connector 로 치환하지 말고 병렬 나열을 줄여 핵심 표현만 남긴다.
+`및` 은 기본 fallback connector 가 아니라 **예외 connector** 다.
 
-`및` 이 candidates 의 `connector_limits` 안에서 허용 횟수가 남아 있어도 위 규칙을 먼저 만족해야 한다. 즉, 허용 횟수가 남아 있어도 실제 동급 병렬이 아니면 `및` 을 쓰면 실패다.
+`및` 을 사용하려면 source 안에 두 항목이 **동급 병렬** 임을 증명하는 근거가 있어야 한다. **근거를 source 텍스트에서 직접 지목하지 못하면 `및` 사용 실패** 로 처리한다.
+
+**동급 병렬 근거 (source 에 다음 중 하나 이상이 명시적으로 있어야 함)**:
+- source 에서 두 항목이 같은 목록/열거 안에 함께 등장.
+- source 에서 두 항목이 같은 술어를 공유 (한 문장이 두 항목을 같은 동사로 처리).
+- source 에서 두 항목이 같은 분류/대상 목록의 업무로 제시.
+
+위 근거가 없으면 `및` 사용 X. **"둘 다 업무명이니까 병렬" / "둘 다 명사구니까 병렬" / "같은 영역이니까 병렬" 식의 모델 추론은 근거가 아니다** — source 텍스트에서 위 3 가지 중 하나를 직접 지목할 수 있어야 한다.
+
+#### 추가 실패 조건
+
+- 한쪽이 다른 한쪽의 수단·절차·근거·조건·결과·목표·강화/개선 대상이면 `및` 사용 실패.
+  이 경우 source 관계와 `relation_families_observed` 에 맞는 connector 를 사용하거나, 맞는 connector 가 없으면 병렬 나열을 줄여 핵심 표현만 남긴다.
+- `connector_limits` 안에서 허용 횟수가 남아 있어도 위 입증 책임 + 추가 실패 조건을 먼저 만족해야 한다.
 
 예:
 - 나쁜: `A 점검 및 B 강화` — A 가 B 를 강화하는 수단·근거 관계인데 평면 `및` 도피.
 - 좋은: source 에서 A 가 B 의 수단·근거이면 `A 점검으로 B 강화` 처럼 관계 반영.
-- 허용: source 에 A 와 B 가 실제 동급 병렬 업무이면 `A 및 B` 가능.
+- 허용: source 한 문장이 A 와 B 를 같은 동사로 처리하거나 같은 목록에 나열하면 `A 및 B` 가능 (위 동급 병렬 근거 중 하나).
 
 (위 `으로` 는 관계 반영 illustration 일 뿐 강제 connector 가 아니다. 실제 connector 는 source 관계와 `relation_families_observed` 에 박힌 것을 사용한다.)
 
