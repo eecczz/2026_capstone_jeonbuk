@@ -1808,17 +1808,31 @@ def assemble_hwpx_hybrid(
                             if _lid and _cp:
                                 _ct_charpr_map[_lid] = _cp
                                 _ct_valid_layers.add(_lid)
+                    # 들여쓰기 책임 분리 (2026-05-27): AI text leading whitespace strip
+                    # + cluster 표준 indent 자동 prepend (body item path 와 동일).
+                    _ad_text_stripped = _ad_text_with_marker.lstrip(" \t")
                     _ct_segments = (
-                        _parse_emphasis_markup(_ad_text_with_marker, _ct_valid_layers)
+                        _parse_emphasis_markup(_ad_text_stripped, _ct_valid_layers)
                         if _ct_valid_layers else []
                     )
+                    _ct_indent_mode = _ct_em_data.get("indent_length_mode", 0) or 0
+                    _ct_indent_lid = _ct_em_data.get("indent_layer_majority_id")
+                    _ct_indent_cp_maj = _ct_em_data.get("indent_layer_majority_charpr")
+                    if _ct_indent_mode and _ct_indent_lid and _ct_indent_cp_maj:
+                        _ct_charpr_map.setdefault(_ct_indent_lid, _ct_indent_cp_maj)
+                        _ct_valid_layers.add(_ct_indent_lid)
+                        _ct_indent_seg = (_ct_indent_lid, " " * int(_ct_indent_mode))
+                        if _ct_segments == [(None, "")]:
+                            _ct_segments = [_ct_indent_seg]
+                        else:
+                            _ct_segments = [_ct_indent_seg] + _ct_segments
                     _ct_has_em = any(s[0] is not None for s in _ct_segments)
                     if _ct_valid_layers and _ct_has_em:
                         _replace_text_with_emphasis_segments(
                             _anchor_el, "", _ct_segments, _ct_charpr_map, NS,
                         )
                     else:
-                        _replace_text_in_paragraph_elem(_anchor_el, _ad_text_with_marker, NS)
+                        _replace_text_in_paragraph_elem(_anchor_el, _ad_text_stripped, NS)
                     _adapted_title_applied = True
                     log.info(
                         f"[chapter title body-path-unified ci={ci}] applied "
@@ -2828,8 +2842,25 @@ def assemble_hwpx_hybrid(
                 # AI text의 valid emphasis markup 미리 parse — 0개면 emphasis path 우회.
                 # markup 0개에 emphasis path를 돌면 segments=[(None, 전체)]가 되어
                 # cluster base로 박혀 양식 본래 글꼴 잃음. Sprint 2B path가 양식 글꼴 보존.
+                # 들여쓰기 책임 분리 (2026-05-27): AI text 의 leading whitespace 는 strip.
+                # cluster 표준 indent (extract_paragraph_emphasis_map 의 indent_length_mode +
+                # indent_layer_majority_charpr) 가 있으면 segments 맨 앞에 자동 prepend.
                 _content_for_path = _body_content_text.lstrip(" \t") if _body_marker_text else clean_text
+                _content_for_path = _content_for_path.lstrip(" \t")
                 _pre_segments = _parse_emphasis_markup(_content_for_path, _body_valid_layers) if _body_valid_layers else []
+
+                _indent_mode = (_body_cluster_em or {}).get("indent_length_mode", 0) or 0
+                _indent_lid = (_body_cluster_em or {}).get("indent_layer_majority_id")
+                _indent_cp_majority = (_body_cluster_em or {}).get("indent_layer_majority_charpr")
+                if _indent_mode and _indent_lid and _indent_cp_majority:
+                    _body_charpr_map.setdefault(_indent_lid, _indent_cp_majority)
+                    _body_valid_layers.add(_indent_lid)
+                    _indent_seg = (_indent_lid, " " * int(_indent_mode))
+                    if _pre_segments == [(None, "")]:
+                        _pre_segments = [_indent_seg]
+                    else:
+                        _pre_segments = [_indent_seg] + _pre_segments
+
                 _has_valid_em = any(s[0] is not None for s in _pre_segments)
 
                 if _body_valid_layers and _has_valid_em:
@@ -3464,13 +3495,20 @@ def _replace_text_in_paragraph_elem_split(p_elem, marker_text: str, content_text
 
 
 def _parse_emphasis_markup(text: str, valid_layer_ids: set | None = None) -> list:
-    """Sprint 3B: AI 출력 text에서 [[emN]]...[[/emN]] markup 추출.
+    """AI 출력 text 에서 [[emN]]...[[/emN]] markup 추출 (stack 기반 normalizer).
+
+    LLM 이 open/close 짝을 잘못 출력해도 흡수:
+    - 룰 A: 다른 layer 가 열려 있는데 새 open → 이전 layer auto-close 후 새 open.
+    - 룰 B: stack top 과 mismatch 인 close (orphan close) → 그 자리에서 open 으로 처리.
+    - 같은 layer 또 open → noop (이미 열려 있음).
+    - EOF 시 stack 에 남은 layer 자동 close.
+    nested 자체가 발생하지 않으므로 stack 깊이는 최대 1.
 
     Args:
         text: AI 본문 텍스트 (markup 포함 가능)
         valid_layer_ids: 허용된 layer_id set (예: {"em1", "em2"}).
-                         None이면 모든 emN 허용. 정의 안 된 layer_id는 markup 무시
-                         (base segment로 처리).
+                         None 이면 모든 emN 허용. 정의 안 된 layer_id 의 token 은 무시되어
+                         그 자리의 텍스트는 현재 stack top layer (또는 base) 로 들어간다.
 
     Returns:
         [(layer_id|None, segment_text), ...]
@@ -3478,32 +3516,55 @@ def _parse_emphasis_markup(text: str, valid_layer_ids: set | None = None) -> lis
     """
     import re as _re
 
-    pattern = _re.compile(r'\[\[(em\d+)\]\](.*?)\[\[/\1\]\]', _re.DOTALL)
-    segments = []
+    # 1) tokenize
+    token_pattern = _re.compile(r'\[\[(/?)(em\d+)\]\]')
+    tokens: list = []  # ('text', str) | ('open', layer_id) | ('close', layer_id)
     cursor = 0
-    for m in pattern.finditer(text):
+    for m in token_pattern.finditer(text):
         if m.start() > cursor:
-            segments.append((None, text[cursor:m.start()]))
-        layer_id = m.group(1)
-        seg_text = m.group(2)
-        if valid_layer_ids is not None and layer_id not in valid_layer_ids:
-            # 정의 안 된 layer → markup 자체 무시, base로 처리
-            segments.append((None, seg_text))
-        else:
-            segments.append((layer_id, seg_text))
+            tokens.append(('text', text[cursor:m.start()]))
+        is_close = bool(m.group(1))
+        layer_id = m.group(2)
         cursor = m.end()
+        if valid_layer_ids is not None and layer_id not in valid_layer_ids:
+            # 정의 안 된 layer 의 markup → 토큰 무시 (glyph 도 안 박힘).
+            # 그 자리의 다음 text 토큰은 현재 stack top layer 로 들어감.
+            continue
+        tokens.append(('close' if is_close else 'open', layer_id))
     if cursor < len(text):
-        segments.append((None, text[cursor:]))
+        tokens.append(('text', text[cursor:]))
 
-    # 안전망: None segment 안에 남은 단독 [[emN]] / [[/emN]] strip
-    # (LLM이 open/close 짝을 안 맞춰 출력한 경우 markup 문자가 본문에 박히는 것 방지)
+    # 2) stack 운용 (flat tagging — nested 없음, stack 깊이 ≤ 1)
+    segments: list = []
+    stack: list = []
+    for kind, value in tokens:
+        if kind == 'text':
+            current = stack[-1] if stack else None
+            segments.append((current, value))
+        elif kind == 'open':
+            layer_id = value
+            if stack and stack[-1] != layer_id:
+                stack.pop()  # 룰 A — 다른 layer auto-close
+            if not stack or stack[-1] != layer_id:
+                stack.append(layer_id)
+        else:  # 'close'
+            layer_id = value
+            if stack and stack[-1] == layer_id:
+                stack.pop()  # 정상 close
+            else:
+                # 룰 B — orphan close → 그 자리에서 open 으로 처리
+                if stack and stack[-1] != layer_id:
+                    stack.pop()
+                stack.append(layer_id)
+
+    # 3) 안전망: 혹시 모를 남은 markup glyph strip (모든 segment)
     _orphan_marker = _re.compile(r'\[\[/?em\d+\]\]')
     segments = [
-        (layer, (_orphan_marker.sub('', t) if layer is None and t else t))
+        (layer, (_orphan_marker.sub('', t) if t else t))
         for layer, t in segments
     ]
 
-    # 빈 segment 제거 (단 segments 비면 None entry 1개 유지)
+    # 4) 빈 segment 제거 (단 segments 비면 None entry 1개 유지)
     segments = [s for s in segments if s[1]]
     if not segments:
         segments = [(None, "")]
