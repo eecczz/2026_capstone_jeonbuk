@@ -17781,7 +17781,9 @@ user 메시지의 `headline_rewrite_candidates` 블록에 포함된 item id 는 
 ### 자기 점검
 
 - 부모 text 가 자식의 절 / 문장 구조 그대로 옮긴 형태면 키워드 발췌로 재작성.
-- 부모 text 의 단어 · 종결이 source · 자식 · style_profile 어디에도 근거 없는 새 표현이면 source / 자식 / style_profile 안 표현으로 교체.
+- **부모 text 의 사실 · 대상 · 수치 · 기관명 · 핵심 명사구는 source 또는 직계 자식 text 에 근거**해야 한다. source / 자식 어디에도 없는 새 명사구 · 정책어가 들어가면 제거 (양식 sample 단어 가져오기 X — §1 + §6 동일).
+- **종결 방식 / 연결 방식은 style_profile.ending_pattern_observed / join_markers_observed 따름** — 단 source 의미를 넘는 새 효과 동사 X.
+- `style_profile` 은 **종결 · 연결 · family 의 근거**이지 본문 단어의 근거가 아니다.
 
 ## 4. source 재료 회수 (기존 item text 보강 시)
 
@@ -18037,8 +18039,10 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
         _cand_json = _json.dumps(_headline_candidates, ensure_ascii=False, indent=2)
         candidates_section = (
             "## headline 요약 회수 대상 (code 지정)\n"
-            "아래 id 의 item 은 §3 에 따라 **기본적으로 재작성**합니다. "
-            "1 차 유지는 §3 의 Skip 4 개 중 하나에 명확히 해당할 때만.\n\n"
+            "아래 id 의 item 은 §3 에 따라 **기본적으로 재작성**합니다 — "
+            "직계 자식 text 를 추가 재료로 참고해 headline 재조립. "
+            "1 차 유지는 §3 의 Skip 조건에 명확히 해당할 때만.\n"
+            "이 목록에 **없는** item 은 §3 영향 받지 않음 — 1 차 text 유지 또는 §7 기반 polish 만.\n\n"
             f"```json\n{_cand_json}\n```\n\n"
         )
 
