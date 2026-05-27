@@ -7692,8 +7692,10 @@ def extract_paragraph_emphasis_map(
                 (ai_idx, segments)
             )
 
-        # paragraph leading indent (whitespace-only 인 첫 segments 의 총 길이)
-        # — cluster mode 로 표준 indent 길이 + 첫 layer 추출. 코드가 assemble 시 자동 박음.
+        # paragraph leading indent (whitespace-only 인 첫 segments 의 총 길이
+        # + 첫 본문 segment 안의 leading whitespace) — 양식이 들여쓰기+마커+본문을
+        # 한 t 에 합쳐 박는 경우도 정확히 잡기 위해 첫 본문 segment 의 leading 추출.
+        # cluster mode 로 표준 indent 길이 + 첫 layer 추출. 코드가 assemble 시 자동 박음.
         leading_chars = 0
         leading_layer = None
         for _cp, _text in segments:
@@ -7702,6 +7704,12 @@ def extract_paragraph_emphasis_map(
                 if leading_layer is None:
                     leading_layer = _cp
             else:
+                # 첫 본문 segment 안 leading whitespace 추출
+                _stripped = _text.lstrip(" \t")
+                _ws_added = len(_text) - len(_stripped)
+                leading_chars += _ws_added
+                if _ws_added > 0 and leading_layer is None:
+                    leading_layer = _cp
                 break
         cluster_indent_length_counter[cluster_id][leading_chars] += 1
         if leading_chars > 0 and leading_layer is not None:
@@ -17883,8 +17891,10 @@ def compute_layer_usage_profile(
 SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니다.
 
 ## 역할
-이미 작성된 본문 트리에 양식의 **형식** (outer_marker + style layer markup + 들여쓰기) 을 입힙니다.
+이미 작성된 본문 트리에 양식의 **형식** (outer_marker + inline style layer markup) 을 입힙니다.
 본문 의미·문장은 거의 그대로 보존.
+
+출력 text 는 outer_marker 와 inline style layer 만 포함합니다. 문단 앞 공백은 출력하지 않습니다.
 
 ## 핵심 개념 분리 (먼저 익히세요)
 
@@ -17901,12 +17911,18 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 `[[emN]]...[[/emN]]` 은 **강조 표시가 아닙니다**. 원본 양식의 **글꼴 layer 재현용 style 표시** 입니다.
 
-- **base layer**: body 일반 문장 골격에 쓰는 기본 style. outer_marker · content_label 은 sample 의 layer 배치가 우선이며 base 로 덮지 않는다. (들여쓰기는 코드 책임 — §3 참조.)
+- **base layer**: body 일반 문장 골격에 쓰는 기본 style. outer_marker · content_label 은 sample 의 layer 배치가 우선이며 base 로 덮지 않는다.
 - **non-base layer**: 양식이 특정 위치 (마커, 분류 라벨 등) 에 다른 글꼴 박은 자리.
 
-## ⚠️ 글꼴 layer 적용 정책 (가장 중요 — 다른 모든 규칙보다 우선)
+## ⚠️ 규칙 충돌 시 우선순위
 
-(정책 1~10 — 모두 동등 중요. §9 layer usage profile 은 sample 분할 패턴과 같은 강도로 사용. §10 은 §9 의 과보정 안전장치.)
+1. **본문 의미와 원문 텍스트 보존** — 마커·강조만 입히고 단어·문장 의미를 바꾸지 않는다.
+2. **body 일반 문장 골격은 base layer 로 보존** — body 전체 강조 금지.
+3. **outer_marker · content_label 은 sample layer 우선** — base 로 덮지 않는다.
+4. **usage profile 은 non-base 적용 강도를 정한다 — 단 body 전체 non-base 금지를 위반하지 않는다.**
+5. **sample 분할 패턴은 기본 기준** — usage profile 이 있는 경우 함께 적용.
+
+## ⚠️ 글꼴 layer 적용 정책 (가장 중요 — 다른 모든 규칙보다 우선)
 
 1. **목표는 non-base layer 를 줄이는 것이 아니라, 양식 sample 의 style 분할 규칙을 재현하는 것이다.**
 
@@ -17926,28 +17942,25 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 6. **넓은 규칙은 자유 선택 X — 의미 기능 + usage profile 근거.** 단순히 "핵심어", "중요 표현" 처럼 넓은 규칙은 자유 선택하지 않는다. 다만 `rules_for_generation` 의 의미 기능과 layer usage profile 이 함께 주어진 경우에는, sample 의 기능적 분할 패턴과 usage profile 을 근거로 적용한다. sample 예시의 정확한 span 개수만으로 제한하지 않는다.
 
-7. **불확실하면 해당 segment 만 base 로 둔다. 하지만 문단 전체를 무조건 base 로 뭉개지 않는다.**
+7. **body 일반 문장 골격은 base layer 로 유지한다.**
+   - 불확실한 segment 는 base 로 둔다.
+   - 그러나 paragraph 전체를 무조건 base 로 뭉개지 말고, `rules_for_generation` 과 usage profile 에 맞는 segment 만 non-base 로 나눈다.
+   - **반대로 body 전체를 하나의 non-base layer 로 감싸는 것도 금지한다.** 조사·연결어·서술어·일반 설명 골격은 base 로 남긴다.
+   - 단, 양식 sample 에서 같은 role 의 body 전체가 실제로 non-base layer 로만 구성된 경우에는 sample 을 따른다 (예외).
 
-8. **base layer 의 범위 — 잘못 읽지 말 것.** base 는 body 일반 문장에 대한 기본값일 뿐, outer_marker · content_label 을 base 로 강제하라는 뜻이 아니다. 이 구간들은 양식 sample 의 layer 배치를 우선 복제한다. (들여쓰기는 코드가 자동 박으므로 §3 참조 — sample 의 leading whitespace block 은 모방 대상 아님.)
+8. **base layer 의 범위 — 잘못 읽지 말 것.** base 는 body 일반 문장에 대한 기본값일 뿐, outer_marker · content_label 을 base 로 강제하라는 뜻이 아니다. 이 구간들은 양식 sample 의 layer 배치를 우선 복제한다.
 
-9. **layer usage profile 적용 강제 — 선택 참고 X, 적용 강도 제약 O.**
+9. **layer usage profile 적용 강제 — 선택 참고 X, 적용 강도 제약 O. 단 §7 을 이기지 못한다.**
 
    role 별 layer guide 에 `usage: coverage=..., density=...` 가 박혀 있으면 선택 참고가 아니라 **적용 강도 제약** 으로 사용한다.
 
-   - `coverage=always` 인 non-base layer 는 해당 role 의 **필수 반복 style** 이다. `rules_for_generation` 에 맞는 segment 가 새 paragraph 에 있으면 **반드시 적용**하며, 조건에 맞는 segment 가 있는데 0 회 적용하는 것은 금지 (rule 조건에 맞는 segment 가 전혀 없는 경우만 예외 — 5번째 항목 참조).
+   - `coverage=always` 인 non-base layer 는 해당 role 의 **필수 반복 style** 이다. `rules_for_generation` 에 맞는 segment 가 새 paragraph 에 있으면 **반드시 적용**하며, 조건에 맞는 segment 가 있는데 0 회 적용하는 것은 금지 (rule 조건에 맞는 segment 가 전혀 없는 경우만 예외).
    - `coverage=often` 인 non-base layer 는 해당 role 의 **주요 반복 style** 이다. `rules_for_generation` 에 맞는 segment 가 새 paragraph 에 있으면 **적극 적용**하되, 문장에 맞는 segment 가 부족한 경우 0 회도 가능.
-   - `density=high` 또는 `medium` 인 layer 는 한 paragraph 안에서 **여러 segment 에 반복 적용**되는 패턴이다. 조건에 맞는 segment 가 여러 개 있으면 하나만 고르지 말고 sample 처럼 **여러 span 으로 나누어 적용**한다. 단, paragraph 당 정확한 개수를 맞추라는 뜻이 아니라 sample 처럼 여러 핵심 segment 로 나누어 적용하라는 뜻.
-   - `coverage=rare` 또는 `occasional` 인 layer 는 **예외 style** 이다. 표면 패턴이 보여도 과적용하지 않는다. 해당 rule 의 의미 기능이 명확할 때만 적용한다. paragraph 마다 반복 적용하지 않는다.
+   - `density=high` 또는 `medium` 인 layer 는 한 paragraph 안에서 **여러 segment 에 반복 적용**되는 패턴이다. 조건에 맞는 segment 가 여러 개 있으면 하나만 고르지 말고 sample 처럼 **여러 span 으로 나누어 적용**한다.
+   - `coverage=rare` 또는 `occasional` 인 layer 는 **예외 style** 이다. 표면 패턴이 보여도 과적용하지 않는다. 해당 rule 의 의미 기능이 명확할 때만 적용한다.
    - **수치·금액·기간·비율·괄호 관련 layer 가 `rare` 또는 `occasional` 이면, 숫자나 괄호가 있다는 이유만으로 paragraph 마다 반복 적용하지 마세요.** sample 에서 같은 의미 기능으로 layer 받은 자리에만 제한적으로 적용.
    - **usage profile 은 `rules_for_generation` 을 대체하지 않는다.** coverage 가 높아도 rule 조건에 맞는 segment 가 새 본문에 전혀 없으면 억지로 만들지 말고 base 로 둔다.
-
-10. **body base layer 보존 — 전체 강조 금지.**
-
-    outer_marker 와 content_label 을 제외한 body 일반 문장에는 원칙적으로 base layer 가 반드시 포함되어야 한다. non-base layer 는 `rules_for_generation` 과 usage profile 에 맞는 **특정 segment** 에만 적용하고, **body 전체를 non-base layer 하나로 감싸지 않는다**.
-
-    `coverage=always` 또는 `density=high` 인 layer 도 body 전체 적용을 뜻하지 않는다. 여러 핵심 segment 에 반복 적용하되, 조사·연결어·서술어·일반 설명 문장은 base 로 남긴다.
-
-    단, 양식 sample 에서 같은 role 의 body 전체가 실제로 non-base layer 로만 구성된 경우에는 sample 을 따른다 (예외).
+   - **`coverage=always` 또는 `density=high` 는 body 전체 강조를 뜻하지 않는다.** body 안의 특정 segment 들에 반복 적용하라는 뜻이며, 조사·연결어·서술어·일반 설명 골격은 base 로 남긴다. **usage profile 은 §7 body base 골격 보존 규칙을 이길 수 없다.**
 
 ## 입력 (user 메시지)
 1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·layer 없는 본문.
@@ -17991,7 +18004,7 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 ### 2. 글꼴 layer 적용 (item 마다)
 
-**위 정책 1~7 을 반드시 따릅니다.**
+**위 정책 1~9 와 우선순위 표를 반드시 따릅니다.**
 
 #### 절차
 
@@ -18002,15 +18015,15 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 #### 본보기 sample 활용
 
-- 본보기 sample 의 **분할 개수·순서·layer 배치를 우선 모방**.
-- sample 보다 더 많은 non-base span 을 새로 만들지 X.
-- sample 의 의미 기능 (시기 / 금액 / 분류 라벨 / 정책수단 등) 이 layer 받으면 새 본문에서도 같은 기능 자리에 적용.
+- 본보기 sample 의 **분할 순서·layer 배치를 우선 모방**. sample 에서 본문이 base / non-base / base / non-base 로 나뉘면 새 본문도 같은 의미 기능 자리에 같은 layer 배치를 한다.
+- **sample 의 정확한 span 개수는 절대 cap 이 아니다.** usage profile 에 맞춰 더 많게도, 새 본문에 의미 기능 segment 가 없으면 더 적게도 가능.
+- sample 의 의미 기능 (시기 / 금액 / 분류 라벨 / 정책수단 / 결과 명사구 / 인용구 / 수치 구간 등) 이 layer 받으면 새 본문에서도 같은 기능 자리에 적용.
 - 단 새 본문에 그 의미 기능 segment 가 없으면 억지로 만들지 X (base).
 
-#### 임의 추가 금지
+#### 근거 없는 추가 금지
 
-- "이 단어가 핵심이니까 강조" 식 자유 선택 X. sample 분할 패턴 안에서만.
-- sample 에 1개 자리 강조면 새 본문도 1개. 2개면 2개. 더 많이 만들지 X.
+- non-base span 은 항상 `rules_for_generation`, usage profile, sample 의 의미 기능 **중 하나 이상의 근거** 가 있어야 한다.
+- "이 단어가 핵심이니까 강조" 식 자유 선택 X. 근거가 sample 의 의미 기능 + 새 본문 segment 매칭 또는 usage profile + rules_for_generation 이어야 함.
 
 ### 3. 허용·금지 patterns
 
@@ -18027,23 +18040,14 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 **nested 금지** — 한 layer wrap 안에 다른 layer wrap 을 중첩해 박지 말 것. layer 는 항상 sequential (alternating) 로 나열한다. 한 paragraph 안에서 layer 가 동시에 두 개 열려 있는 상태가 되면 안 됨.
 
 **금지 (절대)**:
-- 양식 sample / layer guide 에 **근거 없는 자리** 에 non-base layer 박기.
-- sample 분할 패턴 (수·위치) 보다 더 많은 non-base span 만들기.
-- "이 단어가 핵심이니까 강조" 식 자유 선택. sample 분할 패턴 안에서만.
+- 양식 sample / layer guide / usage profile 에 **근거 없는 자리** 에 non-base layer 박기.
+- "이 단어가 핵심이니까 강조" 식 자유 선택.
 - 가이드에 규칙 없는 layer 사용 (cluster 정의에 등장만 하고 적용 규칙 없는 layer 는 사용 금지).
 - paragraph_count ≤ 1 / char_count 1~2 같은 노이즈 layer 사용.
-- 본문 전체를 non-base layer 한 색으로 감싸기 — base 정책 위반.
-
-### 3. 들여쓰기 — AI 가 출력하지 않음
-
-들여쓰기 (paragraph 시작 leading whitespace) 는 **코드가 자동 박는다**. AI 출력 텍스트는 들여쓰기를 박지 않는다.
-
-- 출력 text 앞에 raw space/tab 박지 말 것.
-- sample annotated_text 에서 leading whitespace 부분이 보여도 모방 X.
-- 출력 text 의 첫 문자는 `[[emN]]` (외부 마커 layer) 또는 `[[emN]]` 으로 시작하는 첫 본문 segment.
+- **body 전체를 하나의 non-base layer 로 감싸기** — §7 위반. 조사·연결어·서술어·일반 설명 골격은 base 로 남긴다.
 
 ### 4. 본문 의미 보존
-- text 단어·문장은 의미상 거의 그대로. 마커·강조만 입힘 (들여쓰기는 코드 책임).
+- text 단어·문장은 의미상 거의 그대로. 마커·강조만 입힘.
 - 띄어쓰기·구두점 등 양식 형식상 자연스러운 미세 조정만 허용.
 - 새 내용 추가 금지. 단어 의미 변경 금지.
 
@@ -18167,8 +18171,7 @@ def build_section_style_prompt(
             em_lines.append(f"\n### {role_name}")
             em_lines.append(
                 f"- base layer: `{base_lid}` — body 일반 문장 골격의 기본 style. "
-                f"outer_marker · content_label 은 sample layer 배치 우선 (base 로 덮지 X). "
-                f"들여쓰기는 코드가 박으므로 sample 의 leading whitespace block 은 무시."
+                f"outer_marker · content_label 은 sample layer 배치 우선 (base 로 덮지 X)."
             )
             # usage profile (coverage / density bucket) — sample 빈도 힌트.
             # paragraph_emphasis_map.layer_stats + total_paragraphs_in_cluster 기반.
@@ -18238,16 +18241,25 @@ def build_section_style_prompt(
                         "다만 usage profile 이 제공된 layer 는 sample 예시의 "
                         "정확한 개수보다 usage profile 의 적용 강도를 함께 따르세요):"
                     )
-                    # sample annotated_text 의 leading indent block strip — 코드가 들여쓰기 박으니
-                    # 2c 는 들여쓰기 없는 sample 만 보고 본문 강조 패턴 학습.
+                    # sample annotated_text 에서 들여쓰기 완전 제거 — 들여쓰기는 코드 책임이고
+                    # prompt 에서 들여쓰기 개념 자체를 노출 안 함.
+                    # (a) leading whitespace-only em span 제거 (`[[em1]]   [[/em1]]` 등 연속)
+                    # (b) 그 다음 첫 본문 em span 안의 leading whitespace 도 제거
+                    #     (들여쓰기 + 마커 합쳐 박힌 `[[em1]]    * [[/em1]]` → `[[em1]]* [[/em1]]`)
+                    # (c) raw leading whitespace 도 제거
                     import re as _re_indent_strip
                     _indent_block_pat = _re_indent_strip.compile(
                         r'^(?:\[\[em\d+\]\]\s*\[\[/em\d+\]\])+'
+                    )
+                    _first_span_leading_pat = _re_indent_strip.compile(
+                        r'^(\[\[em\d+\]\])([ \t]+)'
                     )
                     for sp in _picked:
                         ann = sp.get("annotated_text") or ""
                         if ann:
                             ann = _indent_block_pat.sub('', ann)
+                            ann = _first_span_leading_pat.sub(r'\1', ann)
+                            ann = ann.lstrip(" \t")
                         pidx_v = sp.get("parent_idx")
                         if ann:
                             em_lines.append(f"    - parent={pidx_v}: {ann!r}")
@@ -18260,14 +18272,11 @@ def build_section_style_prompt(
         if em_lines:
             emphasis_text = (
                 "## 글꼴 layer 가이드 (role 별)\n"
-                "위 정책 1~10 을 반드시 따릅니다. 양식 sample 의 분할 패턴 (수·위치·순서) 을 기본 기준으로 모방하세요.\n"
+                "위 우선순위 표 + 정책 1~9 를 반드시 따릅니다. 양식 sample 의 분할 순서·layer 배치를 기본 기준으로 모방하세요.\n"
                 "외부 마커 + 분류 라벨 + 본보기 반복 분할 규칙 자리는 non-base 허용. "
-                "단, usage profile 없이 근거 없는 non-base span 을 새로 만들지 X. "
-                "usage profile 이 `always/often` 또는 `medium/high` 인 layer 는 "
-                "sample 예시의 정확한 span 수에 묶이지 말고, "
-                "rules_for_generation 에 맞는 segment 에 반복 적용.\n"
-                "`coverage=always/high` 는 전체 문장 강조가 아니라 **반복 segment 강조** 를 뜻함. "
-                "body 에는 sample 처럼 base 골격 (조사·연결어·서술어·일반 설명 문장) 을 남긴다.\n"
+                "non-base span 은 항상 `rules_for_generation`, usage profile, sample 의미 기능 중 하나 이상의 근거가 있어야 함.\n"
+                "**`coverage=always/high` 는 body 전체 강조가 아니라 반복 segment 강조를 뜻함.** "
+                "body 에는 sample 처럼 base 골격 (조사·연결어·서술어·일반 설명 문장) 을 남긴다 — §7 우선.\n"
                 "여는 태그와 닫는 태그는 반드시 같은 N (짝 강제).\n"
                 + "\n".join(em_lines)
                 + "\n\n"
@@ -18422,6 +18431,19 @@ async def apply_section_style_to_items(
             "raw_full": (llm_content_2c or ""),
         })
         items_2c = parse_section_style_from_llm(llm_content_2c)
+        # 들여쓰기 post-process — 2c 출력 text 앞 leading raw whitespace + leading
+        # whitespace-only em span 제거. 들여쓰기는 코드가 별도로 자동 박음.
+        import re as _re_post
+        _post_indent_block = _re_post.compile(r'^(?:\[\[em\d+\]\]\s*\[\[/em\d+\]\])+')
+        _post_first_span_leading = _re_post.compile(r'^(\[\[em\d+\]\])([ \t]+)')
+        for _it in (items_2c or []):
+            _t = _it.get("text") or ""
+            if not _t:
+                continue
+            _t = _post_indent_block.sub('', _t)
+            _t = _post_first_span_leading.sub(r'\1', _t)
+            _t = _t.lstrip(" \t")
+            _it["text"] = _t
         _dump("parsed", {
             "items_2c_count": len(items_2c) if items_2c else 0,
             "first_3_texts": [(it.get("text", "") or "")[:80] for it in items_2c[:3]] if items_2c else [],
