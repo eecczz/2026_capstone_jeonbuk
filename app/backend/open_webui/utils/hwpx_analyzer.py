@@ -17942,7 +17942,6 @@ _HEADLINE_REWRITE_NON_HEADLINE_CHILD_TYPES = frozenset({
 
 # 11.2 가 뽑은 connector 이름이 한국어 의미 표현인 경우 sample text 안 실제 string 매핑.
 # 11.2 AI 가 punctuation 을 한국어 이름으로 부르는 경우 (예: "쉼표" / "쥼표" → ",") 만 처리.
-# 그 외 connector 이름 (예: "및", "등", "로", "넘어", "·", "→" 등) 은 그대로 substring count.
 _CONNECTOR_NAME_TO_LITERAL = {
     "쉼표": ",",
     "쥼표": ",",
@@ -17957,22 +17956,35 @@ _CONNECTOR_NAME_TO_LITERAL = {
     "작은따옴표": "'",
 }
 
+# 단순 punctuation 분리자 — 의미 관계 표현 connector 와 구분.
+# 한국어 어휘 (`및`, `등`, `로` 등) 가 아니라 punctuation 기호와 그것의 한국어 이름만.
+_PUNCTUATION_DELIMITERS = frozenset({
+    ",", "·", "/", ";", ":", "‧", "・", "•",
+    "쉼표", "쥼표", "콤마", "중점", "가운뎃점", "슬래시", "세미콜론", "콜론",
+})
+
 
 def _compute_connector_limits_per_role(
     paragraphs: list[dict] | None,
     idx_full_texts: dict | None,
     style_profiles: dict | None,
 ) -> dict:
-    """role 별 양식 sample 의 connector 별 max-per-item count.
+    """role 별 양식 sample 의 connector / delimiter 별 max-per-item count.
 
-    11.2 `style_profile.join_markers_observed` 에 박힌 connector 이름 list 만 사용 —
+    11.2 `style_profile.join_markers_observed` 에 박힌 이름 list 만 사용 —
     hardcoded connector list 박지 X (양식마다 connector 다름).
-    각 connector 이름을 sample text 안에서 substring count 한 뒤 role 별 max 를 취함.
+    각 이름을 sample text 안에서 substring count 한 뒤 role 별 max 를 취함.
+
+    의미 connector (어절 표지: `및`, `등`, `로`, `를 위한`, `통한`, `하고` 등) 와
+    단순 punctuation delimiter (쉼표 ',' / 중점 '·' / 슬래시 '/' 등) 분리해서 반환.
 
     AI 호출 X — code 결정적.
 
     Returns:
-        {role: {connector_name: max_count_per_item}}
+        {role: {
+            "connector_limits": {meaning_connector_name: max_count},
+            "delimiter_limits": {delimiter_name: max_count},
+        }}
     """
     from collections import defaultdict
 
@@ -17991,19 +18003,26 @@ def _compute_connector_limits_per_role(
     for role, samples in role_samples.items():
         sp = sps.get(role) or {}
         join_markers = sp.get("join_markers_observed") or []
-        if not join_markers:
-            result[role] = {}
-            continue
-        per_connector_max: dict = {}
-        for name in join_markers:
-            if not isinstance(name, str) or not name.strip():
-                continue
-            literal = _CONNECTOR_NAME_TO_LITERAL.get(name.strip(), name.strip())
-            counts = [s.count(literal) for s in samples]
-            mx = max(counts) if counts else 0
-            if mx > 0:
-                per_connector_max[name] = mx
-        result[role] = per_connector_max
+        connector_limits: dict = {}
+        delimiter_limits: dict = {}
+        if join_markers:
+            for name in join_markers:
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                name_norm = name.strip()
+                literal = _CONNECTOR_NAME_TO_LITERAL.get(name_norm, name_norm)
+                counts = [s.count(literal) for s in samples]
+                mx = max(counts) if counts else 0
+                if mx <= 0:
+                    continue
+                if name_norm in _PUNCTUATION_DELIMITERS or literal in _PUNCTUATION_DELIMITERS:
+                    delimiter_limits[name_norm] = mx
+                else:
+                    connector_limits[name_norm] = mx
+        result[role] = {
+            "connector_limits": connector_limits,
+            "delimiter_limits": delimiter_limits,
+        }
     return result
 
 
@@ -18099,7 +18118,9 @@ def _compute_headline_rewrite_candidates(
         else:
             allowed_units = computed_units
 
-        connector_limits = (connector_limits_by_role or {}).get(role) or {}
+        role_limits = (connector_limits_by_role or {}).get(role) or {}
+        connector_limits = role_limits.get("connector_limits") or {}
+        delimiter_limits = role_limits.get("delimiter_limits") or {}
         candidates.append({
             "id": item_id,
             "role": role,
@@ -18108,6 +18129,7 @@ def _compute_headline_rewrite_candidates(
             "allowed_units": allowed_units,
             "max_same_connector": 1,
             "connector_limits": connector_limits,
+            "delimiter_limits": delimiter_limits,
             "reason": (
                 f"density={density}; unit_median={uc_median}; unit_max={uc_max}; "
                 f"family={len(families)}; child={len(children)}; "
@@ -18188,7 +18210,9 @@ def _compute_body_polish_candidates(
         else:
             allowed_units = 3
 
-        connector_limits = (connector_limits_by_role or {}).get(role) or {}
+        role_limits = (connector_limits_by_role or {}).get(role) or {}
+        connector_limits = role_limits.get("connector_limits") or {}
+        delimiter_limits = role_limits.get("delimiter_limits") or {}
         candidates.append({
             "id": item_id,
             "role": role,
@@ -18196,6 +18220,7 @@ def _compute_body_polish_candidates(
             "allowed_units": allowed_units,
             "max_same_connector": 1,
             "connector_limits": connector_limits,
+            "delimiter_limits": delimiter_limits,
             "reason": (
                 f"density={density}; unit_median={uc_median}; unit_max={uc_max}; "
                 f"supporting_child_count={len(children)}"
@@ -18297,13 +18322,15 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             "아래 id 의 item 은 candidates JSON 의 **숫자 한계 안에서** 작성한다. "
             "**한계 초과 = 실패**:\n"
             "- 명사구 (정보 조각) 개수 ≤ `allowed_units` — 정보 조각은 connector 나 쉼표로 분리되는 단위.\n"
-            "- `connector_limits` 의 **각 connector 마다 한계 따로 적용** — text 안 해당 connector 등장 횟수가 `connector_limits[connector]` 를 넘으면 실패. **각 item 자기 text 안에서만 카운트** (다른 item 의 connector 사용과 무관).\n"
-            "- **`connector_limits` 에 명시되지 않은 connector 는 양식 sample 에 관찰되지 않은 형식 — 사용 X**.\n"
+            "- `connector_limits` = 의미 관계 표현 connector 별 max count (양식 sample evidence). `delimiter_limits` = 단순 punctuation 분리자 (쉼표 / 중점 / 슬래시 등) 별 max count. **각 한계 초과 = 실패**. **각 item 자기 text 안에서만 카운트**.\n"
+            "- **`connector_limits` / `delimiter_limits` 에 명시되지 않은 connector · delimiter 는 양식 sample 에 관찰되지 않은 형식 — 사용 X**.\n"
             "- **작성 전 필수 작업**: `connector_limits` 의 각 connector 마다 source 본문에서 대응 가능한 관계 후보를 **먼저 찾는다**. 후보 찾기 전 text 작성 X.\n"
             "- 각 connector 의 관계 후보는 style_section 의 `relation_families_observed` 의 같은 connector 가 들어간 slot_template / applies_when / avoid_when 기준으로 판단.\n"
-            "- **후보가 있는 connector 우선 사용** — 후보가 있는데도 병렬 connector (양식 sample 안 단순 병렬 표지) 만 쓰면 실패.\n"
+            "- **의미 connector 우선 사용** — `connector_limits` 의 connector 에 후보가 있는데도 `delimiter_limits` 의 단순 분리자 (쉼표 등) 만 쓰면 **실패**. delimiter 는 fallback 이지 기본값 X.\n"
+            "- **delimiter 도 양식 sample 한계 안에서만** — `delimiter_limits` 의 한계를 넘으면 실패. `A, B, C` 같은 단순 쉼표 나열로 도피 X.\n"
             "- 후보가 여러 connector 에 있으면 source 에 수치 · 결과 · 목적 · 절차가 함께 있는 후보 우선.\n"
-            "- **source 후보가 전혀 없을 때만** 병렬 connector 또는 명사구 축소 fallback. 후보 없다고 `connector_limits` 에 없는 connector 새로 만들기 X.\n"
+            "- **source 후보가 전혀 없을 때만** delimiter 또는 명사구 축소 fallback. 후보 없다고 `connector_limits` / `delimiter_limits` 밖 형식 새로 만들기 X.\n"
+            "- connector 한계 초과 시 delimiter 로 치환 X. delimiter 한계 초과 시 다른 delimiter / connector 로 치환 X. **항상 병렬 나열 자체를 줄여 핵심만 남긴다**.\n"
             "- 같은 connector 반복 ≤ `max_same_connector` 회 (보조 한계).\n"
             "- mode = `compact_heading` 은 상위 heading — 상위 목표 / 방향만 반영, 하위 세부 키워드 나열 X.\n"
             "- mode = `headline_summary` 는 중분류 heading — 직계 자식의 핵심만 반영. 자식 문장 복제 X.\n"
@@ -18317,11 +18344,11 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
             "## body polish 약 적용 대상 (code 지정 — §3 mode 분기)\n"
             "아래 id 의 item 은 라벨형 실행본문:\n"
             "- 명사구 개수 ≤ `allowed_units`.\n"
-            "- `connector_limits` 의 각 connector 한계 따로 적용 — 각 item 자기 text 안 카운트.\n"
-            "- `connector_limits` 에 명시되지 않은 connector 는 양식 sample 에 없는 형식 — 사용 X.\n"
+            "- `connector_limits` (의미 connector) + `delimiter_limits` (쉼표 등 단순 분리자) 각각 한계 따로 적용 — 각 item 자기 text 안 카운트. 둘 다 명시 안 된 형식 사용 X.\n"
             "- **작성 전 필수**: connector_limits 의 각 connector 마다 source 본문 후보 먼저 찾기. 찾기 전 text 작성 X.\n"
-            "- 후보가 있는 connector 우선 사용 — 후보 있는데 병렬 connector 만 쓰면 실패.\n"
-            "- source 후보 전혀 없을 때만 병렬 connector 또는 명사구 축소 fallback. 후보 없다고 connector_limits 밖 connector 새로 만들기 X.\n"
+            "- **의미 connector 우선** — `connector_limits` 후보 있는데 delimiter (쉼표 등) 만 쓰면 실패. delimiter 는 fallback.\n"
+            "- delimiter 도 양식 sample 한계 안에서만 (`A, B, C` 같은 단순 나열 도피 X).\n"
+            "- source 후보 전혀 없을 때만 delimiter 또는 명사구 축소 fallback. 한계 초과 시 다른 connector / delimiter 로 치환 X — 병렬 나열 자체 축소.\n"
             "- 같은 connector 반복 ≤ `max_same_connector` 회 (보조 한계).\n"
             "- 라벨 segment 관찰 role 은 **라벨 필수** (라벨 생략 = 실패).\n"
             "- source 명사구 나열만 ending_pattern 따라 **최소 문장화**. **이미 실행문장이면 유지**.\n"
