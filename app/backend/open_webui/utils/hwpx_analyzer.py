@@ -17777,15 +17777,15 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 - **종결 방식 / 연결 방식은 style_profile.ending_pattern_observed / join_markers_observed 따름** — source 의미를 넘는 새 효과 동사 X.
 - `style_profile` 은 **종결 · 연결 · family 의 근거**이지 본문 단어의 근거가 아니다.
 
-### mode 별 역할 한계 (각 mode 는 자기 역할을 넘지 X)
+### mode 별 역할 한계 (각 mode 는 자기 역할을 넘지 X — candidates JSON 한계 안에서)
 
-- **compact_heading** (상위 heading — 전략 / 과제 등): 하위 항목 키워드 **나열 금지**. 직계 자식 / 손자에서 확인되는 **상위 목표 / 방향**으로 압축. 하위 키워드 끌어올리지 X. **단순 일반어로 축소 X** (`정보시스템 운영 효율화` 같은 어디나 쓸 수 있는 일반 제목 X) — source / 자식에서 확인되는 핵심 대상과 목표는 유지.
+- **compact_heading** (상위 heading): candidates 의 `allowed_units` 안에서 작성. 상위 목표 / 방향만 반영. 하위 세부 키워드 나열 X. 단순 일반어 X (source / 자식에서 확인되는 핵심 대상은 유지).
 
-- **headline_summary** (중분류 heading — 󰊱 / 󰊲 / 󰊳 등): **1 차 text 를 최종 제목으로 확정하지 X**. **직계 자식 text 만 추가 재료로 보지 말고, source 본문에서 직계 자식 항목들 사이의 의미 관계 (병렬 / 수단→결과 / 조치→목표 / 단계 진행 / 조건→결과 등) 를 직접 확인**하고 그 관계를 부모 headline 에 반영. 자식 text 가 명사구 라벨로 끝나더라도 source 본문에 관계 표현 (동사, 인과 표지, 목적 표지, 절차 표지, 결과 서술) 이 있으면 그 관계 우선. **자식 키워드를 단순 평면 병렬 connector 로 묶기는 source 에서도 실제 병렬 관계일 때만 허용**. 자식 문장 복제 X.
+- **headline_summary** (중분류 heading): candidates 의 `allowed_units` 안에서 직계 자식의 핵심만 반영. 자식 문장 복제 X. **source 본문에 자식 사이 관계 표현 (동사 · 인과 표지 · 절차 표지 · 결과 서술) 이 명백히 있으면 그 관계 반영. 없으면 명사구 한계 안에서만 결합 — source 에 없는 새 관계 만들기 X**.
 
-- **body_polish** (라벨형 실행본문 — ➊ 등): 자식 요약 / 회수 X. source 명사구 나열로 끝나는 경우만 ending_pattern 에 맞춰 **최소 문장화**. 수치 · 기관 · 대상 · 시기 · 장소 삭제 / 축약 X. **이미 실행문장 형태이면 유지** — 새 정보 추가 X.
+- **body_polish** (라벨형 실행본문): candidates 의 `allowed_units` 안에서 작성. **라벨 segment 관찰 role 은 라벨 필수** (생략 = 실패). 자식 회수 / 요약 X. 본문 사실 · 수치 · 시기 · 기관명 삭제 X. 새 효과 동사 X.
 
-  **라벨 강제**: role sample 또는 `style_profile.relation_families_observed` 의 slot_template 에 **라벨 segment (괄호 분류 라벨 등) 가 관찰된 role 은 라벨 생략 시 실패**. 라벨은 본문 앞 핵심 조치 / 대상 명사구로 짧게 작성. 날짜 · 금액 · 수치만으로 라벨 만들기 X. 라벨 추가 시 본문 사실 · 수치 · 시기 · 기관명 삭제 X.
+  **종결 판단**: 본문 마지막 어절이 `style_profile.ending_pattern_observed` 의 종결 형태와 이미 맞으면 **유지**. 본문이 명사구 / 명사 나열로 끝나 종결 형태가 없을 때만 `ending_pattern_observed` 에 맞춰 **최소 종결**을 붙임. 종결에 쓰는 표현은 source 또는 `ending_pattern_observed` 에 근거한 것만 사용.
 
 ### Skip 조건 (1 차 text 유지)
 
@@ -17801,6 +17801,7 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 - 부모 text 에 source · 자식 어디에도 없는 새 명사구 · 정책어가 들어가면 제거 (양식 sample 단어 가져오기 X — §1 + §6 동일).
 - 종결 동작어가 source · 자식 · `style_profile.ending_pattern_observed` 어디에도 없는 새 효과 동사면 교체.
 - **재작성 결과가 1 차 text 보다 source 사실을 덜 보존하거나, 하위 item 과 역할이 겹치거나, 양식 sample 의 정보 밀도보다 과도하게 길어지면** 1 차 text 를 보수적으로 다듬는 수준으로 되돌린다.
+- **되돌린다 = 1 차 text 를 그대로 유지하거나, 종결만 `style_profile.ending_pattern_observed` 에 맞춰 최소 정리하는 수준**. 새 명사구 · 새 관계 · 새 효과를 추가하지 않는다.
 
 ## 4. source 재료 회수 (기존 item text 보강 시)
 
@@ -17845,24 +17846,22 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 
 `style_profile.relation_families_observed` 가 있으면 family 마다 `applies_when` / `avoid_when` 보고 source 의미 구조 매칭. **connector 만 기계적으로 따라하면 안 됨**. 마지막 중심 명사구 / 동작어 (anchor) 와 앞 재료의 관계가 source 의미와 맞게 구성되어야 합니다.
 
-### family-first 순서 (관계 판정 필수)
+### family-first 순서 (관계 판정 필수 — 간단 규칙)
 
-문장을 작성하기 전 connector 를 먼저 고르지 X. **모든 item 은 source / 자식 재료 사이의 의미 관계를 반드시 판정**한다. 관계 판정은 source 본문의 **동사, 인과 표지, 목적 표지, 절차 표지, 결과 서술, 수치 변화, 전후 관계** 를 근거로 한다. source 명사구만 추출해서 평면으로 묶기 X.
+문장을 작성하기 전 connector 를 먼저 고르지 X. **source / 자식 재료 사이의 의미 관계를 먼저 판정**한 뒤 작성:
 
-다음 중 어느 관계인지 먼저 구분:
-- 병렬 대상 (같은 층위 · 같은 종류의 항목 ≥ 2 — source 에 명백한 병렬 표시)
-- 수단 → 결과 (수단 · 조치 · 도구 → 결과 · 효과 · 환경)
-- 조치 → 목표 (조치 · 행동 → 목적 · 달성 대상)
-- 범위 · 대상 나열 (서로 다른 대상 · 범위)
-- 단계 진행 (순차 절차)
-- 조건 → 결과 (조건 · 전제 → 도출 결과)
-- 그 외 source / sample 관찰 관계
+- source 에 명백한 관계 표현 (동사 · 인과 표지 · 목적 표지 · 절차 표지 · 결과 서술 · 수치 변화 · 전후 관계) 이 있으면 그 관계로 작성.
+- source 에 관계 표현이 없으면 명사구 평면 병렬로 작성 — candidates 의 `allowed_units` 안에서만.
+- 같은 connector 반복은 candidates 의 `max_same_connector` 안에서만.
+- source 에 없는 새 관계 (인과 / 수단 / 목적 / 효과) 만들기 X.
 
-관계 판정 후 `relation_families_observed` 의 `applies_when` / `avoid_when` 과 대조해 의미 관계가 맞는 family 선택. 관계와 맞는 family 가 있으면 그 family 의 **관계 방향을 반드시 반영**한다. 단 `template_rigidity_observed` 가 flexible / semi_flexible 이면 `slot_template` 글자를 그대로 강제 X — family 의 **관계 방향 · 정보 순서 · 종결 방식만** 적용.
+관계 판정 후 `relation_families_observed` 의 `applies_when` / `avoid_when` 과 대조해 의미 관계가 맞는 family 선택. 관계와 맞는 family 가 있으면 그 family 의 **관계 방향을 반드시 반영**. 단 `template_rigidity_observed` 가 flexible / semi_flexible 이면 `slot_template` 글자를 그대로 강제 X — family 의 **관계 방향 + 종결 방식만** 적용.
 
 맞는 family 가 없으면 slot_template 강제 X — source 흐름 + ending_pattern 만 따른다.
 
 family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 결정합니다.
+
+**`allowed_units` / `max_same_connector` 규칙은 candidates 블록에 포함된 item 에만 적용한다. candidates 에 없는 item 은 §1 / §2 / §7 의 일반 polish 만 적용한다.**
 
 ### rigidity 별 family 적용 강도
 
@@ -17905,12 +17904,13 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 
 §7 은 family-first 관계 판정 절차와 rigidity 별 적용 강도 표만 제공한다. **양식 evidence 없는 고정 예시 / slot 골격 / connector 권장 표현은 박지 않는다** — 양식별 slot 골격은 11.2 의 `relation_families_observed[].slot_template` 에 양식 sample 단위로 박혀 있으므로 그것을 그대로 사용. 일반 행정문서의 가정 예시를 prompt 에서 주입하면 출력이 한 골격으로 collapse 된다 (이전 양식 실측).
 
-### 자기 점검 — 평면 병렬 검증 + 가짜 관계 방지 (output 후 강제)
+### 자기 점검 — 평면 병렬 / 가짜 관계 / 한계 초과 (output 후 강제)
 
-- **평면 병렬 실패**: 최종 text 가 단순 병렬 connector 로만 연결된 구조인 경우, source 에 연결 요소 사이의 다른 의미 관계 (수단→결과 / 조치→목표 / 단계 진행 / 조건→결과 등) 가 명백히 있는지 재확인. source 에 다른 관계가 있는데 명사구만 추출해 평면 병렬로 처리하면 **실패** — 의미 관계가 맞는 family 로 재작성.
-- **가짜 관계 실패**: 반대로 source 에 관계가 없고 실제 병렬 항목 인데 인과 · 수단 · 목적 · 효과 connector 로 억지 관계를 만들면 **실패**. connector 변경은 source 의미 관계가 실제로 있을 때만.
-- **source 사실 보존 우선**: family 적용보다 source 사실 보존이 우선. family 적용 과정에서 source 의 수치 · 시기 · 기관 · 대상이 삭제되거나 source 에 없는 효과가 생성되면 **실패**.
-- **sibling 동일 골격 collapse**: 같은 role 의 candidate 들이 모두 **같은 관계 구조 또는 같은 connector 골격**으로 수렴한 경우, 각 item 의 source 의미 관계가 실제로 모두 같은지 재확인. 다른 관계가 섞여 있으면 해당 item 은 의미 관계가 맞는 family 로 재작성. (단 source 에 관계 없는 item 은 평면 병렬 유지 — §3 Skip 조건으로 1 차 text 유지가 결정된 item 은 재작성 대상에서 제외. 명백한 source 사실 오류나 라벨 누락만 예외 수정.)
+- **평면 병렬 실패**: 최종 text 가 단순 병렬 connector 로만 연결됐는데 source 에 다른 관계 (수단→결과 / 조치→목표 / 단계 진행 / 조건→결과 등) 가 명백히 있으면 **실패** — 의미 관계가 맞는 family 로 재작성.
+- **가짜 관계 실패**: source 에 관계 없는데 인과 · 수단 · 목적 · 효과 connector 로 억지 관계 만들면 **실패**. connector 변경은 source 의미 관계가 실제로 있을 때만.
+- **source 사실 보존 우선**: family 적용 과정에서 source 의 수치 · 시기 · 기관 · 대상이 삭제되거나 source 에 없는 효과가 생성되면 **실패**.
+- **숫자 한계 초과**: 명사구 개수가 candidates 의 `allowed_units` 초과 또는 같은 connector 가 `max_same_connector` 초과 사용되면 **실패** — source 의미가 가장 강한 핵심만 남김.
+- candidates 에 없거나 §3 Skip 조건으로 1 차 text 유지가 결정된 item 은 위 검사 대상 제외 (명백한 source 사실 오류나 라벨 누락만 예외 수정).
 
 # 출력 형식
 
@@ -18017,13 +18017,29 @@ def _compute_headline_rewrite_candidates(
         )
         rewrite_mode = "compact_heading" if grandchild_has_heading else "headline_summary"
 
+        # allowed_units 계산 — sample 통계 기반 hard limit
+        # min(unit_count.max, unit_count.median + 1) — sample 의 max 가 outlier 일 수 있으므로 median+1 로 누름
+        uc_max = uc.get("max") or 0
+        uc_median = uc.get("median") or 0
+        if uc_max and uc_median:
+            computed_units = min(uc_max, uc_median + 1)
+        else:
+            computed_units = 2  # 통계 없으면 보수
+        # compact_heading 은 상위 목표형이라 더 강하게 2 개로 cap
+        if rewrite_mode == "compact_heading":
+            allowed_units = min(2, computed_units)
+        else:
+            allowed_units = computed_units
+
         candidates.append({
             "id": item_id,
             "role": role,
             "direct_child_count": len(children),
             "rewrite_mode": rewrite_mode,
+            "allowed_units": allowed_units,
+            "max_same_connector": 1,
             "reason": (
-                f"density={density}; unit_median={uc.get('median')}; "
+                f"density={density}; unit_median={uc_median}; unit_max={uc_max}; "
                 f"family={len(families)}; child={len(children)}; "
                 f"grandchild_heading={grandchild_has_heading}"
             ),
@@ -18089,17 +18105,26 @@ def _compute_body_polish_candidates(
         density = sp.get("density_signal", "unknown")
         uc = sp.get("unit_count_observed") or {}
         uc_median = uc.get("median") or 0
+        uc_max = uc.get("max") or 0
         if density not in ("medium", "high"):
             continue
         if uc_median < 2:
             continue
 
+        # allowed_units — sample 통계 기반 (headline 과 동일 규칙)
+        if uc_max and uc_median:
+            allowed_units = min(uc_max, uc_median + 1)
+        else:
+            allowed_units = 3
+
         candidates.append({
             "id": item_id,
             "role": role,
             "rewrite_mode": "body_polish",
+            "allowed_units": allowed_units,
+            "max_same_connector": 1,
             "reason": (
-                f"density={density}; unit_median={uc_median}; "
+                f"density={density}; unit_median={uc_median}; unit_max={uc_max}; "
                 f"supporting_child_count={len(children)}"
             ),
         })
@@ -18187,12 +18212,13 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
         _hr_json = _json.dumps(_headline_candidates, ensure_ascii=False, indent=2)
         candidates_section += (
             "## headline 재작성 대상 (code 지정 — §3 mode 분기)\n"
-            "아래 id 의 item 은 §3 에 따라 **기본적으로 재작성**합니다.\n"
-            "- `rewrite_mode = compact_heading`: 상위 heading. **하위 키워드 나열 X, 상위 목표형 압축**. "
-            "단순 일반어로 축소 X — source / 자식의 핵심 대상 · 목표는 유지.\n"
-            "- `rewrite_mode = headline_summary`: 중분류 heading. **1 차 text 확정 X, "
-            "직계 자식 text 를 추가 재료로 참고**해 재작성. 문장 조립은 §7.\n"
-            "1 차 유지는 §3 의 Skip 조건에 명확히 해당할 때만.\n"
+            "아래 id 의 item 은 candidates JSON 의 **숫자 한계 안에서** 작성한다. "
+            "**한계 초과 = 실패**:\n"
+            "- 명사구 (정보 조각) 개수 ≤ `allowed_units` — 정보 조각은 쉼표 · 및 · 등 · 로 · 하고 · 통해 · 위한 등 connector 로 분리되는 단위.\n"
+            "- 같은 connector 반복 ≤ `max_same_connector` 회 (예: `및` 을 2 회 이상 사용 X).\n"
+            "- mode = `compact_heading` 은 상위 heading — 상위 목표 / 방향만 반영, 하위 세부 키워드 나열 X.\n"
+            "- mode = `headline_summary` 는 중분류 heading — 직계 자식의 핵심만 반영. 자식 문장 복제 X.\n"
+            "- `allowed_units` 초과 명사구 나열 X — 초과 시 source 의미가 가장 강한 핵심만 남김.\n"
             "이 목록에 **없는** item 은 §3 영향 받지 않음 — 1 차 text 유지 또는 §1/§2 기반 polish 만.\n\n"
             f"```json\n{_hr_json}\n```\n\n"
         )
@@ -18200,11 +18226,13 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
         _bp_json = _json.dumps(_body_polish_candidates, ensure_ascii=False, indent=2)
         candidates_section += (
             "## body polish 약 적용 대상 (code 지정 — §3 mode 분기)\n"
-            "아래 id 의 item 은 §3 `body_polish` mode — 라벨형 실행본문.\n"
-            "**자식 회수 / 요약 X**. source 명사구 나열로 끝나는 경우만 "
-            "`style_profile.ending_pattern_observed` 에 맞춰 **최소 문장화**.\n"
-            "수치 · 기관 · 대상 · 시기 · 장소 삭제 / 축약 X. **이미 실행문장 형태이면 유지**.\n"
-            "새 정보 / 효과 동사 생성 X.\n\n"
+            "아래 id 의 item 은 라벨형 실행본문:\n"
+            "- 명사구 개수 ≤ `allowed_units`.\n"
+            "- 같은 connector 반복 ≤ `max_same_connector` 회.\n"
+            "- 라벨 segment 관찰 role 은 **라벨 필수** (라벨 생략 = 실패).\n"
+            "- source 명사구 나열만 ending_pattern 따라 **최소 문장화**. **이미 실행문장이면 유지**.\n"
+            "- 자식 회수 / 새 정보 / 새 효과 동사 생성 X.\n"
+            "- 본문 사실 · 수치 · 시기 · 기관명 · 장소 삭제 / 축약 X.\n\n"
             f"```json\n{_bp_json}\n```\n\n"
         )
 
