@@ -17807,6 +17807,7 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 - source 내용의 주장 방향이 chapter / item 의 결론과 같을 필요 없음. 배경 / 정의 / 수치 / 사례 / 비교 / 반론 / 한계 / 맥락 정보도 기존 item text 보강 재료로 사용 가능.
 - 보강한 사실은 **반드시 source 원문 또는 1차 트리에 존재** — 없는 내용 생성 X.
 - sample 의 단어 / 한자 / 영어 가져와 본문에 박기 X.
+- **§3 mode 대상 item 은 §3 의 역할 한계를 우선한다.** §4 source 재료 회수는 §3 mode 의 범위를 넘겨 하위 item 내용을 과도하게 끌어올리는 근거가 될 수 없다.
 
 ## 5. 반복 instance 골격 collapse 방지 (강제)
 
@@ -17823,7 +17824,7 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 ## 6. 자유도 한계
 
 - source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 → 정확히 그대로 (의역 · 단어 교체 X).
-- **조립 형태 / 연결어 / 술어 / 분할 위치 / segment 구성** → 양식 패턴에 맞춰 재작성 가능.
+- **조립 형태 / 연결어 / 술어 / 분할 위치 / segment 구성** → 양식 패턴에 맞춰 재작성 가능. **단, §7 의 의미 관계 판정과 source 사실 보존 검증은 선택사항이 아니라 모든 item 에 적용되는 필수 점검이다.**
 - 위 5 번 (반복 instance 골격 collapse 방지) 규칙을 지키되, source 사실 보존을 우선합니다.
 - source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 → 생성 X.
 - source 원문에 정확히 등장하지 않는 한자 / 일본어 / 영어 단어를 새로 만들지 않습니다. 양식 sample 의 한자 / 영어 / 고유어는 새 본문에 가져오지 않습니다.
@@ -17836,9 +17837,9 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 
 **source 키워드만 바꿔 sample 문장 옮기기 금지** — sample 어구 / 문장을 새 본문에 옮기면서 일부 키워드만 source 단어로 교체하는 형태 절대 금지.
 
-- 금지 예: sample 의 `"공공조달의 성과창출과 신뢰제고를 위한 토대를 구축"` 을 새 본문에 그대로 옮기기 X
-- 금지 예: sample 의 `"[조달정책] 방향 및 제도틀 재정립"` → 새 본문 `"[스마트행정] 방향 및 제도틀 재정립"` 식 키워드만 교체 X
-- 허용: sample 의 정보 조각 개수 / 연결 방식 / 종결 패턴 / segment 위치 모방 — 본문 내용은 source 에서
+- 금지: 양식 sample 의 본문 어구 · 문장 · 정책 · 효과 표현을 그대로 새 본문에 옮기기 X.
+- 금지: 양식 sample 의 문장 골격에 일부 키워드만 source 단어로 교체해 박기 X (양식의 정책명 · 기관명 · 고유어 자리만 source 단어로 바꾸는 형태).
+- 허용: sample 의 정보 조각 개수 / 연결 방식 / 종결 패턴 / segment 위치 모방 — 본문 내용은 source 에서.
 
 ## 7. 관계 family + rigidity + source 매칭 (단순 connector 모방 금지 — 가장 중요)
 
@@ -17897,19 +17898,19 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 - **마지막 중심부 (anchor) 없이 두 명사구를 connector 만으로 잇고 끝 X** — 양식 sample 에 anchor 가 있으면 source 기반 anchor 박음.
 - **`relation_families_observed` 에 없는 family 만들기 X**.
 - **sample 의 동작어 / 정책어 / 고유어 자체를 복사 X** — slot 안 anchor 단어는 source 기반.
-- **semi_flexible / flexible 인 role 에 rigid family slot 강제 X** — 장문 실행항목형을 짧은 제목형 골격으로 깎으면 source 정보 손실.
+- **semi_flexible / flexible 인 role 에 rigid family slot 강제 X** — sample 의 정보 밀도 / 길이 분포가 다양한 role 을 단조로운 단일 골격으로 깎으면 source 정보 손실.
 - **`avoid_when` 에 해당하는 source 에 family 강제 X** — 다른 family 검토.
 
 ### 양식 evidence 기반 조립 — 고정 예시 X
 
 §7 은 family-first 관계 판정 절차와 rigidity 별 적용 강도 표만 제공한다. **양식 evidence 없는 고정 예시 / slot 골격 / connector 권장 표현은 박지 않는다** — 양식별 slot 골격은 11.2 의 `relation_families_observed[].slot_template` 에 양식 sample 단위로 박혀 있으므로 그것을 그대로 사용. 일반 행정문서의 가정 예시를 prompt 에서 주입하면 출력이 한 골격으로 collapse 된다 (이전 양식 실측).
 
-### 자기 점검 — 평면 병렬 검증 + 가짜 인과 방지 (output 후 강제)
+### 자기 점검 — 평면 병렬 검증 + 가짜 관계 방지 (output 후 강제)
 
-- **평면 병렬 실패**: 최종 text 가 단순 병렬 연결 (`A 및 B`, `A·B`, `A/B`, `A 와 B`) 로 끝나는 경우, source 에 **A 와 B 사이의 관계가 명백히 다른 관계** (수단→결과 / 조치→목표 / 단계 진행 / 조건→결과 등) 인지 재확인. source 에 다른 관계가 있는데 명사구만 추출해 평면 병렬로 처리하면 **실패** — 의미 관계가 맞는 family 로 재작성.
-- **가짜 인과 실패**: 반대로 source 에 관계가 없고 실제 병렬 항목 인데 억지로 인과 · 목적 · 효과 관계 (`A 를 통한 B`, `A 로 B 강화`, `A 를 위한 B`) 로 만들면 **실패**. connector 변경은 source 의미 관계가 실제로 있을 때만.
+- **평면 병렬 실패**: 최종 text 가 단순 병렬 connector 로만 연결된 구조인 경우, source 에 연결 요소 사이의 다른 의미 관계 (수단→결과 / 조치→목표 / 단계 진행 / 조건→결과 등) 가 명백히 있는지 재확인. source 에 다른 관계가 있는데 명사구만 추출해 평면 병렬로 처리하면 **실패** — 의미 관계가 맞는 family 로 재작성.
+- **가짜 관계 실패**: 반대로 source 에 관계가 없고 실제 병렬 항목 인데 인과 · 수단 · 목적 · 효과 connector 로 억지 관계를 만들면 **실패**. connector 변경은 source 의미 관계가 실제로 있을 때만.
 - **source 사실 보존 우선**: family 적용보다 source 사실 보존이 우선. family 적용 과정에서 source 의 수치 · 시기 · 기관 · 대상이 삭제되거나 source 에 없는 효과가 생성되면 **실패**.
-- **sibling 동일 골격 collapse**: 같은 role 의 candidate 들이 **모두 같은 평면 병렬 골격** 또는 **모두 같은 인과 골격** (`A 및 B`, `A 를 통한 B`, `A 및 B 추진` 등) 으로 수렴된 경우 — 각 item 의 source 의미 관계가 실제로 모두 같은지 재확인. 다른 관계가 섞여 있으면 해당 item 은 의미 관계가 맞는 family 로 재작성 (단 source 에 관계 없는 item 은 평면 병렬 유지).
+- **sibling 동일 골격 collapse**: 같은 role 의 candidate 들이 모두 **같은 관계 구조 또는 같은 connector 골격**으로 수렴한 경우, 각 item 의 source 의미 관계가 실제로 모두 같은지 재확인. 다른 관계가 섞여 있으면 해당 item 은 의미 관계가 맞는 family 로 재작성. (단 source 에 관계 없는 item 은 평면 병렬 유지 — §3 Skip 조건으로 1 차 text 유지가 결정된 item 은 재작성 대상에서 제외. 명백한 source 사실 오류나 라벨 누락만 예외 수정.)
 
 # 출력 형식
 
