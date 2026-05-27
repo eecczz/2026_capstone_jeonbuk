@@ -18154,24 +18154,22 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 - 맞는 connector 가 없으면 조치/수단/절차/근거 표현을 **버리고** 마지막 anchor 중심으로 **축약**한다.
 - 단, source 에서 두 표현이 실제 동급 병렬 업무이면 `및` 사용 가능 (위 허용 케이스와 동일).
 
-#### 모든 connector 도피 차단 (`및` 외 connector 도 동일 입증 책임)
+#### 모든 connector / delimiter 도피 차단 (`및` 외 connector / delimiter 도 동일 입증 책임)
 
-`및` 만 막아도 모델이 `로` / `로 / 으로` / `를 위한` / `에 대한` / `을 통한` / `을 통해` / `하여` / `하며` / `하고` / `등` / `,` / `·` / `/` 같은 다른 connector 로 몰릴 위험.
+`및` 만 막아도 모델이 `connector_limits` 또는 `delimiter_limits` 안의 **다른 connector / delimiter** 로 몰릴 수 있다.
 
-**모든 connector 는 각자의 의미 관계가 source 에 있을 때만 사용 가능** — 위 `및` 사용 체크 순서가 모든 connector 에 동일 적용된다:
+**모든 connector / delimiter 는 각자의 의미 관계가 source 에 있을 때만 사용 가능** — 위 `및` 사용 체크 순서가 모든 connector / delimiter 에 동일 적용된다:
 
 1. source 의 의미 관계 먼저 분석 — 동급 병렬 / 수단 / 목적 / 대상 / 절차 / 결과 / 인과 중 어느 것인지 source 텍스트에서 직접 지목.
 2. 그 관계가 `relation_families_observed` 의 어느 family / `applies_when` 에 맞는지 확인.
-3. 맞는 family 의 connector (양식 sample 에 관찰된 것) 가 `connector_limits` 안에 있으면 사용.
-4. source 관계가 어느 family / `applies_when` 에도 명확히 안 맞으면 **어떤 connector 도 쓰지 말고 anchor 중심 축약** (§ `및` 실패 시 재작성 방식 동일).
+3. 맞는 family 의 connector 가 `connector_limits` 안에 있으면 사용.
+4. source 관계가 어느 family / `applies_when` 에도 명확히 안 맞으면 **어떤 connector / delimiter 도 쓰지 말고 anchor 중심 축약** (§ `및` 실패 시 재작성 방식 동일).
 
 ##### 금지 (도피 패턴 차단 — 반복 강조)
 
-- **한 connector 못 쓴다고 다른 connector 로 갈아 끼우기 X.** connector 변경은 source 의미 관계가 그 connector 에 맞을 때만.
-- **`및` 차단됐다고 `로` / `를 위한` / `에 대한` / `을 통한` / `하여` / `하며` / `,` / `·` 로 도피 X** — 모든 connector 동일 입증 책임.
-- **source 관계가 불명인데 `connector_limits` 안 connector 를 "남는 자리" 로 쓰기 X** — 불명 = anchor 축약.
-
-(위 connector 이름 list 는 모델이 도피 가능한 패턴을 명시한 것 — 권장 표현 X. 실제 사용할 connector 는 양식 sample 의 `relation_families_observed` 와 `connector_limits` 안에 박힌 것만.)
+- **한 connector 못 쓴다고 다른 connector / delimiter 로 갈아 끼우기 X.** connector 변경은 source 의미 관계가 그 connector 에 맞을 때만.
+- **`및` 차단됐다고 `connector_limits` 또는 `delimiter_limits` 안의 다른 connector / delimiter 로 도피 X** — 모든 connector / delimiter 동일 입증 책임.
+- **`connector_limits` 또는 `delimiter_limits` 안에 있다는 이유만으로 남는 connector / delimiter 사용 X** — source 관계 불명 = anchor 축약.
 
 ### rigidity 별 family 적용 강도
 
