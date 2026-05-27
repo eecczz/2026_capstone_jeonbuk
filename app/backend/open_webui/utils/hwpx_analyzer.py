@@ -18251,7 +18251,7 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 ## ⚠️ 규칙 충돌 시 우선순위
 
 1. **본문 의미와 원문 텍스트 보존** — 마커·강조만 입히고 단어·문장 의미를 바꾸지 않는다.
-2. **body 전체를 하나의 non-base layer 로 감싸기 금지** — paragraph 통째가 단일 em wrap 으로만 끝나는 형태만 금지. body 안 여러 의미 단위 강조는 허용.
+2. **body 전체를 하나의 non-base layer 로 감싸기 금지** — paragraph 통째가 단일 **non-base** em wrap 으로만 끝나는 형태만 금지. paragraph 전체가 base layer 하나로 구성되는 것은 정상 (허용). body 안 여러 의미 단위 강조도 허용.
 3. **조사·연결어·서술어 어미·문장부호는 base 로 분리** — non-base span 은 의미 단위 (명사구·동사구) 만. 연결어로 시작/끝 X.
 4. **`coverage=always` / `density=high` layer 는 조건 맞는 의미 단위에 적극 적용** — 여러 span 으로 반복. 핵심 명사구를 "일반 설명" 핑계로 base 처리 X.
 5. **outer_marker · content_label 은 sample layer 우선** — base 로 덮지 않는다.
@@ -18279,14 +18279,15 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 6. **넓은 규칙은 자유 선택 X — 의미 기능 + usage profile 근거.** 단순히 "핵심어", "중요 표현" 처럼 넓은 규칙은 자유 선택하지 않는다. 다만 `rules_for_generation` 의 의미 기능과 layer usage profile 이 함께 주어진 경우에는, sample 의 기능적 분할 패턴과 usage profile 을 근거로 적용한다. sample 예시의 정확한 span 개수만으로 제한하지 않는다.
 
-7. **body layer 분할 — paragraph 전체 wrap 금지 + 의미 단위 강조 + 연결어 base 분리.**
+7. **body layer 분할 — paragraph 전체 non-base wrap 금지 + 의미 단위 강조 + 연결어 base 분리.**
 
-   - **paragraph 전체를 하나의 non-base layer 로 감싸는 것만 금지한다.** `[[em2]]paragraph 전체 본문[[/em2]]` 처럼 끝까지 한 em wrap 으로만 끝나는 형태 X. 이건 non-base span 을 줄이라는 뜻이 **아니다**.
+   - **paragraph 전체가 해당 role 의 base layer 하나로만 구성되는 것은 허용한다.** 강조 없는 cluster (non-base layer 가 없거나 본문에 적용 안 되는 경우) 는 paragraph 전체 base wrap 이 정상.
+   - **금지되는 것은 body 전체를 base 가 아닌 하나의 non-base layer 로만 감싸는 경우다.** `[[em2]]paragraph 전체 본문[[/em2]]` (em2 가 non-base 일 때) 처럼 끝까지 한 non-base wrap 으로만 끝나는 형태 X.
    - **`coverage=always` / `density=high` layer 는 body 안의 여러 의미 단위에 반복 적용한다** (§9 와 함께).
    - **base 로 남길 것** = 조사·연결어·서술어 어미·문장부호·순수 연결 구간. 그것뿐.
    - **핵심 명사구·정책 대상·정책 수단·사업명·기능명·행위 명사구를 "일반 설명" 이라는 이유로 base 처리하지 X**. sample 또는 usage profile 에 근거 있으면 강조.
    - 불확실한 segment 만 base 로 둔다 (= "일반 설명" 광범위 분류 X, 진짜 모호한 segment 만).
-   - 단, 양식 sample 에서 같은 role 의 body 전체가 실제로 non-base layer 로만 구성된 경우에는 sample 을 따른다 (예외).
+   - 단, 양식 sample 에서 같은 role 의 body 전체가 실제로 non-base layer 만 쓰인 특수 클러스터는 sample 을 따른다 (예외).
 
    ### span 경계 규칙 (절대 — 사용자 발견 사례 방지)
 
@@ -18319,7 +18320,7 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
    - `coverage=rare` 또는 `occasional` 인 layer 는 **예외 style** 이다. 표면 패턴이 보여도 과적용하지 않는다. 해당 rule 의 의미 기능이 명확할 때만 적용한다.
    - **수치·금액·기간·비율·괄호 관련 layer 가 `rare` 또는 `occasional` 이면, 숫자나 괄호가 있다는 이유만으로 paragraph 마다 반복 적용하지 마세요.** sample 에서 같은 의미 기능으로 layer 받은 자리에만 제한적으로 적용.
    - **usage profile 은 `rules_for_generation` 을 대체하지 않는다.** coverage 가 높아도 rule 조건에 맞는 segment 가 새 본문에 전혀 없으면 억지로 만들지 말고 base 로 둔다.
-   - **`coverage=always` / `density=high` 는 paragraph 통째 wrap 이 아니라 본문 안 여러 의미 단위 반복 적용을 뜻한다.** body 안의 명사구·동사구·핵심 segment 마다 적극 적용. 단 paragraph 전체를 단일 em wrap 으로 만들지 X (§7 paragraph 전체 wrap 금지 — 단, 여러 의미 단위 강조는 §7 위반 아님). 핵심 명사구를 "일반 설명" 핑계로 base 처리 X — 조사·연결어만 base.
+   - **`coverage=always` / `density=high` 는 paragraph 통째 wrap 이 아니라 본문 안 여러 의미 단위 반복 적용을 뜻한다.** body 안의 명사구·동사구·핵심 segment 마다 적극 적용. 단 paragraph 전체를 단일 **non-base** em wrap 으로 만들지 X (§7 paragraph 전체 non-base wrap 금지 — paragraph 전체 base wrap 은 허용, 여러 의미 단위 강조는 §7 위반 아님). 핵심 명사구를 "일반 설명" 핑계로 base 처리 X — 조사·연결어만 base.
 
 ## 입력 (user 메시지)
 1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·layer 없는 본문.
