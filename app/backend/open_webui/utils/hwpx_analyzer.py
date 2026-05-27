@@ -6924,7 +6924,7 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
       "scarcity_allowance_observed": false,
       "evidence_sample_ids": ["s0", "s2", "s5"],
       "ambiguity_flags": [],
-      "content_style_rules_for_generation": ["자유서술 rule 0~3 개"]
+      "content_style_rules_for_generation": ["자유서술 rule 0~5 개"]
     }
   ]
 }
@@ -6944,7 +6944,7 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
 - **scarcity_allowance_observed** (boolean): **양식 sample 안에 짧은 case 가 관찰되는가** — 그것뿐. **"새 본문에서 짧아도 OK" 라는 정책 신호가 아님**. 2b-b 는 이 값을 받더라도 **source 재료가 실제로 없을 때만** fallback 으로 사용. 단순 "양식이 짧으니 새 본문도 짧아도 됨" 핑계로 쓰면 안 됨.
 - **evidence_sample_ids** (list[string], 필수): 위 관찰들의 근거 sample id. 최소 1개. 예: `["s0", "s2", "s5"]`.
 - **ambiguity_flags** (list[string]): cluster 안에 패턴 혼재 시 표시. 예: `["family 혼재: s0~s3 제목형 / s4~s7 설명문형"]`, `["종결 패턴 혼재"]`, `["sample 1개 — confidence 낮음"]`. 없으면 `[]`.
-- **content_style_rules_for_generation** (list[string], 0~3 개): 자유서술 rule. 위 schema 외 추가 관찰. 적용 조건 + 비적용 조건 + 근거 sample id `[sN, sN]` 인용. 비어 있어도 OK.
+- **content_style_rules_for_generation** (list[string], 0~5 개): 자유서술 rule. 위 schema 외 추가 관찰. 적용 조건 + 비적용 조건 + 근거 sample id `[sN, sN]` 인용. 비어 있어도 OK.
 
 ## 좋은 예시
 
@@ -6995,7 +6995,32 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
 - "제목형이면 무조건 수식부+핵심부" 같은 카테고리 가정 X — **sample 에서 일관 반복** 일 때만.
 - 한 paragraph 안 segment 1 개 (단순 명칭형 / 단어형) 인 role 은 이 축 적용 X (관찰 안 됨 = 빈 rule).
 - 근거 sample id 필수 (`[sN, sN]` 형식).
-- 이 축으로 작성한 rule 도 `content_style_rules_for_generation` 0~3 개 한도 안에서.
+- 이 축으로 작성한 rule 도 `content_style_rules_for_generation` 0~5 개 한도 안에서.
+
+## 반복 instance 연결 골격 family 관찰 (추가 축 — 같은 role sample 이 여러 개일 때만 적용)
+
+같은 role 의 여러 sample 이 서로 다른 연결 골격을 보이면, 모든 instance 를 하나의 평균 문장 골격으로 합치지 마세요. sample 별로 관찰된 연결 골격을 **의미 slot template** 형태로 family 별 요약합니다.
+
+### slot template 추상화 원칙 (중요)
+
+- 원문 sample 의 **단어 / 정책어 / 고유어 / 동작어를 복사하지 X**. 의미 slot 으로 추상화.
+- slot template 형식 (형식만 참고 — 이 표현 자체를 그대로 박지 X):
+  `[의미 슬롯 A] + [관찰된 연결 표현] + [source 기반 의미 슬롯 B]`
+- slot 안에 들어갈 핵심 명사 / 동작어는 **source 가 결정** — slot 자체에 양식 단어 박기 X.
+- connector / 조사 / 어미는 **sample 에서 관찰된 표현 범위 안에서만**.
+
+### rule 작성 예 (sample 관찰 시 — 형식 참고용)
+
+- `"같은 role sample 마다 연결 골격이 다름. family 별 slot template: [수단 / 조치] + [관찰 연결 표현] + [source 기반 목표 / 효과 명사구]. 근거: [s1, s2, s5]"`
+- `"sample 에 family 1 개 일관 반복 — 단일 family slot template 그대로 유지. 다른 family 생성 X. 근거: [s0..s8]"`
+
+### 적용 원칙
+
+- sample 에서 family 1 개만 일관 반복이면 family 1 개 — **강제 다양화 X**.
+- sample 에 없는 connector / 조사 / 어미 / 골격 만들기 X.
+- slot 안 핵심 명사 / 동작어는 source 책임 — sample 단어 / 정책어 / 고유어 / 동작어 복사 X.
+- 근거 sample id 필수 (`[sN, sN]` 형식).
+- 이 축으로 작성한 rule 도 `content_style_rules_for_generation` 0~5 개 한도 안에서.
 
 ## 응답 양식
 
@@ -7347,7 +7372,7 @@ def parse_style_profile_from_llm(
         if density not in _allowed_density:
             density = "unknown"
 
-        rules = _list_of_str(ai_p.get("content_style_rules_for_generation"))[:3]
+        rules = _list_of_str(ai_p.get("content_style_rules_for_generation"))[:5]
 
         result[role] = {
             "role": role,
@@ -17379,10 +17404,22 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 - 보강한 사실은 **반드시 source 원문 또는 1차 트리에 존재** — 없는 내용 생성 X.
 - sample 의 단어 / 한자 / 영어 가져와 본문에 박기 X.
 
-## 5. 자유도 한계
+## 5. 반복 instance 골격 collapse 방지 (강제)
+
+같은 role 의 반복 item 을 **하나의 평균 문장 골격으로 통일하지 않습니다.**
+
+- `style_profile` 에 **여러 연결 골격 family** 가 관찰되면, 각 item 의 source 의미에 맞는 family 를 선택해 적용.
+- sample 에 **없는 골격을 만들지 X**.
+- sample 의 **주제어 · 정책어 · 고유어 · 동작어를 새 본문에 가져오지 X**.
+- slot template 의 connector / 조사 / 어미는 **sample 에서 관찰된 표현 범위 안에서만**.
+- slot 안 **핵심 명사구 · 동작어는 source / 1차 트리 / 자식 item 의 재료로** 만듭니다.
+
+(예외: `style_profile` 에 family 1 개만 일관 관찰되는 role 은 단일 family 그대로 유지 — 강제 다양화 X.)
+
+## 6. 자유도 한계
 
 - source 의 사실 / 숫자 / 주체 / 시기 / 대상 / 기관명 / 법령명 → 정확히 그대로 (의역 · 단어 교체 X).
-- **조립 형태 / 연결어 / 술어 / 분할 위치 / segment 구성** → 양식 패턴에 맞춰 재작성 가능.
+- **조립 형태 / 연결어 / 술어 / 분할 위치 / segment 구성** → 양식 패턴에 맞춰 재작성 가능. 단, 위 5 번 (반복 골격 collapse 방지) 준수.
 - source 에 없는 사실 / 목적 / 방향 / 효과 / 시기 / 대상 / 수치 → 생성 X.
 - source 원문에 정확히 등장하지 않는 한자 / 일본어 / 영어 단어를 새로 만들지 않습니다. 양식 sample 의 한자 / 영어 / 고유어는 새 본문에 가져오지 않습니다.
 
@@ -17507,7 +17544,7 @@ def build_section_polish_prompt(items_1st: list[dict], **fill_kwargs) -> list[di
                 sub.append(f"- ⚠️ ambiguity: {' / '.join(amb)} — 보수적으로 처리.")
             if rules:
                 sub.append("- 추가 관찰:")
-                for r in rules[:3]:
+                for r in rules[:5]:
                     sub.append(f"  · {r}")
             _lines.extend(sub)
 
