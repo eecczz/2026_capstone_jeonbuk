@@ -5853,7 +5853,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 14  # 11.2b visual signature grouping — charPrIDRef 대신 visual style layer 단위로 통합.
+CACHE_SCHEMA_VERSION = 13  # tree rebuild (1g) — 1e+repair 후 cluster + 의미로 트리 재구성. paragraph.parent_idx + level 새로.
 
 
 def compute_template_hash(template_path: str) -> str:
