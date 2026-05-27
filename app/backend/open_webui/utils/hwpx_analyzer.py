@@ -17781,9 +17781,11 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 
 - **compact_heading** (상위 heading — 전략 / 과제 등): 하위 항목 키워드 **나열 금지**. 직계 자식 / 손자에서 확인되는 **상위 목표 / 방향**으로 압축. 하위 키워드 끌어올리지 X. **단순 일반어로 축소 X** (`정보시스템 운영 효율화` 같은 어디나 쓸 수 있는 일반 제목 X) — source / 자식에서 확인되는 핵심 대상과 목표는 유지.
 
-- **headline_summary** (중분류 heading — 󰊱 / 󰊲 / 󰊳 등): **1 차 text 를 최종 제목으로 확정하지 X**. 직계 자식 text 를 **추가 재료로 참고**해 재작성. 자식 전체 (대부분) 를 대표하는 headline. 자식 문장 복제 X.
+- **headline_summary** (중분류 heading — 󰊱 / 󰊲 / 󰊳 등): **1 차 text 를 최종 제목으로 확정하지 X**. **직계 자식 text 만 추가 재료로 보지 말고, source 본문에서 직계 자식 항목들 사이의 의미 관계 (병렬 / 수단→결과 / 조치→목표 / 단계 진행 / 조건→결과 등) 를 직접 확인**하고 그 관계를 부모 headline 에 반영. 자식 text 가 명사구 라벨로 끝나더라도 source 본문에 관계 표현 (동사, 인과 표지, 목적 표지, 절차 표지, 결과 서술) 이 있으면 그 관계 우선. **자식 키워드를 단순 평면 병렬 connector 로 묶기는 source 에서도 실제 병렬 관계일 때만 허용**. 자식 문장 복제 X.
 
 - **body_polish** (라벨형 실행본문 — ➊ 등): 자식 요약 / 회수 X. source 명사구 나열로 끝나는 경우만 ending_pattern 에 맞춰 **최소 문장화**. 수치 · 기관 · 대상 · 시기 · 장소 삭제 / 축약 X. **이미 실행문장 형태이면 유지** — 새 정보 추가 X.
+
+  **라벨 강제**: role sample 또는 `style_profile.relation_families_observed` 의 slot_template 에 **라벨 segment (괄호 분류 라벨 등) 가 관찰된 role 은 라벨 생략 시 실패**. 라벨은 본문 앞 핵심 조치 / 대상 명사구로 짧게 작성. 날짜 · 금액 · 수치만으로 라벨 만들기 X. 라벨 추가 시 본문 사실 · 수치 · 시기 · 기관명 삭제 X.
 
 ### Skip 조건 (1 차 text 유지)
 
@@ -17842,9 +17844,22 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 
 `style_profile.relation_families_observed` 가 있으면 family 마다 `applies_when` / `avoid_when` 보고 source 의미 구조 매칭. **connector 만 기계적으로 따라하면 안 됨**. 마지막 중심 명사구 / 동작어 (anchor) 와 앞 재료의 관계가 source 의미와 맞게 구성되어야 합니다.
 
-### family-first 순서 (강제 X — 검토 절차)
+### family-first 순서 (관계 판정 필수)
 
-문장을 작성하기 전 connector 를 먼저 고르지 말고, source / 자식 재료의 의미 관계를 기준으로 `relation_families_observed` 중 **적용 가능한 family 를 먼저 검토**한다. 선택한 family 의 `applies_when` / `avoid_when` 에 맞지 않으면 그 family 의 slot_template 을 쓰지 X. **맞는 family 가 없으면 slot_template 강제 X — source 흐름 + ending_pattern 만 따른다.**
+문장을 작성하기 전 connector 를 먼저 고르지 X. **모든 item 은 source / 자식 재료 사이의 의미 관계를 반드시 판정**한다. 관계 판정은 source 본문의 **동사, 인과 표지, 목적 표지, 절차 표지, 결과 서술, 수치 변화, 전후 관계** 를 근거로 한다. source 명사구만 추출해서 평면으로 묶기 X.
+
+다음 중 어느 관계인지 먼저 구분:
+- 병렬 대상 (같은 층위 · 같은 종류의 항목 ≥ 2 — source 에 명백한 병렬 표시)
+- 수단 → 결과 (수단 · 조치 · 도구 → 결과 · 효과 · 환경)
+- 조치 → 목표 (조치 · 행동 → 목적 · 달성 대상)
+- 범위 · 대상 나열 (서로 다른 대상 · 범위)
+- 단계 진행 (순차 절차)
+- 조건 → 결과 (조건 · 전제 → 도출 결과)
+- 그 외 source / sample 관찰 관계
+
+관계 판정 후 `relation_families_observed` 의 `applies_when` / `avoid_when` 과 대조해 의미 관계가 맞는 family 선택. 관계와 맞는 family 가 있으면 그 family 의 **관계 방향을 반드시 반영**한다. 단 `template_rigidity_observed` 가 flexible / semi_flexible 이면 `slot_template` 글자를 그대로 강제 X — family 의 **관계 방향 · 정보 순서 · 종결 방식만** 적용.
+
+맞는 family 가 없으면 slot_template 강제 X — source 흐름 + ending_pattern 만 따른다.
 
 family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 결정합니다.
 
@@ -17887,7 +17902,14 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 
 ### 양식 evidence 기반 조립 — 고정 예시 X
 
-§7 은 family-first 검토 절차와 rigidity 별 적용 강도 표만 제공한다. **양식 evidence 없는 고정 예시 / slot 골격 / connector 권장 표현은 박지 않는다** — 양식별 slot 골격은 11.2 의 `relation_families_observed[].slot_template` 에 양식 sample 단위로 박혀 있으므로 그것을 그대로 사용. 일반 행정문서의 가정 예시를 prompt 에서 주입하면 출력이 한 골격으로 collapse 된다 (이전 양식 실측).
+§7 은 family-first 관계 판정 절차와 rigidity 별 적용 강도 표만 제공한다. **양식 evidence 없는 고정 예시 / slot 골격 / connector 권장 표현은 박지 않는다** — 양식별 slot 골격은 11.2 의 `relation_families_observed[].slot_template` 에 양식 sample 단위로 박혀 있으므로 그것을 그대로 사용. 일반 행정문서의 가정 예시를 prompt 에서 주입하면 출력이 한 골격으로 collapse 된다 (이전 양식 실측).
+
+### 자기 점검 — 평면 병렬 검증 + 가짜 인과 방지 (output 후 강제)
+
+- **평면 병렬 실패**: 최종 text 가 단순 병렬 연결 (`A 및 B`, `A·B`, `A/B`, `A 와 B`) 로 끝나는 경우, source 에 **A 와 B 사이의 관계가 명백히 다른 관계** (수단→결과 / 조치→목표 / 단계 진행 / 조건→결과 등) 인지 재확인. source 에 다른 관계가 있는데 명사구만 추출해 평면 병렬로 처리하면 **실패** — 의미 관계가 맞는 family 로 재작성.
+- **가짜 인과 실패**: 반대로 source 에 관계가 없고 실제 병렬 항목 인데 억지로 인과 · 목적 · 효과 관계 (`A 를 통한 B`, `A 로 B 강화`, `A 를 위한 B`) 로 만들면 **실패**. connector 변경은 source 의미 관계가 실제로 있을 때만.
+- **source 사실 보존 우선**: family 적용보다 source 사실 보존이 우선. family 적용 과정에서 source 의 수치 · 시기 · 기관 · 대상이 삭제되거나 source 에 없는 효과가 생성되면 **실패**.
+- **sibling 동일 골격 collapse**: 같은 role 의 candidate 들이 **모두 같은 평면 병렬 골격** 또는 **모두 같은 인과 골격** (`A 및 B`, `A 를 통한 B`, `A 및 B 추진` 등) 으로 수렴된 경우 — 각 item 의 source 의미 관계가 실제로 모두 같은지 재확인. 다른 관계가 섞여 있으면 해당 item 은 의미 관계가 맞는 family 로 재작성 (단 source 에 관계 없는 item 은 평면 병렬 유지).
 
 # 출력 형식
 
