@@ -6960,7 +6960,8 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
   "evidence_sample_ids": ["s0", "s1", "s2", "s5"],
   "ambiguity_flags": [],
   "content_style_rules_for_generation": [
-    "본문은 명사구 또는 명사형 동작어 종결. 서술형 '~다' 사용 X. 근거: [s0, s2, s5]"
+    "본문은 명사구 또는 명사형 동작어 종결. 서술형 '~다' 사용 X. 근거: [s0, s2, s5]",
+    "sample 마다 연결 골격이 다름 — family 별 slot template 로 추상화: `[수단 / 조치] + [관찰된 연결 표현] + [source 기반 목표 / 효과 명사구]`, `[범위 확장 / 전환] + [관찰된 연결 표현] + [source 기반 목표 / 방향 명사구]`, `[상황 / 변화 / 위험] + [관찰된 연결 표현] + [source 기반 대응 / 기반 명사구]`. slot 안 핵심 명사 · 동작어는 source 책임. 근거: [s0, s1, s2, s5]"
   ]
 }
 ```
@@ -6971,6 +6972,8 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
 - `"ending_pattern_observed": ["짧다", "공식적이고 간결"]` ← 일반화된 감상. 종결 형태 아님.
 - `"density_signal": "high"` + `"evidence_sample_ids": []` ← 근거 없음. wrong.
 - 모든 cluster 에 똑같이 `["공식적이고 간결한 톤"]` ← role 별 고유 X.
+- `"연결 어미는 'A', 'B', 'C' 등 간결한 형태만 사용"` ← connector 단어 list 박기. slot template 추상화 X. wrong. (`join_markers_observed` 와 정보 중복.)
+- `"본문은 'A 및 B 조성', 'A로 B 강화' 등 형태"` ← 원본 sample 단어 / 정책어 / 동작어 복사. wrong. slot 안 핵심 명사 · 동작어는 source 책임.
 
 ## segment 의미 기능 관찰 (추가 축 — 모든 role 공통, 관찰될 때만 적용)
 
@@ -7016,7 +7019,9 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 8 field +
 
 ### 적용 원칙
 
-- sample 에서 family 1 개만 일관 반복이면 family 1 개 — **강제 다양화 X**.
+- **이 축 rule 은 connector 단어 list 형태로 박기 X** (예: `"연결 어미는 'A', 'B', 'C' 등 사용"` 같은 단어 나열). 그 정보는 이미 `join_markers_observed` field 에 있음 — 중복.
+- 반드시 `[의미 슬롯] + [관찰된 연결 표현] + [source 기반 의미 슬롯]` 형태 slot template 로 작성.
+- sample 에서 family 1 개만 일관 반복이면 family 1 개 — **강제 다양화 X**. 없는 family 생성 X.
 - sample 에 없는 connector / 조사 / 어미 / 골격 만들기 X.
 - slot 안 핵심 명사 / 동작어는 source 책임 — sample 단어 / 정책어 / 고유어 / 동작어 복사 X.
 - 근거 sample id 필수 (`[sN, sN]` 형식).
