@@ -22,6 +22,7 @@ log.setLevel(GLOBAL_LOG_LEVEL)
 
 NS_HP = "{http://www.hancom.co.kr/hwpml/2011/paragraph}"
 NS_HC = "{http://www.hancom.co.kr/hwpml/2011/core}"
+NS_HH = "{http://www.hancom.co.kr/hwpml/2011/head}"
 
 # 제거할 태그 (렌더링 전용, 구조 파악에 불필요)
 REMOVE_TAGS = {
@@ -5852,7 +5853,7 @@ def parse_structure_from_llm(llm_response: str) -> dict:
 TEMPLATE_CACHE_DIR = "/tmp/hwpx_cache"
 
 
-CACHE_SCHEMA_VERSION = 13  # tree rebuild (1g) — 1e+repair 후 cluster + 의미로 트리 재구성. paragraph.parent_idx + level 새로.
+CACHE_SCHEMA_VERSION = 14  # 11.2b visual signature grouping — charPrIDRef 대신 visual style layer 단위로 통합.
 
 
 def compute_template_hash(template_path: str) -> str:
@@ -7401,6 +7402,102 @@ def parse_style_profile_from_llm(
     return result
 
 
+CHARPR_VISUAL_SIG_INCLUDE_ATTRS = frozenset({
+    "fontRef", "height", "textColor", "shadeColor",
+    "bold", "italic",
+    "underline", "strikeout", "outline", "shadow",
+    "ratio",
+})
+
+
+def _build_charpr_visual_sig_map(
+    doc,
+    include_attrs: frozenset | set | None = None,
+) -> dict:
+    """양식 header.xml 의 모든 charPr 를 visual signature 로 그룹화.
+
+    같은 visual signature(font/height/color/bold/italic/underline/strike/outline/shadow/ratio)
+    를 가진 charPr 들을 같은 group key 로 묶음. 양식이 의미상 같은 글꼴을 paragraph 마다
+    다른 charPrIDRef 로 중복 등록하는 경우, 11.2b 가 raw charPrIDRef 로 layer 를 쪼개면
+    의미상 같은 글꼴이 em1, em19, em38 처럼 분리되어 base 판정과 AI 부담을 깨뜨림.
+
+    spacing/relSz/offset 은 include_attrs 기본값에서 제외. 자간은 시각 차이가 미미하고,
+    relSz/offset 은 양식이 default(100, 0) 외 값을 안 쓰는 경우가 많음.
+
+    Returns:
+        {charpr_id: group_key} — group_key 는 같은 signature 의 charpr_id 중 정수 최솟값
+        (안정적 + 보통 본문 자리 cp 가 작은 id). 매핑 실패 시 raw cp 그대로.
+    """
+    if include_attrs is None:
+        include_attrs = CHARPR_VISUAL_SIG_INCLUDE_ATTRS
+
+    def _sig(cp_elem):
+        parts = []
+        if "height" in include_attrs:
+            parts.append(("height", cp_elem.get("height", "")))
+        if "textColor" in include_attrs:
+            parts.append(("textColor", cp_elem.get("textColor", "")))
+        if "shadeColor" in include_attrs:
+            parts.append(("shadeColor", cp_elem.get("shadeColor", "")))
+        if "fontRef" in include_attrs:
+            fr = cp_elem.find(f"{NS_HH}fontRef")
+            if fr is not None:
+                parts.append(("font_hangul", fr.get("hangul", "")))
+                parts.append(("font_latin", fr.get("latin", "")))
+                parts.append(("font_hanja", fr.get("hanja", "")))
+            else:
+                parts.extend([("font_hangul", ""), ("font_latin", ""), ("font_hanja", "")])
+        if "bold" in include_attrs:
+            parts.append(("bold", cp_elem.find(f"{NS_HH}bold") is not None))
+        if "italic" in include_attrs:
+            parts.append(("italic", cp_elem.find(f"{NS_HH}italic") is not None))
+        if "underline" in include_attrs:
+            ul = cp_elem.find(f"{NS_HH}underline")
+            ul_type = ul.get("type", "NONE") if ul is not None else "NONE"
+            ul_color = ul.get("color", "") if (ul is not None and ul_type != "NONE") else ""
+            parts.append(("ul_type", ul_type))
+            parts.append(("ul_color", ul_color))
+        if "strikeout" in include_attrs:
+            so = cp_elem.find(f"{NS_HH}strikeout")
+            so_shape = so.get("shape", "NONE") if so is not None else "NONE"
+            parts.append(("so_shape", so_shape))
+        if "outline" in include_attrs:
+            ol = cp_elem.find(f"{NS_HH}outline")
+            ol_type = ol.get("type", "NONE") if ol is not None else "NONE"
+            parts.append(("ol_type", ol_type))
+        if "shadow" in include_attrs:
+            sd = cp_elem.find(f"{NS_HH}shadow")
+            sd_type = sd.get("type", "NONE") if sd is not None else "NONE"
+            parts.append(("sd_type", sd_type))
+        if "ratio" in include_attrs:
+            rt = cp_elem.find(f"{NS_HH}ratio")
+            rt_v = rt.get("hangul", "100") if rt is not None else "100"
+            parts.append(("ratio_hangul", rt_v))
+        return tuple(parts)
+
+    sig_to_cps: dict = {}
+    cp_to_sig: dict = {}
+    try:
+        if not doc.headers:
+            return {}
+        head_elem = doc.headers[0].element
+    except Exception:
+        return {}
+    for cp in head_elem.iter(f"{NS_HH}charPr"):
+        cid = cp.get("id", "")
+        if not cid:
+            continue
+        s = _sig(cp)
+        sig_to_cps.setdefault(s, []).append(cid)
+        cp_to_sig[cid] = s
+
+    def _rep_key(cid: str):
+        return (int(cid) if cid.isdigit() else float("inf"), cid)
+
+    sig_to_group_key: dict = {s: min(cps, key=_rep_key) for s, cps in sig_to_cps.items()}
+    return {cid: sig_to_group_key[s] for cid, s in cp_to_sig.items()}
+
+
 def extract_paragraph_emphasis_map(
     hwpx_source,
     paragraphs: list[dict],
@@ -7471,6 +7568,13 @@ def extract_paragraph_emphasis_map(
         _dbg["open_ok"] = False
         _dbg["open_error"] = f"{type(_open_e).__name__}: {_open_e}"
         return {}
+
+    # visual signature 통합 — 양식이 의미상 같은 글꼴을 여러 charPrIDRef 로 중복 등록하는 경우
+    # raw cp 대신 group_key 로 통합. 같은 글꼴은 같은 emN 으로 부여되어 base 판정과 AI 부담 안정화.
+    cp_to_group = _build_charpr_visual_sig_map(doc)
+    _dbg["charpr_total_count"] = len(cp_to_group)
+    _dbg["charpr_visual_group_count"] = len(set(cp_to_group.values()))
+    _dbg["charpr_visual_include_attrs"] = sorted(CHARPR_VISUAL_SIG_INCLUDE_ATTRS)
 
     # paragraph idx → cluster_id (structure 기준; 1a paragraph.idx — 재할당된 0~N sequential)
     idx_to_cluster = {p.get("idx"): p.get("role", "") for p in paragraphs if p.get("role")}
@@ -7549,9 +7653,11 @@ def extract_paragraph_emphasis_map(
         # p_elem.iter("run")이 모든 descendant run 반환. cell 안 다른 글꼴 인식.
         # 단 각 run의 direct t만 사용 (recursive iter면 cell run의 t를 outer가
         # 또 가져오는 중복 발생).
+        # raw charPrIDRef 대신 visual signature group_key 사용 — 의미상 같은 글꼴 통합.
         segments: list = []
         for run in p_elem.iter(f"{NS_HP}run"):
-            cp = run.get("charPrIDRef", "0")
+            cp_raw = run.get("charPrIDRef", "0")
+            cp = cp_to_group.get(cp_raw, cp_raw)
             text_parts = [t.text or "" for t in run.findall(f"{NS_HP}t")]
             text = "".join(text_parts)
             if not text:
@@ -7700,11 +7806,14 @@ sample 원문을 인용하지 마세요. 인용하면 quote/backslash escape 문
 
 ---
 
-여러 role_cluster의 양식 paragraph sample이 주어집니다. 각 sample은 글꼴 ID
-종류에 따라 [[em1]]...[[/em1]] / [[em2]]...[[/em2]] 등 markup으로 표시되어 있습니다.
+여러 role_cluster의 양식 paragraph sample이 주어집니다. 각 sample은 **원본 양식의
+시각적으로 구분되는 style layer** 단위로 [[em1]]...[[/em1]] / [[em2]]...[[/em2]] 등
+markup 으로 표시되어 있습니다. **동일한 시각 속성(font/size/bold/color/italic/
+underline/strike/ratio)의 charPr 들은 이미 같은 layer 로 통합**되어 있으므로,
+emN 차이는 실제 시각적으로 다른 style 차이라고 보면 됩니다.
 
-**중요**: 코드는 글꼴 ID 종류만 분리해 layer를 부여했을 뿐, **어느 layer가
-base(일반 텍스트)이고 어느 layer가 강조인지는 판정하지 않았습니다**.
+**중요**: 코드는 시각 속성으로 layer 를 분리·통합했을 뿐, **어느 layer 가
+base(일반 텍스트)이고 어느 layer 가 강조인지는 판정하지 않았습니다**.
 당신이 cluster마다 sample을 보고 base vs 강조를 결정하세요.
 
 ## 결정 원칙
@@ -17706,7 +17815,7 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 
 `[[emN]]...[[/emN]]` 은 **강조 표시가 아닙니다**. 원본 양식의 **글꼴 layer 재현용 style 표시** 입니다.
 
-- **base layer**: 그 역할(cluster) 의 기본 글꼴. 본문 모든 글자의 기본값.
+- **base layer**: body 일반 문장 골격에 쓰는 기본 style. outer_marker · content_label · 고정 들여쓰기 span 은 sample 의 layer 배치가 우선이며 base 로 덮지 않는다.
 - **non-base layer**: 양식이 특정 위치 (마커, 분류 라벨 등) 에 다른 글꼴 박은 자리.
 
 ## ⚠️ 글꼴 layer 적용 정책 (가장 중요 — 다른 모든 규칙보다 우선)
@@ -17728,6 +17837,8 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 형식 전문가입니�
 6. **단순히 "핵심어", "중요 표현" 처럼 너무 넓은 규칙은 sample 의 분할 개수와 위치 패턴 안에서만 적용한다.** 아무 단어나 추가로 고르지 않는다.
 
 7. **불확실하면 해당 segment 만 base 로 둔다. 하지만 문단 전체를 무조건 base 로 뭉개지 않는다.**
+
+8. **base layer 의 범위 — 잘못 읽지 말 것.** base 는 body 일반 문장에 대한 기본값일 뿐, outer_marker · content_label · 고정 들여쓰기 span 을 base 로 강제하라는 뜻이 아니다. 이 구간들은 양식 sample 의 layer 배치를 우선 복제한다 (sample 에 시작 공백이 `[[em1]] [[/em1]]` 형태로 박혀 있으면 그 공백 layer 그대로 유지).
 
 ## 입력 (user 메시지)
 1. **본문 트리**: 각 item에 `id, parent_id, role, text` 있음. text는 마커·layer 없는 본문.
@@ -17943,7 +18054,10 @@ def build_section_style_prompt(
                 if lid and rules:
                     _layers_with_rules.append((lid, rules))
             em_lines.append(f"\n### {role_name}")
-            em_lines.append(f"- base layer: `{base_lid}` — 본문 모든 글자의 기본 글꼴 (default).")
+            em_lines.append(
+                f"- base layer: `{base_lid}` — body 일반 문장 골격의 기본 style. "
+                f"outer_marker · content_label · 시작 공백 span 은 sample layer 배치 우선 (base 로 덮지 X)."
+            )
             if _layers_with_rules:
                 em_lines.append("- 규칙 있는 non-base layer (적용 가능):")
                 for lid, rules in _layers_with_rules:
