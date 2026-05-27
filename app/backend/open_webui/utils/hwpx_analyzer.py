@@ -18087,7 +18087,11 @@ connector / slot_template / 동작어 / 완성 문장 형태는 **제공하지 �
 문장을 작성하기 전 connector 를 먼저 고르지 X. **source / 자식 재료 사이의 의미 관계를 먼저 판정**한 뒤 작성:
 
 - source 에 명백한 관계 표현 (동사 · 인과 표지 · 목적 표지 · 절차 표지 · 결과 서술 · 수치 변화 · 전후 관계) 이 있으면 그 관계로 작성.
-- source 에 관계 표현이 없으면 명사구 평면 병렬로 작성 — candidates 의 `allowed_units` 안에서만.
+- source 에 관계 표현이 약하거나 직접 드러나지 않으면, 먼저 두 명사구의 역할을 판정한다.
+  한쪽이 점검·조사·검토·협상·구축·운영·관리 같은 조치/수단/절차이고 다른 한쪽이 개선·대응·절감·확대·강화·전환·체계 같은 결과/목표/대응이면, 평면 병렬로 쓰지 말고 `조치 → 결과/목표` 관계로 재작성한다.
+  이때 connector 는 `relation_families_observed` 와 `connector_limits` 에 있는 것만 사용한다.
+  맞는 connector 가 없으면 두 명사구를 억지로 연결하지 말고, 결과/목표 쪽 핵심 anchor 를 남겨 짧게 작성한다.
+  (위 동작어 목록은 역할 판정용 — 강제 사용어 X. 새 본문 단어는 source 에 등장하는 것만 사용.)
 - 같은 connector 반복은 candidates 의 `max_same_connector` 안에서만.
 - source 에 없는 새 관계 (인과 / 수단 / 목적 / 효과) 만들기 X.
 
@@ -18113,6 +18117,15 @@ family 의 **적용 강도** 는 `style_profile.template_rigidity_observed` 가 
 - 허용: source 에 A 와 B 가 실제 동급 병렬 업무이면 `A 및 B` 가능.
 
 (위 `으로` 는 관계 반영 illustration 일 뿐 강제 connector 가 아니다. 실제 connector 는 source 관계와 `relation_families_observed` 에 박힌 것을 사용한다.)
+
+#### `및` 실패 시 재작성 방식 (가장 중요 — fallback 이 평면 병렬 X)
+
+- **두 표현을 그대로 다른 connector 로 바꿔 이어 붙이지 않는다** (`,`, `·`, `/` 등 delimiter 도 마찬가지).
+- 먼저 두 표현의 역할을 나눈다: **조치/수단/절차/근거** 역할과 **결과/목표/대응/개선 대상** 역할.
+- **결과/목표/대응/개선 대상** 역할 표현을 **마지막 anchor** 로 둔다.
+- **조치/수단/절차/근거** 역할 표현은 `relation_families_observed` 와 `connector_limits` 에 맞는 connector 가 있을 때만 앞에 붙인다.
+- 맞는 connector 가 없으면 조치/수단/절차/근거 표현을 **버리고** 마지막 anchor 중심으로 **축약**한다.
+- 단, source 에서 두 표현이 실제 동급 병렬 업무이면 `및` 사용 가능 (위 허용 케이스와 동일).
 
 ### rigidity 별 family 적용 강도
 
