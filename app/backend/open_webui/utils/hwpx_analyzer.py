@@ -6908,9 +6908,9 @@ STYLE_PROFILE_PROMPT = """당신은 한국 행정문서의 **문체·문장 조�
 5. **모든 관찰에 근거 sample id 인용 필수** (`[s0, s2, s5]` 형식). cluster 안 sample id 만 유효.
 6. **확신 없으면 unknown / null / 빈 list 허용**. 억지로 high/low 찍기 X.
 
-# 출력 schema — 10 field
+# 출력 schema
 
-profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 10 field + 자유 rules:
+profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 field 를 포함합니다 (모두 필수 — 관찰 없으면 `null` / 빈 list / `"unknown"`):
 
 ```json
 {
@@ -6976,14 +6976,36 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 10 field 
   "ending_pattern_observed": ["명사형 동작어 (강화/확대/개선/추진/제고/시행)"],
   "density_signal": "high",
   "scarcity_allowance_observed": false,
+  "template_rigidity_observed": "rigid",
+  "relation_families_observed": [
+    {
+      "family_name": "공통동작어형",
+      "slot_template": "[대상 A] + [관찰 연결 표현] + [대상 B] + [공통 동작어]",
+      "front_segment_role": "병렬-대상",
+      "central_anchor_type": "공통 동작어",
+      "applies_when": "source 가 실제 병렬 대상/목표일 때",
+      "avoid_when": "source 가 한 조치 → 한 결과 같은 비대칭 관계일 때",
+      "evidence_sample_ids": ["s0", "s5"]
+    },
+    {
+      "family_name": "수단-결과형",
+      "slot_template": "[수단/조치] + [관찰 연결 표현] + [목표/환경 명사구] + [동작어]",
+      "front_segment_role": "수단",
+      "central_anchor_type": "결과 명사구 + 동작어",
+      "applies_when": "source 가 한 조치 → 한 효과/환경 일 때",
+      "avoid_when": "source 가 단순 명사 병렬일 때",
+      "evidence_sample_ids": ["s1", "s2"]
+    }
+  ],
   "evidence_sample_ids": ["s0", "s1", "s2", "s5"],
   "ambiguity_flags": [],
   "content_style_rules_for_generation": [
-    "본문은 명사구 또는 명사형 동작어 종결. 서술형 '~다' 사용 X. 근거: [s0, s2, s5]",
-    "sample 마다 연결 골격이 다름 — family 별 slot template 로 추상화: `[수단 / 조치] + [관찰된 연결 표현] + [source 기반 목표 / 효과 명사구]`, `[범위 확장 / 전환] + [관찰된 연결 표현] + [source 기반 목표 / 방향 명사구]`, `[상황 / 변화 / 위험] + [관찰된 연결 표현] + [source 기반 대응 / 기반 명사구]`. slot 안 핵심 명사 · 동작어는 source 책임. 근거: [s0, s1, s2, s5]"
+    "본문은 명사구 또는 명사형 동작어 종결. 서술형 '~다' 사용 X. 근거: [s0, s2, s5]"
   ]
 }
 ```
+
+위 예시에서 family 관찰은 `relation_families_observed` 에만 들어가고, `content_style_rules_for_generation` 에는 family 가 **아닌** 보조 rule (종결 패턴, 술어 형태, 사용 금지 등) 만 들어갑니다. **family 를 자유 rule 안에 박지 마세요** — 두 곳에 같은 정보 박으면 충돌.
 
 ## 나쁜 예시 (피하세요)
 
@@ -7016,33 +7038,6 @@ profiles 배열에 input cluster 수만큼 entry. 각 entry 는 다음 10 field 
 - sample 에서 **직접 관찰되지 않으면 적지 X**. 일반 행정문서 규칙 / 양식 외 지식 / 추측 X.
 - "제목형이면 무조건 수식부+핵심부" 같은 카테고리 가정 X — **sample 에서 일관 반복** 일 때만.
 - 한 paragraph 안 segment 1 개 (단순 명칭형 / 단어형) 인 role 은 이 축 적용 X (관찰 안 됨 = 빈 rule).
-- 근거 sample id 필수 (`[sN, sN]` 형식).
-- 이 축으로 작성한 rule 도 `content_style_rules_for_generation` 0~5 개 한도 안에서.
-
-## 반복 instance 연결 골격 family 관찰 (추가 축 — 같은 role sample 이 여러 개일 때만 적용)
-
-같은 role 의 여러 sample 이 서로 다른 연결 골격을 보이면, 모든 instance 를 하나의 평균 문장 골격으로 합치지 마세요. sample 별로 관찰된 연결 골격을 **의미 slot template** 형태로 family 별 요약합니다.
-
-### slot template 추상화 원칙 (중요)
-
-- 원문 sample 의 **단어 / 정책어 / 고유어 / 동작어를 복사하지 X**. 의미 slot 으로 추상화.
-- slot template 형식 (형식만 참고 — 이 표현 자체를 그대로 박지 X):
-  `[의미 슬롯 A] + [관찰된 연결 표현] + [source 기반 의미 슬롯 B]`
-- slot 안에 들어갈 핵심 명사 / 동작어는 **source 가 결정** — slot 자체에 양식 단어 박기 X.
-- connector / 조사 / 어미는 **sample 에서 관찰된 표현 범위 안에서만**.
-
-### rule 작성 예 (sample 관찰 시 — 형식 참고용)
-
-- `"같은 role sample 마다 연결 골격이 다름. family 별 slot template: [수단 / 조치] + [관찰 연결 표현] + [source 기반 목표 / 효과 명사구]. 근거: [s1, s2, s5]"`
-- `"sample 에 family 1 개 일관 반복 — 단일 family slot template 그대로 유지. 다른 family 생성 X. 근거: [s0..s8]"`
-
-### 적용 원칙
-
-- **이 축 rule 은 connector 단어 list 형태로 박기 X** (예: `"연결 어미는 'A', 'B', 'C' 등 사용"` 같은 단어 나열). 그 정보는 이미 `join_markers_observed` field 에 있음 — 중복.
-- 반드시 `[의미 슬롯] + [관찰된 연결 표현] + [source 기반 의미 슬롯]` 형태 slot template 로 작성.
-- sample 에서 family 1 개만 일관 반복이면 family 1 개 — **강제 다양화 X**. 없는 family 생성 X.
-- sample 에 없는 connector / 조사 / 어미 / 골격 만들기 X.
-- slot 안 핵심 명사 / 동작어는 source 책임 — sample 단어 / 정책어 / 고유어 / 동작어 복사 X.
 - 근거 sample id 필수 (`[sN, sN]` 형식).
 - 이 축으로 작성한 rule 도 `content_style_rules_for_generation` 0~5 개 한도 안에서.
 
@@ -7240,6 +7235,37 @@ def _collect_style_samples(
             if m:
                 ending_counter[m.group(1)] += 1
 
+        # segment_count: paragraph 안 정보 조각 수 — 흔한 연결 표지로 split
+        # connector_types_observed: paragraph 안 사용된 connector 종류 (rigidity 보조)
+        _connector_patterns = [
+            ("쉼표", r","),
+            ("및", r"\s*및\s*"),
+            ("등", r"\s+등(?:\s|$|,)"),
+            ("로", r"(?<=[가-힣])로\s+"),  # 한글 뒤 '로 '
+            ("을 위한", r"\s*을 위한\s*"),
+            ("를 위한", r"\s*를 위한\s*"),
+            ("에 대한", r"\s*에 대한\s*"),
+            ("을 통한", r"\s*을 통한\s*"),
+            ("을 통해", r"\s*을 통해\s*"),
+            ("하고", r"\s+하고[,\s]"),
+            ("하여", r"\s+하여\s+"),
+            ("하며", r"\s+하며[,\s]"),
+            ("넘어", r"\s+넘어\s+"),
+            ("거쳐", r"\s+거쳐\s+"),
+        ]
+        _seg_split_re = re.compile(
+            "|".join(p for _, p in _connector_patterns)
+        )
+        segment_counts: list = []
+        global_connector_types: Counter = Counter()
+        for t in all_texts:
+            _parts = [p for p in _seg_split_re.split(t) if p and p.strip()]
+            segment_counts.append(max(1, len(_parts)))
+            for name, pat in _connector_patterns:
+                if re.search(pat, t):
+                    global_connector_types[name] += 1
+        segment_counts_sorted = sorted(segment_counts)
+
         total_chars = sum(len(raw) for _, raw, _ in uniq)
         if total_chars <= sample_text_char_budget:
             selected = list(uniq)
@@ -7306,6 +7332,11 @@ def _collect_style_samples(
                 "char_length_p75": _percentile(char_lengths, 0.75),
                 "text_endings_counter": dict(ending_counter),
                 "semantic_tag_distribution": dict(tag_dist.get(role, {})),
+                "segment_count_min": segment_counts_sorted[0] if segment_counts_sorted else 0,
+                "segment_count_p50": _percentile(segment_counts_sorted, 0.50),
+                "segment_count_max": segment_counts_sorted[-1] if segment_counts_sorted else 0,
+                "connector_types_observed": sorted(global_connector_types.keys()),
+                "connector_type_count": len(global_connector_types),
             },
         })
 
@@ -7355,12 +7386,24 @@ def build_style_profile_prompt(
         _cl_p50 = _rm.get("char_length_p50", 0)
         _cl_max = _rm.get("char_length_max", 0)
         _endings = _rm.get("text_endings_counter", {}) or {}
+        _seg_min = _rm.get("segment_count_min", 0)
+        _seg_p50 = _rm.get("segment_count_p50", 0)
+        _seg_max = _rm.get("segment_count_max", 0)
+        _conn_types = _rm.get("connector_types_observed") or []
+        _conn_count = _rm.get("connector_type_count", 0)
         if _cl_max or _cl_min or _cl_p50:
             header += f"\n[rigidity 보조 통계 — 최종 판단은 의미 우선]"
             header += f"\n  길이 분포 (글자수): min={_cl_min} / p50={_cl_p50} / max={_cl_max}"
             if _cl_min and _cl_max:
                 _ratio = round(_cl_max / max(_cl_min, 1), 2)
                 header += f" (max/min ratio={_ratio})"
+            if _seg_max:
+                header += f"\n  정보 조각 수: min={_seg_min} / p50={_seg_p50} / max={_seg_max}"
+            if _conn_count:
+                header += (
+                    f"\n  connector 다양도: {_conn_count}개 관찰 "
+                    f"({', '.join(_conn_types)})"
+                )
             if _endings:
                 _top = sorted(_endings.items(), key=lambda kv: -kv[1])[:3]
                 _top_str = ", ".join(f"'{k}':{v}" for k, v in _top)
@@ -17667,13 +17710,13 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 
 1차 text 를 양식 sample 의 정보 조립 방식에 맞춰 다시 작성:
 
-- **양식 sample 의 술어 종결** (`~함`, `~한다`, `~완료`, `~예정`, 명사형 등) 답습.
-- **양식 sample 의 segment 분할 패턴** (`(분류) 본문`, `메인 (괄호 부제)` 등) 답습.
-- **양식 sample 의 정보 조각 개수 / 연결 방식** 답습 — 양식이 한 줄에 1~3 개 정보 조각을 쉼표 · 및 · 등 · 로 · 를 위한 등으로 연결한 패턴이면 새 본문도 source 재료 범위 안에서 같은 방식으로 조립.
-- **양식 sample 이 단일 layer 면 단일 layer**, 다중 segment 면 다중 segment.
+- **양식 sample 의 술어 종결** (`~함`, `~한다`, `~완료`, `~예정`, 명사형 등) 따름.
+- **양식 sample 의 segment 분할 패턴** (`(분류) 본문`, `메인 (괄호 부제)` 등) 따름.
+- **양식 sample 의 정보 조각 개수 / 연결 방식** 은 `template_rigidity_observed` 에 맞춰 따름 — **§7 의 rigidity 별 적용 강도 표 참조**. 단순 connector 기계적 모방 금지.
+- **양식 sample 이 단일 정보 조각이면 단일 정보 조각**, 다중 정보 조각이면 다중 정보 조각 (rigidity 에 따라 자유도 다름).
 
-**답습할 것**: 정보 조각 개수, 연결 marker (쉼표 / 및 / 등 / ⇒ / 「」), 종결 방식, segment 위치 (라벨 앞 / 뒤).
-**답습 X**: 양식 sample 의 고유 단어, 한자 / 영어, 정책명 · 기관명 · 고유명사.
+**따를 것**: 정보 조각 개수, 연결 marker (쉼표 / 및 / 등 / ⇒ / 「」), 종결 방식, segment 위치 (라벨 앞 / 뒤). 단, 적용 강도는 `template_rigidity_observed` 와 §7 의 family 매칭 절차를 따른다.
+**가져오지 X**: 양식 sample 의 고유 단어, 한자 / 영어, 정책명 · 기관명 · 고유명사.
 
 ## 2. 정보 밀도 / 구성 단위 모방 (글자 수 기계적 모방 X)
 
@@ -17707,7 +17750,7 @@ SECTION_POLISH_PROMPT = """당신은 한국 행정문서 본문의 **최종 작�
 
 같은 role 의 반복 item 을 **하나의 평균 문장 골격으로 통일하지 않습니다.**
 
-- `style_profile` 에 **여러 연결 골격 family** 가 관찰되면, 각 item 의 source 의미에 맞는 family 를 선택해 적용.
+- `style_profile.relation_families_observed` 에 **여러 family** 가 관찰되면, 각 item 의 source 의미에 맞는 family 를 선택해 적용. **§7 의 rigidity / applies_when / avoid_when 매칭 절차에 따라 적용 강도 조절** — connector 기계적 모방이나 평면 병렬로 무너지지 않게.
 - sample 에 **없는 골격을 만들지 X**.
 - sample 의 **주제어 · 정책어 · 고유어 · 동작어를 새 본문에 가져오지 X**.
 - slot template 의 connector / 조사 / 어미는 **sample 에서 관찰된 표현 범위 안에서만**.
