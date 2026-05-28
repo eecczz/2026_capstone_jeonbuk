@@ -582,22 +582,8 @@ SITES: list[dict[str, Any]] = [
         "max_pages": 500,
         "max_depth": 2,
     },
-    {
-        "code": "airimage_jeonbuk",
-        "name": "airimage.jeonbuk.go.kr",
-        "base_url": "http://airimage.jeonbuk.go.kr",
-        "priority_paths": ['/'],
-        "max_pages": 500,
-        "max_depth": 2,
-    },
-    {
-        "code": "lmis_jeonbuk",
-        "name": "lmis.jeonbuk.go.kr",
-        "base_url": "http://lmis.jeonbuk.go.kr",
-        "priority_paths": ['/'],
-        "max_pages": 500,
-        "max_depth": 2,
-    },
+    # airimage_jeonbuk: 영상/지도 service — 텍스트 RAG 부적합. (제거)
+    # lmis_jeonbuk: kras.jeonbuk.go.kr 로 redirect — 별도 도메인으로 통합됨. (제거)
 
     # ─────────────── Phase 2: 도내 시·군 14개 (자동 등록, minimum config) ───────────────
     {
