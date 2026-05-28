@@ -236,6 +236,84 @@ def build_rag_processor(request: Request, websocket=None):
                 self._stt_timeout_task.cancel()
             self._stt_timeout_task = None
 
+        async def _compose_summary_overlay(self, user_text: str) -> str | None:
+            """mini-LLM 호출로 사용자 발화를 '질문은 …입니다' 한 문장 정리.
+
+            예: "그 뭐야 전북도청 종합계획?" → "질문은 전북도청 종합계획이 무엇인지입니다."
+
+            timeout 1.5s. 실패 시 None — caller 가 원문 자르기 fallback 사용.
+            """
+            try:
+                from open_webui.utils.chat import (
+                    generate_chat_completion as _gen_chat,
+                )
+                from open_webui.routers.public_chatbot import (
+                    _get_public_user as _get_pu,
+                )
+
+                cfg = self._owi_request.app.state.config
+                model_id = getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot")
+                fallback_model = getattr(cfg, "PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini")
+                models = getattr(self._owi_request.app.state, "MODELS", None) or {}
+                if model_id not in models:
+                    model_id = fallback_model if fallback_model in models else model_id
+
+                user_obj = _get_pu(self._owi_request)
+                prompt = (
+                    "다음은 사용자가 음성으로 한 발화입니다. 이 발화의 핵심 의도를 "
+                    "'질문은 …입니다.' 형식의 매끄러운 한 문장으로 정리해 주세요. "
+                    "원문을 그대로 인용하지 말고 의도만 다듬어. 50자 이내. "
+                    "응답은 정리된 한 문장만 — 추가 설명/질문 금지.\n\n"
+                    f"발화: {user_text}"
+                )
+                form_data = {
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                }
+                try:
+                    self._owi_request.state.metadata = {
+                        "user_id": user_obj.id,
+                        "chat_id": "",
+                        "message_id": "summary-overlay",
+                        "session_id": "summary-overlay",
+                        "params": {},
+                        "features": {},
+                        "variables": {},
+                        "filter_ids": [],
+                        "tool_ids": None,
+                        "tool_servers": None,
+                        "files": None,
+                        "model": models.get(model_id),
+                        "direct": False,
+                        "public_chatbot": True,
+                    }
+                except Exception:
+                    pass
+
+                resp = await asyncio.wait_for(
+                    _gen_chat(self._owi_request, form_data, user=user_obj, bypass_filter=True),
+                    timeout=1.5,
+                )
+                if isinstance(resp, dict):
+                    choices = resp.get("choices") or []
+                    if choices:
+                        text = (choices[0].get("message") or {}).get("content", "").strip()
+                        text = text.split("\n")[0].strip().strip("\"'`“”")
+                        for prefix in ("요약:", "정리:", "응답:", "한 문장:"):
+                            if text.startswith(prefix):
+                                text = text[len(prefix):].strip()
+                        if text and 5 <= len(text) <= 80:
+                            log.info(f"[voice_ws] summary overlay: {text!r}")
+                            return text
+                return None
+            except asyncio.TimeoutError:
+                log.info("[voice_ws] summary overlay timed out (>1.5s)")
+                return None
+            except Exception as e:
+                log.warning(f"[voice_ws] summary overlay failed: {e}")
+                return None
+
         async def _stt_timeout_handler(self):
             """VAD stopped 후 _stt_timeout_secs 안 transcript 안 오면 발화 정리 중 phase_label 해제.
 
@@ -401,9 +479,17 @@ def build_rag_processor(request: Request, websocket=None):
                 # 멀티턴 합쳐진 최종 user_text — '질문은 …' 요약을 잠깐 띄움.
                 # frontend 가 3.5s 동안 stateEl 에 표시 후 마지막 정상 phase_label
                 # 로 자동 복귀. 끼어들기 형식이라 정상 순서를 안 깨뜨림.
+                #
+                # mini-LLM 요약 시도 (timeout 1.5s) — 실패 시 fallback (원문 자르기).
+                # 사용자 의도: 원문 그대로 ("질문은 '그 뭐야 전북도청 종합계획은?'")
+                # 가 아닌 정리된 문장 ("질문은 전북도청 종합계획이 무엇인지입니다").
                 _summary_src = user_text.strip().replace("\n", " ")
-                _summary = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
-                await _send_caption("phase_overlay", f"질문은 “{_summary}”")
+                _summary_fallback = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
+                summary_text = await self._compose_summary_overlay(user_text)
+                if summary_text:
+                    await _send_caption("phase_overlay", summary_text)
+                else:
+                    await _send_caption("phase_overlay", f"질문은 “{_summary_fallback}”")
                 await _send_caption("phase_label", "관련 자료 찾는 중")
                 await self._generate_reply(generation_id, user_text)
             except asyncio.CancelledError:

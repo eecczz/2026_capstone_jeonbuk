@@ -582,6 +582,20 @@
             pcReplyAudioChunks = 0;
             pcDroppedAudioChunks = 0;
             setVoiceCaption(null, msg.text || "");
+            // 음성 대화 기록을 텍스트 모드 chat 영역 + localStorage 에 누적.
+            // vcUserEl 의 텍스트는 마지막 transcription (멀티턴 합치기 마지막 chunk)
+            // 으로 그 시점 사용자 발화 비슷 — 완전 정확은 아니지만 가독성 충분.
+            const lastUserText = (vcUserEl.textContent || "").trim();
+            if (lastUserText) {
+              appendBubble("user", lastUserText);
+              history.push({ role: "user", content: lastUserText });
+            }
+            if (msg.text) {
+              appendBubble("bot", msg.text);
+              history.push({ role: "assistant", content: msg.text });
+            }
+            if (typeof saveHistory === "function") saveHistory();
+            scrollBottom();
           }
           else if (msg && msg.type === "clear") {
             pcAcceptAudio = false;
