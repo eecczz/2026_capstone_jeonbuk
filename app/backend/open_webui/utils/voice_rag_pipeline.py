@@ -211,9 +211,49 @@ def build_rag_processor(request: Request, websocket=None):
             # 이번 발화에만 답해라" 명시. history (LLM 맥락) 는 보존되므로 정정/
             # 후속 질문은 자연 처리되되 이전 질문의 재답변은 막힌다.
             self._post_reply_reset: bool = False
+            # ── Force commit timer (EMS-interpret-ui 패턴 응용) ──
+            # 사용자가 끝없이 발화 (소음/말 계속) 해서 매 새 STT 가 진행 중 generation
+            # 을 cancel 시켜 답변이 영원히 안 나오는 무한 지연 버그 차단.
+            # 첫 STT 도착 시점 (pending 비어있던 상태에서 시작) 부터 절대 시간 카운트.
+            # _pending_force_commit_secs 도달 후엔 새 STT 가 들어와도 진행 중
+            # generation 을 cancel 하지 않고, 새 STT 는 다음 turn 의 pending 으로
+            # 누적. LLM 호출 stream done + finally 시 None 으로 리셋.
+            self._pending_started_at: float | None = None
+            self._pending_force_commit_secs: float = 6.0
+            # ── STT empty-result timeout ──
+            # VAD stopped 후 N초 안에 TranscriptionFrame 이 안 오면 STT 가 빈 결과
+            # 또는 noise 만 인식한 것 — frontend 의 "발화 정리 중" phase_label 이
+            # 영원 남는 무한 지연 차단. clear 신호로 listening 모드 복귀.
+            self._stt_timeout_task: asyncio.Task | None = None
+            self._stt_timeout_secs: float = 3.0
 
         def _is_current_generation(self, generation_id: int) -> bool:
             return generation_id == self._generation_id
+
+        def _cancel_stt_timeout(self):
+            """STT timeout task 가 있으면 cancel — TranscriptionFrame 도착/새 VAD started 시 호출."""
+            if self._stt_timeout_task and not self._stt_timeout_task.done():
+                self._stt_timeout_task.cancel()
+            self._stt_timeout_task = None
+
+        async def _stt_timeout_handler(self):
+            """VAD stopped 후 _stt_timeout_secs 안 transcript 안 오면 발화 정리 중 phase_label 해제.
+
+            Pipecat OpenAISTTService 가 빈/noise 인식 시 TranscriptionFrame 안 emit 해
+            우리 process_frame 의 STT transcript 분기 진입 자체가 안 됨. frontend 의
+            "발화 정리 중" 라벨이 영원 남는 무한 지연 버그 차단.
+            """
+            try:
+                await asyncio.sleep(self._stt_timeout_secs)
+                log.info(
+                    "[voice_ws] STT empty-result timeout (%.1fs) — clearing phase_label",
+                    self._stt_timeout_secs,
+                )
+                # clear 메시지 → frontend 의 clear 핸들러가 setVoiceCaption("") +
+                # setMode("listening") 호출. 사용자 재발화 가능 상태로 복귀.
+                await _send_caption("clear", "")
+            except asyncio.CancelledError:
+                pass
 
         def _merge_turn_segments(self, segments: list[str]) -> list[str]:
             merged: list[str] = []
@@ -238,6 +278,37 @@ def build_rag_processor(request: Request, websocket=None):
                     await task
 
         async def _restart_generation(self, user_text: str):
+            # ── Force commit timer 보호 ──
+            # 사용자가 끝없이 발화해서 매 새 STT 마다 진행 중 generation 이 cancel
+            # 되어 답변 영원히 안 나오는 패턴 차단. pending 의 첫 STT 시점부터
+            # _pending_force_commit_secs (6초) 도달 후엔 진행 중 generation 을
+            # 더 이상 죽이지 않는다. 새 STT 는 다음 turn 의 pending 으로 누적만.
+            # 단 reset 분기 (_reply_audio_started=True) 는 우선 — 답변 들은 후
+            # 새 질문은 정상 흐름 유지.
+            import time as _t
+            if (
+                not self._reply_audio_started
+                and self._generation_task is not None
+                and not self._generation_task.done()
+                and self._pending_started_at is not None
+                and (_t.time() - self._pending_started_at) >= self._pending_force_commit_secs
+            ):
+                self._pending_user_segments.append(user_text)
+                # safety cap — 무한 누적 방지
+                while (
+                    len(self._pending_user_segments) > 6
+                    or sum(len(s) for s in self._pending_user_segments) > 400
+                ):
+                    self._pending_user_segments.pop(0)
+                log.info(
+                    "[voice_ws] force-commit budget elapsed — queuing STT for next turn: %r "
+                    "(elapsed=%.1fs, pending=%d items)",
+                    user_text,
+                    _t.time() - self._pending_started_at,
+                    len(self._pending_user_segments),
+                )
+                return
+
             # 봇 응답 음성이 이미 한 번이라도 재생됐다면 그 turn 은 종결 — 다음 발화는
             # 새 질문의 시작점으로 리셋 (history 는 LLM 컨텍스트로 보존, 합치기만 안 함).
             if self._reply_audio_started:
@@ -248,6 +319,8 @@ def build_rag_processor(request: Request, websocket=None):
                 self._pending_user_segments = [user_text.strip()] if user_text.strip() else []
                 self._reply_audio_started = False
                 self._post_reply_reset = True  # LLM 호출 시 안내 prefix 부착 신호
+                # 새 turn 의 첫 STT — force_commit timer 시작
+                self._pending_started_at = _t.time()
                 self._generation_id += 1
                 generation_id = self._generation_id
                 log.info(
@@ -294,6 +367,10 @@ def build_rag_processor(request: Request, websocket=None):
                     user_text,
                 ]
             )
+            # 첫 STT (timer 미시작) 면 시작 — 그 후 새 STT 가 와도 timer 리셋 X.
+            # 6초 절대 한도 안에 LLM 호출 도달 보장.
+            if self._pending_started_at is None:
+                self._pending_started_at = _t.time()
             self._generation_id += 1
             generation_id = self._generation_id
             log.info(
@@ -468,6 +545,9 @@ def build_rag_processor(request: Request, websocket=None):
                         self._caption_observer.queue_reply(final_text)
                         self._history.append({"role": "user", "content": user_text})
                         self._history.append({"role": "assistant", "content": final_text})
+                        # 답변 생성 완료 — force_commit timer 종결 (다음 turn 의 첫 STT 가
+                        # 새로 시작).
+                        self._pending_started_at = None
                         log.info(
                             f"[voice_ws] stream done deltas={delta_count} len={len(final_text)} id={generation_id}"
                         )
@@ -523,11 +603,16 @@ def build_rag_processor(request: Request, websocket=None):
                     # reset turn 의 새 답변 음성이 사용자에게 도달 → reset 모드 종료.
                     # 그 후 새 STT 가 들어오면 다시 reset 분기 (이번엔 새로 시작).
                     self._post_reply_reset = False
+                    # 음성 도달 시점 = turn 완전 종결. force_commit timer 도 정리
+                    # (stream done 시점에서 이미 None 됐을 가능성 크지만 안전 확보).
+                    self._pending_started_at = None
                     log.info("[voice_ws] reply audio started — merge window will reset on next turn")
 
             # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
             if isinstance(frame, VADUserStartedSpeakingFrame):
                 log.info("[voice_ws] VAD: user started speaking")
+                # 새 발화 시작 → 이전 STT timeout (있다면) 취소. 사용자 재발화 시도 중.
+                self._cancel_stt_timeout()
                 # 사용자 발화 시작 → frontend orb 기본 (검은 원) 으로
                 await _send_caption("vad", "start")
                 # 사용자가 끼어들면 STT 결과 도착 전에 진행 중 generation 을 먼저 멈춘다.
@@ -545,11 +630,18 @@ def build_rag_processor(request: Request, websocket=None):
                 # 사용자 발화 끝 → frontend orb thinking + 단계 라벨
                 await _send_caption("vad", "stop")
                 await _send_caption("phase_label", "발화 정리 중")
+                # STT timeout 시작 — N초 안 TranscriptionFrame 안 오면 clear (무한 지연 차단).
+                self._cancel_stt_timeout()
+                self._stt_timeout_task = asyncio.create_task(self._stt_timeout_handler())
 
             if isinstance(frame, TranscriptionFrame):
+                # STT 결과 도착 → timeout task cancel.
+                self._cancel_stt_timeout()
                 user_text = (frame.text or "").strip()
                 log.info(f"[voice_ws] STT transcript: {user_text!r}")
                 if not user_text:
+                    # 빈 transcript — phase_label clear (timeout 안 기다리고 즉시).
+                    await _send_caption("clear", "")
                     return
 
                 # STT 가 한국어가 아닌 외국어/영문 비스무리하게 transcribe 한 결과는

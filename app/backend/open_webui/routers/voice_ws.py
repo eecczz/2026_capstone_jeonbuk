@@ -165,24 +165,10 @@ async def voice_ws(websocket: WebSocket):
         ),
     )
 
-    # Pipecat 1.1 에서는 VAD 가 Transport params 가 아닌 별도 Pipeline 노드로 들어간다.
-    #
-    # 파라미터 튜닝 의도:
-    # - min_volume=0.3: 브라우저 마이크 입력은 자동 게인이 약해 기본 0.6 으로는 발화
-    #   시작 자체를 못 잡는 경우가 많다. 도민이 작게 말해도 인지하도록 낮춤.
-    # - confidence=0.5: 한국어 + 잡음 환경에서 0.65 는 보수적이라 stop 감지가 늦어
-    #   "계속 듣는 모드가 안 멈춤" 증상으로 이어짐. 0.5 로 적극화.
-    # - start_secs=0.18: 발화 시작 빠르게 포착.
-    # - stop_secs=0.4: 사용자가 잠시 텀 두면 turn 끝났다고 판단. Smart Turn V3 가
-    #   다시 한 번 "정말 발화 끝인지" 추가 판정하므로 0.4 로 짧게 두어도 안전.
-    # Silero VAD 파라미터 — 이전 자체 RMS-기반 VAD 에서 검증된 임계값 그대로 이식:
-    # - min_volume=0.02: public-chatbot.html 의 VAD_SPEECH_RMS=0.020 과 동일 스케일.
-    #   브라우저 ScriptProcessorNode 입력 RMS 가 일반 발화 시 0.02~0.1 범위라
-    #   default 0.6 은 거의 모든 발화를 컷오프. 0.02 가 실제로 동작한 값.
-    # - start_secs=0.10: SPEECH_HOLD_MS=100ms 와 매치.
-    # - stop_secs=0.5: 발화 텀 흡수. Smart Turn V3 가 추가 판단.
-    # - confidence=0.4: SileroVAD model 출력 (0~1) threshold. default 0.7 은 너무
-    #   보수적이라 한국어 + 작은 마이크 입력에서 못 잡음.
+    # P2 (카페 수준 임계값) 일시 롤백 — STT 빈 결과 원인 진단 중.
+    # 새 임계값 (confidence 0.55 / min_volume 0.025 / start_secs 0.15 / stop_secs 0.8)
+    # 가 사용자 발화의 audio 일부만 잡아 STT 가 인식 못 했을 가능성 진단.
+    # 옛 값으로 복원 후 STT 결과 정상이면 P2 가 원인 → 임계값 재조정.
     vad_processor = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
             params=VADParams(
@@ -194,18 +180,13 @@ async def voice_ws(websocket: WebSocket):
         ),
     )
 
-    # STT 도메인 어휘 편향 prompt — text 챗봇 (audio.py) 과 동일한 도청 어휘 set
-    # 을 voice 챗봇 STT 에도 전달한다. 이걸 안 주면 Cohere/Whisper 가 "도지사"
-    # 대신 "오지사", "김관영" 대신 "김반영" 같은 비슷 발음을 잘못 transcribe.
-    # 처음 PoC commit (5/11) 부터 누락되어 있던 것 — STT 품질 문제 원인.
-    from open_webui.routers.public_chatbot import _PUBLIC_STT_DOMAIN_PROMPT
-
+    # STT prompt 일시 제거 (진단 중) — Cohere 가 긴 prompt + 짧은 발화 조합에서
+    # 빈 결과 반환하는 케이스 의심. 어휘 편향 손실 대신 transcript 자체 우선.
     stt = OpenAISTTService(
         base_url=stt_base,
         api_key=stt_key,
         model=stt_model,
         language=Language.KO_KR,
-        prompt=_PUBLIC_STT_DOMAIN_PROMPT,
     )
 
     rag, caption_observer, barge_in = _build_rag_processor(owi_request_proxy, websocket=websocket)
