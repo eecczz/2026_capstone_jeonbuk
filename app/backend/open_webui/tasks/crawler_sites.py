@@ -612,9 +612,39 @@ SITES: list[dict[str, Any]] = [
         "code": "gunsan_city",
         "name": "www.gunsan.go.kr",
         "base_url": "http://www.gunsan.go.kr",
-        "priority_paths": ['/'],
+        # BFS time budget 60s 가 max_depth=4 펼치기엔 짧아 페이지네이션 못 닿음 →
+        # 각 게시판의 list?s_idx=1..5 를 직접 priority_paths 에 명시해 BFS 첫 layer 부터
+        # detail 글에 닿게 함. m{N} 자체는 list?s_idx=1 의 alias 라 BFS 가 dedup.
+        # 보도자료/고시공고/입찰 은 별도 sub-domain (eminwon, gyeyak) 이라 본 도메인 BFS 가 못 따라감.
+        "priority_paths": [
+            '/main',
+            # m140 시정소식 (648 페이지 중 최근 5)
+            '/main/m140', '/main/m140/list?s_idx=2', '/main/m140/list?s_idx=3',
+            '/main/m140/list?s_idx=4', '/main/m140/list?s_idx=5',
+            # m141 시험/채용
+            '/main/m141', '/main/m141/list?s_idx=2', '/main/m141/list?s_idx=3',
+            '/main/m141/list?s_idx=4', '/main/m141/list?s_idx=5',
+            # m149 읍면동소식
+            '/main/m149', '/main/m149/list?s_idx=2', '/main/m149/list?s_idx=3',
+            '/main/m149/list?s_idx=4', '/main/m149/list?s_idx=5',
+            # m143 행사안내
+            '/main/m143', '/main/m143/list?s_idx=2', '/main/m143/list?s_idx=3',
+            '/main/m143/list?s_idx=4', '/main/m143/list?s_idx=5',
+            # m144 교육안내
+            '/main/m144', '/main/m144/list?s_idx=2', '/main/m144/list?s_idx=3',
+            '/main/m144/list?s_idx=4', '/main/m144/list?s_idx=5',
+            # m146 군산시보
+            '/main/m146', '/main/m146/list?s_idx=2', '/main/m146/list?s_idx=3',
+            '/main/m146/list?s_idx=4', '/main/m146/list?s_idx=5',
+            # m154 시장에게 바란다
+            '/main/m154', '/main/m154/list?s_idx=2', '/main/m154/list?s_idx=3',
+            '/main/m154/list?s_idx=4', '/main/m154/list?s_idx=5',
+            # m156 나도한마디
+            '/main/m156', '/main/m156/list?s_idx=2', '/main/m156/list?s_idx=3',
+            '/main/m156/list?s_idx=4', '/main/m156/list?s_idx=5',
+        ],
         "max_pages": 800,
-        "max_depth": 2,
+        "max_depth": 4,
     },
     {
         "code": "iksan_city",
@@ -652,9 +682,23 @@ SITES: list[dict[str, Any]] = [
         "code": "wanju_county",
         "name": "www.wanju.go.kr",
         "base_url": "http://www.wanju.go.kr",
-        "priority_paths": ['/'],
+        # `/` 직접 요청은 빈 응답 → 완주군 SSR 엔트리 `/index.9is` + 본 도메인 안 게시판 entry.
+        # contentUid 해시는 게시판 list 페이지 직접 진입점.
+        # 페이지네이션: ./list.9is?page=N&contentUid=… (새소식만 103페이지)
+        # detail: ./view.9is?dataUid=…&contentUid=…
+        "priority_paths": [
+            '/index.9is',                                                           # 메인
+            '/index.9is?contentUid=ff8080818b024d8e018b274f3fdd2ae2',              # 새소식 (103페이지)
+            '/index.9is?contentUid=ff8080818b024d8e018b274f41dd2af8',              # 고시공고
+            '/index.9is?contentUid=ff8080818b024d8e018b274f41ad2af6',              # 시험/채용
+            '/index.9is?contentUid=ff8080818b024d8e018b274f40092ae4',              # 읍면소식
+            '/index.9is?contentUid=ff8080818b024d8e018b274f414d2af2',              # 주간행사
+            '/news/planweb/board/view.9is',                                        # 보도자료
+        ],
         "max_pages": 800,
-        "max_depth": 2,
+        # depth 4 = entry → list?page=N → view?dataUid=… → 내부. depth 2 에선
+        # 첫 페이지 글 link 까지만 → 페이지네이션 못 따라감.
+        "max_depth": 4,
     },
     {
         "code": "jinan_county",
