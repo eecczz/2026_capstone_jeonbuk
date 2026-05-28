@@ -194,11 +194,18 @@ async def voice_ws(websocket: WebSocket):
         ),
     )
 
+    # STT 도메인 어휘 편향 prompt — text 챗봇 (audio.py) 과 동일한 도청 어휘 set
+    # 을 voice 챗봇 STT 에도 전달한다. 이걸 안 주면 Cohere/Whisper 가 "도지사"
+    # 대신 "오지사", "김관영" 대신 "김반영" 같은 비슷 발음을 잘못 transcribe.
+    # 처음 PoC commit (5/11) 부터 누락되어 있던 것 — STT 품질 문제 원인.
+    from open_webui.routers.public_chatbot import _PUBLIC_STT_DOMAIN_PROMPT
+
     stt = OpenAISTTService(
         base_url=stt_base,
         api_key=stt_key,
         model=stt_model,
         language=Language.KO_KR,
+        prompt=_PUBLIC_STT_DOMAIN_PROMPT,
     )
 
     rag, caption_observer, barge_in = _build_rag_processor(owi_request_proxy, websocket=websocket)
