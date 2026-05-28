@@ -303,18 +303,28 @@ async def _fetch_html(url: str) -> Optional[str]:
 
 
 async def _load_page(url: str) -> list[Document]:
-    """Crawl4AI HTTP-only 어댑터로 페이지 fetch + markdown 변환.
+    """페이지 fetch — crawl4ai HTTP-only 1차, SPA 의심 시 playwright fallback.
 
-    이전 langchain PlaywrightURLLoader 는 표·그림 구조가 평탄화되고 boilerplate 가
-    그대로 남는 문제가 있었음. Crawl4AI 는 LXML scraping + markdown generator 로
-    표 / 인라인 이미지 / 메뉴 구조를 잘 보존한다.
+    1차: Crawl4AI HTTP-only — 정부 SSR 도메인 (전북도청 본청 / 시군구 대부분) 처리.
+         LXML scraping + markdown generator 로 표/링크/메뉴 구조 잘 보존.
+    2차: 1차가 빈 결과면 SPA (JS 로 콘텐츠 로딩) 가능성 → chromium fallback.
+         jbwelfare/jcid/kogl/lsns/archives.jb 등 SPA site 살리기 위한 분기.
 
-    정부 도메인이 SSR 정적 HTML 이라 브라우저 없이 HTTP-only 전략으로 충분.
-    self-signed cert 환경이라 verify_ssl=False.
+    self-signed cert 환경이라 verify_ssl=False (crawl4ai). playwright 도
+    ignore_https_errors=True.
     """
     from open_webui.tasks.crawler_engines.crawl4ai_engine import load_url
 
-    return await load_url(url, verify_ssl=False)
+    docs = await load_url(url, verify_ssl=False)
+    if docs:
+        return docs
+
+    # 1차 빈 결과 → SPA 의심. browser fallback.
+    log.info(f"crawl4ai empty → trying playwright fallback for {url}")
+    from open_webui.tasks.crawler_engines.playwright_engine import (
+        load_url_with_browser,
+    )
+    return await load_url_with_browser(url)
 
 
 def _load_page_sync(url: str) -> list[Document]:
