@@ -884,18 +884,25 @@ def _truncate_paragraph_text(para_elem, limit: int):
 
 def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
     """
-    대형 XML을 **구조 기반**으로 축소합니다.
+    XML 구조 정리 + (크기 초과 시) 축약.
 
     원칙: 패턴 보존. 반복 구조 압축. 텍스트 축약.
-    1단계: 표 셀 내 긴 텍스트 축약
-    2단계: 표 밖 본문 문단 — 빈 문단 제거, 텍스트 축약
+
+    항상 수행 (양식 크기 무관):
+    - 2a: 빈 top-level 문단 제거 — 1e clustering이 layout artifact를 structural
+      role로 잡지 않도록 사전 정리. 양식 크기 차이에 따라 구조 분석이 달라지는
+      것을 방지 (이전: 크기 ≤ max_chars 양식은 early return으로 step 2a 건너뜀
+      → 작은 양식의 1e가 빈 문단을 별도 role로 만들어 grammar 오염. 2026-05-28 fix.)
+
+    크기 초과 (max_chars) 시 추가 수행:
+    1단계: 표 셀 내 긴 텍스트 축약 (50자)
+    2b단계: 본문 문단 텍스트 축약 (60자)
     3단계: 1x1 표(텍스트 상자) 전역 압축 — 처음 2개만 전체 보존, 나머지 내부 최소화
     4단계: 연속 동일 구조 표 축약
-    5단계: 여전히 초과 시 셀 텍스트를 더 짧게
-    6단계: 중간 본문 문단 제거 (최후 수단)
 
     Returns:
-        {"xml": 축소된 XML (재번호), "removed_indices": 제거된 원본 _idx 목록}
+        {"xml": 정리된 XML (재번호), "removed_indices": 제거된 원본 _idx 목록,
+         "idx_map": {new_idx: old_idx}}
     """
     # 원본 _idx 전체 수집
     orig_root = etree.fromstring(light_xml.encode("utf-8"))
@@ -905,30 +912,18 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
         if idx_val is not None:
             all_original_indices.add(int(idx_val))
 
-    if len(light_xml) <= max_chars:
-        identity_map = {int(idx): int(idx) for idx in all_original_indices}
-        return {"xml": light_xml, "removed_indices": [], "idx_map": identity_map}
-
+    # 작업 root 파싱
     root = etree.fromstring(light_xml.encode("utf-8"))
     total_paras = len(root.findall(f".//{NS_HP}p"))
     total_tables = len(root.findall(f".//{NS_HP}tbl"))
 
-    # ── 1단계: 표 셀 내 긴 텍스트 축약 ──
-    for tbl in root.findall(f".//{NS_HP}tbl"):
-        for tc in tbl.iter(f"{NS_HP}tc"):
-            for t_elem in tc.iter(f"{NS_HP}t"):
-                if t_elem.text and len(t_elem.text) > 50:
-                    t_elem.text = t_elem.text[:50] + "…"
-
-    # ── 2단계: 표 밖 본문 문단 처리 ──
+    # ── 항상 실행: 2a 빈 top-level 문단 제거 ──
+    # 빈 문단을 structural role로 잡지 않도록 사전 cleanup.
+    # 양식 크기와 무관하게 일관 구조 보장.
     table_elements = _collect_table_elements(root)
-    top_level_paras = []
-    for p in root.findall(f".//{NS_HP}p"):
-        if p not in table_elements:
-            top_level_paras.append(p)
+    top_level_paras = [p for p in root.findall(f".//{NS_HP}p") if p not in table_elements]
 
     removed_count = 0
-    # 2a: 빈 문단 제거 (텍스트 없고 표도 없는 문단)
     for p in top_level_paras:
         if p.find(f".//{NS_HP}tbl") is not None:
             continue
@@ -939,75 +934,88 @@ def truncate_xml(light_xml: str, max_chars: int = 100000) -> dict:
                 parent.remove(p)
                 removed_count += 1
 
-    # 2b: 남은 본문 문단 텍스트 축약
-    table_elements = _collect_table_elements(root)
-    for p in root.findall(f".//{NS_HP}p"):
-        if p in table_elements:
-            continue
-        for t_elem in p.iter(f"{NS_HP}t"):
-            if t_elem.text and len(t_elem.text) > 60:
-                t_elem.text = t_elem.text[:60] + "…"
+    # cleanup 후 크기 측정
+    interim_xml = etree.tostring(root, encoding="unicode", pretty_print=True)
+    result = interim_xml
 
-    # ── 3단계: 1x1 표(텍스트 상자) 전역 압축 ──
-    # 처음 2개는 전체 XML 보존 (LLM 패턴 학습용), 나머지는 내부 최소화
-    all_1x1 = [
-        tbl for tbl in root.findall(f".//{NS_HP}tbl")
-        if tbl.get("rowCnt", "1") == "1" and tbl.get("colCnt", "1") == "1"
-    ]
-    # 텍스트 외 서식이 다르면 다른 패턴 → 패턴별 1개씩 보존
-    seen_styles = set()
-    compacted_1x1 = 0
-    for tbl in all_1x1:
-        # 표 자체 서식
-        border = tbl.get("borderFillIDRef", "0")
-        # 셀 내부 서식
-        cell_p = tbl.find(f".//{NS_HP}p")
-        cell_run = tbl.find(f".//{NS_HP}run")
-        cell_para_pr = cell_p.get("paraPrIDRef", "0") if cell_p is not None else "0"
-        cell_char_pr = cell_run.get("charPrIDRef", "0") if cell_run is not None else "0"
-        # 상위 문단/run 서식 (표를 감싸는 문단의 스타일)
-        parent_run = tbl.getparent()
-        parent_char_pr = parent_run.get("charPrIDRef", "0") if parent_run is not None and parent_run.tag == f"{NS_HP}run" else "0"
-        parent_p = parent_run.getparent() if parent_run is not None else None
-        parent_para_pr = parent_p.get("paraPrIDRef", "0") if parent_p is not None and parent_p.tag == f"{NS_HP}p" else "0"
-        style_key = f"{border}_{cell_para_pr}_{cell_char_pr}_{parent_para_pr}_{parent_char_pr}"
+    # ── 크기 초과 시: step 1, 2b, 3, 4 추가 수행 ──
+    if len(interim_xml) > max_chars:
+        # ── 1단계: 표 셀 내 긴 텍스트 축약 ──
+        for tbl in root.findall(f".//{NS_HP}tbl"):
+            for tc in tbl.iter(f"{NS_HP}tc"):
+                for t_elem in tc.iter(f"{NS_HP}t"):
+                    if t_elem.text and len(t_elem.text) > 50:
+                        t_elem.text = t_elem.text[:50] + "…"
 
-        if style_key not in seen_styles:
-            seen_styles.add(style_key)
-            continue  # 이 서식 패턴의 첫 번째 → 전체 XML 보존
+        # ── 2b단계: 본문 문단 텍스트 축약 ──
+        table_elements = _collect_table_elements(root)
+        for p in root.findall(f".//{NS_HP}p"):
+            if p in table_elements:
+                continue
+            for t_elem in p.iter(f"{NS_HP}t"):
+                if t_elem.text and len(t_elem.text) > 60:
+                    t_elem.text = t_elem.text[:60] + "…"
 
-        # 같은 서식의 후속 표 → 내부 최소화
-        cell_text = ""
-        for t_elem in tbl.iter(f"{NS_HP}t"):
-            if t_elem.text:
-                cell_text += t_elem.text
-        if len(cell_text) > 20:
-            cell_text = cell_text[:20] + "…"
+        # ── 3단계: 1x1 표(텍스트 상자) 전역 압축 ──
+        # 처음 2개는 전체 XML 보존 (LLM 패턴 학습용), 나머지는 내부 최소화
+        all_1x1 = [
+            tbl for tbl in root.findall(f".//{NS_HP}tbl")
+            if tbl.get("rowCnt", "1") == "1" and tbl.get("colCnt", "1") == "1"
+        ]
+        # 텍스트 외 서식이 다르면 다른 패턴 → 패턴별 1개씩 보존
+        seen_styles = set()
+        compacted_1x1 = 0
+        for tbl in all_1x1:
+            # 표 자체 서식
+            border = tbl.get("borderFillIDRef", "0")
+            # 셀 내부 서식
+            cell_p = tbl.find(f".//{NS_HP}p")
+            cell_run = tbl.find(f".//{NS_HP}run")
+            cell_para_pr = cell_p.get("paraPrIDRef", "0") if cell_p is not None else "0"
+            cell_char_pr = cell_run.get("charPrIDRef", "0") if cell_run is not None else "0"
+            # 상위 문단/run 서식 (표를 감싸는 문단의 스타일)
+            parent_run = tbl.getparent()
+            parent_char_pr = parent_run.get("charPrIDRef", "0") if parent_run is not None and parent_run.tag == f"{NS_HP}run" else "0"
+            parent_p = parent_run.getparent() if parent_run is not None else None
+            parent_para_pr = parent_p.get("paraPrIDRef", "0") if parent_p is not None and parent_p.tag == f"{NS_HP}p" else "0"
+            style_key = f"{border}_{cell_para_pr}_{cell_char_pr}_{parent_para_pr}_{parent_char_pr}"
 
-        for tc in tbl.iter(f"{NS_HP}tc"):
-            for tag in (f"{NS_HP}cellAddr", f"{NS_HP}cellSpan"):
-                for elem in tc.findall(tag):
-                    tc.remove(elem)
-            paras = tc.findall(f"{NS_HP}p")
-            for p_extra in paras[1:]:
-                tc.remove(p_extra)
-            if paras:
-                runs = paras[0].findall(f"{NS_HP}run")
-                for run_extra in runs[1:]:
-                    paras[0].remove(run_extra)
-                first_t = paras[0].find(f".//{NS_HP}t")
-                if first_t is not None:
-                    first_t.text = cell_text or ""
+            if style_key not in seen_styles:
+                seen_styles.add(style_key)
+                continue  # 이 서식 패턴의 첫 번째 → 전체 XML 보존
 
-        compacted_1x1 += 1
+            # 같은 서식의 후속 표 → 내부 최소화
+            cell_text = ""
+            for t_elem in tbl.iter(f"{NS_HP}t"):
+                if t_elem.text:
+                    cell_text += t_elem.text
+            if len(cell_text) > 20:
+                cell_text = cell_text[:20] + "…"
 
-    if compacted_1x1 > 0:
-        log.info(
-            f"1x1 표 {compacted_1x1}개 내부 최소화 "
-            f"(서식 패턴 {len(seen_styles)}종 각 1개씩 보존)"
-        )
+            for tc in tbl.iter(f"{NS_HP}tc"):
+                for tag in (f"{NS_HP}cellAddr", f"{NS_HP}cellSpan"):
+                    for elem in tc.findall(tag):
+                        tc.remove(elem)
+                paras = tc.findall(f"{NS_HP}p")
+                for p_extra in paras[1:]:
+                    tc.remove(p_extra)
+                if paras:
+                    runs = paras[0].findall(f"{NS_HP}run")
+                    for run_extra in runs[1:]:
+                        paras[0].remove(run_extra)
+                    first_t = paras[0].find(f".//{NS_HP}t")
+                    if first_t is not None:
+                        first_t.text = cell_text or ""
 
-    result = etree.tostring(root, encoding="unicode", pretty_print=True)
+            compacted_1x1 += 1
+
+        if compacted_1x1 > 0:
+            log.info(
+                f"1x1 표 {compacted_1x1}개 내부 최소화 "
+                f"(서식 패턴 {len(seen_styles)}종 각 1개씩 보존)"
+            )
+
+        result = etree.tostring(root, encoding="unicode", pretty_print=True)
 
     # ── 4단계: 연속 동일 구조 표 축약 ──
     # 동일 구조(rowCnt, colCnt)가 3개 이상 연속되면 대표 2개만 남기고 나머지 제거
@@ -7596,6 +7604,12 @@ CHARPR_VISUAL_SIG_INCLUDE_ATTRS = frozenset({
     "bold", "italic",
     "underline", "strikeout", "outline", "shadow",
     "ratio",
+    # 위/아래첨자 — 본문 charPr 와 동일 height/font 라도 supscript flag 다르면
+    # 시각 다름 (글자 작아지고 베이스라인 올라감). 누락 시 본문 charPr (예: 51) 와
+    # supscript variant (예: 1) 가 한 그룹으로 묶여서 group_key = MIN id (1) 로
+    # 치환됨 → 출력에 위첨자 charPr 박힘 → 전체 본문이 위첨자처럼 렌더링.
+    # 2026-05-28 fix.
+    "supscript", "subscript",
 })
 
 
@@ -7662,6 +7676,10 @@ def _build_charpr_visual_sig_map(
             rt = cp_elem.find(f"{NS_HH}ratio")
             rt_v = rt.get("hangul", "100") if rt is not None else "100"
             parts.append(("ratio_hangul", rt_v))
+        if "supscript" in include_attrs:
+            parts.append(("supscript", cp_elem.find(f"{NS_HH}supscript") is not None))
+        if "subscript" in include_attrs:
+            parts.append(("subscript", cp_elem.find(f"{NS_HH}subscript") is not None))
         return tuple(parts)
 
     sig_to_cps: dict = {}
@@ -12746,12 +12764,20 @@ def extract_per_chapter_pattern(
         return _empty_chapter_pattern("no_body_paragraphs")
 
     # --- exclusion tracking ---
+    # 빈 문단(separator)은 grammar 구성에서 제외 — layout artifact.
+    # 보통 truncate_xml step 2a에서 1a 입력 전에 제거되지만, 표 안 빈 paragraph
+    # 등 우회 경로로 살아남는 케이스 방어. (2026-05-28 추가)
     excluded = {"table": 0, "empty": 0}
     usable_indices = []
     for idx in body_indices:
         p = para_by_idx[idx]
         if p.get("is_tbl_box"):
             excluded["table"] += 1
+            continue
+        marker = (p.get("marker") or "").strip()
+        text = (p.get("text_preview") or "").strip()
+        if not marker and not text:
+            excluded["empty"] += 1
             continue
         usable_indices.append(idx)
 
