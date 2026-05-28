@@ -515,16 +515,12 @@ def build_rag_processor(request: Request, websocket=None):
                 log.info("[voice_ws] VAD: user started speaking")
                 # 사용자 발화 시작 → frontend orb 기본 (검은 원) 으로
                 await _send_caption("vad", "start")
-                # 사용자가 끼어들면 STT 결과 도착 전에 진행 중 generation 을 먼저 멈춘다.
-                # 짧은 발화 (LLM stream 이 1.5s 내 done) 케이스에서 cancel 못 잡는 문제 보강.
-                # 단 history pop 은 _restart_generation 에서 — 여기선 in-flight 만 정리.
-                if self._generation_task and not self._generation_task.done():
-                    self._generation_id += 1  # in-flight stream 의 stale 체크가 즉시 False
-                    log.info(
-                        "[voice_ws] barge-in detected, bumping generation_id=%s and stopping",
-                        self._generation_id,
-                    )
-                    await self._stop_current_generation()
+                # NOTE: 예전에는 여기서 in-flight generation 을 미리 cancel 했지만,
+                # 환경 소음이나 사용자의 숨소리/입소리에도 VAD started 가 false-positive
+                # 로 발동되어 debounce sleep 이 매번 끊기는 무한 루프 버그가 있었다.
+                # → cancel 은 _restart_generation (TranscriptionFrame 도착 시) 에서만.
+                # STT 결과 안 들어오면 (noise) 기존 generation 그대로 진행하여 답변 보장.
+                # 봇 발화 중 진짜 barge-in 은 _BargeInBroadcaster 가 별도 처리.
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 log.info("[voice_ws] VAD: user stopped speaking")
                 # 사용자 발화 끝 → frontend orb thinking + 단계 라벨
