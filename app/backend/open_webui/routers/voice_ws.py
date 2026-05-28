@@ -165,17 +165,31 @@ async def voice_ws(websocket: WebSocket):
         ),
     )
 
-    # P2 (카페 수준 임계값) 일시 롤백 — STT 빈 결과 원인 진단 중.
-    # 새 임계값 (confidence 0.55 / min_volume 0.025 / start_secs 0.15 / stop_secs 0.8)
-    # 가 사용자 발화의 audio 일부만 잡아 STT 가 인식 못 했을 가능성 진단.
-    # 옛 값으로 복원 후 STT 결과 정상이면 P2 가 원인 → 임계값 재조정.
+    # ── Silero VAD 파라미터 (카페 수준 소음 대응 — P2) ──
+    #
+    # 팀원 ems-interpret-ui 의 noisy preset (119 출동 현장) 을 참고해 "카페 수준"
+    # middle ground 로 조정. 핵심은 "소리 작은 거는 들려도 무시" — min_volume 을
+    # 올려 환경 소음 / 멀리서 들리는 대화 / 키보드 두드림 등 작은 RMS noise 가
+    # VAD 통과 못 하게 한다.
+    #
+    # 진단 히스토리: 초기 적용 시 STT transcript 가 빈 결과를 받는 패턴이 동시에
+    # 발생해 P2 가 원인일 가능성 의심했으나, 실제 원인은 _PUBLIC_STT_DOMAIN_PROMPT
+    # 였음 (Cohere transcribe 가 긴 prompt 받으면 빈 결과 반환). STT prompt 제거
+    # 후 P2 의 새 임계값은 안전하게 적용 가능.
+    #
+    # | 파라미터    | 옛값  | 새값  | 비고                                       |
+    # |-------------|-------|-------|--------------------------------------------|
+    # | confidence  | 0.4   | 0.55  | Silero 모델 확률. ↑ 시 misfire 억제        |
+    # | min_volume  | 0.02  | 0.025 | RMS 임계. ↑ 시 작은 소음 차단 (사용자 요청)│
+    # | start_secs  | 0.10  | 0.15  | 발화 시작 인정 시간. ↑ 시 짧은 spike 차단  │
+    # | stop_secs   | 0.5   | 0.8   | 무음 견디기. ↑ 시 한 문장 두 chunk 분할 ↓ │
     vad_processor = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
             params=VADParams(
-                confidence=0.4,
-                start_secs=0.10,
-                stop_secs=0.5,
-                min_volume=0.02,
+                confidence=0.55,
+                start_secs=0.15,
+                stop_secs=0.8,
+                min_volume=0.025,
             )
         ),
     )
