@@ -3522,6 +3522,11 @@ def _parse_emphasis_markup(text: str, valid_layer_ids: set | None = None) -> lis
     """
     import re as _re
 
+    # Pre-pass: LLM 오작성 — 단일 bracket variant `[em\d+]` / `[/em\d+]` strip.
+    # 정식 토큰은 더블 `[[em1]]` / `[[/em1]]` 뿐. 괄호 근처에서 LLM 이 [ 하나 빠뜨려
+    # `([/em1]` 형태로 출력하는 케이스 잡아냄.
+    text = _re.sub(r'(?<!\[)\[/?em\d+\](?!\])', '', text)
+
     # 1) tokenize
     token_pattern = _re.compile(r'\[\[(/?)(em\d+)\]\]')
     tokens: list = []  # ('text', str) | ('open', layer_id) | ('close', layer_id)
@@ -3563,10 +3568,12 @@ def _parse_emphasis_markup(text: str, valid_layer_ids: set | None = None) -> lis
                     stack.pop()
                 stack.append(layer_id)
 
-    # 3) 안전망: 혹시 모를 남은 markup glyph strip (모든 segment)
-    _orphan_marker = _re.compile(r'\[\[/?em\d+\]\]')
+    # 3) 안전망: 혹시 모를 남은 markup glyph strip (모든 segment) — 단일/더블 bracket 모두.
+    _orphan_marker = _re.compile(r'\[{1,2}/?em\d+\]{1,2}')
+    # 3b) em\d+ 본체 없이 [[ 또는 ]] 만 떠도는 잔존 — LLM 이 토큰 앞·뒷부분만 빠뜨린 경우.
+    _stray_brackets = _re.compile(r'\]{2,}|\[{2,}')
     segments = [
-        (layer, (_orphan_marker.sub('', t) if t else t))
+        (layer, (_stray_brackets.sub('', _orphan_marker.sub('', t)) if t else t))
         for layer, t in segments
     ]
 
