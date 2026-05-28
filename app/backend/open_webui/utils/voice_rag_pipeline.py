@@ -263,8 +263,17 @@ def build_rag_processor(request: Request, websocket=None):
 
             # 직전 턴 응답이 아직 음성 재생 시작 전 — barge-in 의도 있는 끼어들기로 보고
             # 직전 응답을 무효화하고 사용자 발화는 회수해 합친 응답으로 처리.
+            #
+            # 단 _post_reply_reset==True (이미 답변 끝나고 reset turn 진행 중) 면
+            # 이전 답변/질문은 종결된 것 — pop 하면 안 됨. 같은 reset turn 의 후속
+            # STT 가 이 분기로 빠져 이전 답변된 질문을 다시 컨텍스트에 합치는 버그
+            # 가 있었다.
             prev_user_for_merge: list[str] = []
-            if not self._active_user_segments and self._history:
+            if (
+                not self._active_user_segments
+                and self._history
+                and not self._post_reply_reset
+            ):
                 if self._history and self._history[-1].get("role") == "assistant":
                     dropped = self._history.pop()
                     log.info(
@@ -393,7 +402,10 @@ def build_rag_processor(request: Request, websocket=None):
                         }
                     ]
                     log.info("[voice_ws] injecting post-reply-reset guidance (prefix + system msg)")
-                    self._post_reply_reset = False
+                    # NOTE: 여기서 False 로 리셋하지 않는다. 같은 reset turn 안에 새 STT
+                    # 가 들어와 _restart_generation 이 다시 호출될 때도 history pop
+                    # 차단 + system msg 재 inject 가 일관되게 동작해야 한다. reset
+                    # 모드 종료는 새 답변 음성 도달 시점 (BotStartedSpeakingFrame).
 
                 stream_failed = False
                 delta_count = 0
@@ -508,6 +520,9 @@ def build_rag_processor(request: Request, websocket=None):
             if isinstance(frame, BotStartedSpeakingFrame):
                 if not self._reply_audio_started:
                     self._reply_audio_started = True
+                    # reset turn 의 새 답변 음성이 사용자에게 도달 → reset 모드 종료.
+                    # 그 후 새 STT 가 들어오면 다시 reset 분기 (이번엔 새로 시작).
+                    self._post_reply_reset = False
                     log.info("[voice_ws] reply audio started — merge window will reset on next turn")
 
             # 음성 흐름 추적용 로깅 (anomaly 발견 시 빠르게 봄)
