@@ -207,11 +207,15 @@ async def discover_urls(site_config: dict[str, Any]) -> list[str]:
         visited: set[str] = set()
 
         # BFS time budget — max_pages 가 사실상 무제한일 때 BFS 단계만 무한정
-        # 길어지는 것 방지. 60초 후 그동안 모은 URL 만 반환 → process 단계 시작.
+        # 길어지는 것 방지. 그동안 모은 URL 만 반환 → process 단계 시작.
         # 다음 round (supervisor 재시작 시 새 worker) 가 다시 BFS 하면서 추가 URL
         # 발견 → incremental 진행.
+        # 60s → 300s: max_depth 4 인 시군구가 페이지네이션 한 layer 더 펼치려면
+        # 60s 부족 (실측 gunsan/wanju 가 매 trigger 30건 누적에 그침). 300s 면
+        # max_pages=800 까지 채울 여유가 생김. 일별 02:00 incremental 시간은
+        # 1시간 → 약 5시간으로 늘지만 야간이라 허용.
         import time as _t
-        bfs_deadline = _t.time() + 60
+        bfs_deadline = _t.time() + 300
 
         while queue and len(collected) < max_pages:
             if _t.time() > bfs_deadline:
