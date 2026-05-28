@@ -19079,6 +19079,7 @@ SECTION_STYLE_PROMPT = """당신은 한국 행정문서 본문에 양식의 oute
    - `body_nonbase_char_ratio_max`
 
 4. 후보가 target 보다 많으면 A → B → C → D → E 순서로 **target 개만** 선택한다.
+   단, **§3-3 base 골격 보존 우선** — base 영역이 marker / 구두점만으로만 채워지면 후보 중 우선순위 낮은 것부터 base 로 남긴다. target 채우기보다 base 흐름 보존이 우선.
 
 5. target 개 선택 후 char_ratio_max 를 넘으면 **우선순위 낮은 후보 (E → D → C → B → A)** 부터 base 로 되돌린다.
 
@@ -19150,6 +19151,8 @@ body 전체 base 처리. body 안 non-base 박지 X.
 
 - body 안 non-base span 갯수를 세어 max 를 넘지 않는지 확인. 넘으면 우선순위 낮은 span 을 base 로 되돌린다.
 - 각 non-base span 이 조사·연결어로 시작/끝 안 하는지 확인.
+- 한 non-base span 이 문장 통째 또는 절 전체를 덮지 않는지 확인. 덮으면 짧은 명사구로 분리한다.
+- max>0 인 일반 본문형 role 에서 base 영역이 marker / 구두점만으로만 채워지지 않고, 본문 흐름 base 가 최소 1 개 있는지 확인.
 - 짝 안 맞는 `[[emN]]` / `[[/emN]]` 없는지 확인.
 
 반드시 위 JSON 만 출력. 다른 설명 포함 금지.
