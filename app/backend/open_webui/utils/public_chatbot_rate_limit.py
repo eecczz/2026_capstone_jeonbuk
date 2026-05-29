@@ -176,21 +176,24 @@ def check_rate_limit(req: Request | WebSocket) -> dict[str, Any]:
 
 
 def acquire_ws_slot(ws: WebSocket) -> bool:
-    """WebSocket 동시 연결 — IP 당 1개. Redis SETNX (분산 OK).
+    """WebSocket 동시 연결 — IP 당 1개. Redis SET (overwrite).
 
-    획득 못 하면 False — caller 가 close(1008).
+    같은 IP 의 이전 slot 은 강제 대체. 새로고침/탭 전환이 정상 흐름이므로
+    SETNX 로 거부하면 사용자가 30분간 차단됨 (이전 finally release 가
+    PipelineRunner cleanup 후라 race condition). 정책상 마지막 ws 가 우선.
+
+    Abuse 가드는 별도 — 분당 RATE_PER_MIN 이 이미 IP 당 동시 폭증을 막음.
     """
     redis = _get_redis()
     if redis is None:
         return True
     ip = get_client_ip(ws)
     try:
-        acquired = redis.set(f"pcb:ws:{ip}", "1", nx=True, ex=WS_TTL_SEC)
-        if not acquired:
-            _track_abuse(ip, "ws_slot_busy")
-        return bool(acquired)
+        # ex=WS_TTL_SEC 만으로 자동 timeout — 비정상 termination 시 30분 후 reset
+        redis.set(f"pcb:ws:{ip}", "1", ex=WS_TTL_SEC)
+        return True
     except Exception as e:
-        log.warning(f"WS slot 획득 오류 — 허용: {e}")
+        log.warning(f"WS slot 기록 오류 — fail-open: {e}")
         return True
 
 
