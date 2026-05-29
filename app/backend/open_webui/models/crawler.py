@@ -27,7 +27,13 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import BigInteger, Column, Integer, String, Text, func
 from sqlalchemy.orm import Session
 
-from open_webui.internal.db import Base, get_db, get_db_context
+# 챗봇 own DB (chatbot_db) — customui (OWI 본체) 와 분리. 본 컨테이너 이관 시
+# 우리 데이터만 dump 가능. ChatbotBase / get_chatbot_db_context 만 사용.
+from open_webui.internal.db_chatbot import (
+    ChatbotBase as Base,
+    get_chatbot_db as get_db,
+    get_chatbot_db_context as get_db_context,
+)
 
 log = logging.getLogger(__name__)
 
