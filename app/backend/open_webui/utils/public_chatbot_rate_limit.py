@@ -255,3 +255,227 @@ def enforce_text_input(text: str, ip: str | None = None) -> None:
             action = "text_too_long" if "너무 길어요" in v["reason"] else "non_korean"
             _track_abuse(ip, action)
         raise HTTPException(status_code=400, detail=v["reason"])
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Phase C — 관측 (Redis scan 으로 abuse counter 집계)
+# ────────────────────────────────────────────────────────────────────────
+
+
+_ACTION_LABELS = {
+    "rate_min": "분당 한도 초과",
+    "rate_day": "일당 한도 초과",
+    "global_cap": "전체 일일 cap 도달",
+    "ws_slot_busy": "WS 동시 연결 차단",
+    "text_too_long": "텍스트 길이 초과",
+    "non_korean": "한국어 외 입력",
+}
+
+
+def collect_abuse_stats(window_hours: int = 24) -> dict[str, Any]:
+    """Redis 의 pcb:abuse:* counter 들을 hour 단위로 집계.
+
+    Args:
+        window_hours: 최근 N 시간 (default 24)
+
+    Returns:
+        {
+          "window_hours": 24,
+          "total_blocked": N,
+          "by_action": {"rate_min": M1, ...},
+          "top_ips": [{"ip": "...", "count": K, "actions": {...}}],
+          "hourly": [{"hour": "YYYY-MM-DD HH", "count": N}],
+          "alarms_active": [...]
+        }
+    """
+    redis = _get_redis()
+    if redis is None:
+        return {"error": "redis unavailable"}
+
+    now = int(time.time())
+    bucket_now = now // 3600
+    bucket_min = bucket_now - window_hours + 1
+
+    by_action: dict[str, int] = {}
+    by_ip: dict[str, dict[str, Any]] = {}
+    hourly: dict[int, int] = {b: 0 for b in range(bucket_min, bucket_now + 1)}
+    total = 0
+    alarms: list[dict[str, Any]] = []
+
+    try:
+        # SCAN 으로 pcb:abuse:{ip}:{action}:{bucket} 키 전부 순회.
+        # 대량 차단 환경에서는 SCAN 이 안전 (KEYS 차단).
+        cursor = 0
+        while True:
+            cursor, keys = redis.scan(cursor=cursor, match="pcb:abuse:*", count=200)
+            for key in keys:
+                # 키 포맷: pcb:abuse:{ip}:{action}:{bucket}
+                # ip 안에 : 가 들어가지는 않으니 split(":", 4) 로 충분
+                parts = key.split(":")
+                if len(parts) != 5:
+                    continue
+                _, _, ip, action, bucket_str = parts
+                try:
+                    bucket = int(bucket_str)
+                except ValueError:
+                    continue
+                if bucket < bucket_min:
+                    continue
+                try:
+                    n = int(redis.get(key) or 0)
+                except Exception:
+                    continue
+                if n <= 0:
+                    continue
+
+                total += n
+                by_action[action] = by_action.get(action, 0) + n
+                if ip not in by_ip:
+                    by_ip[ip] = {"ip": ip, "count": 0, "actions": {}}
+                by_ip[ip]["count"] += n
+                by_ip[ip]["actions"][action] = by_ip[ip]["actions"].get(action, 0) + n
+                hourly[bucket] = hourly.get(bucket, 0) + n
+                # 임계값 도달 → alarm
+                if n >= ABUSE_ALARM_THRESHOLDS[0]:
+                    alarms.append({
+                        "ip": ip,
+                        "action": action,
+                        "action_label": _ACTION_LABELS.get(action, action),
+                        "count": n,
+                        "hour": time.strftime(
+                            "%Y-%m-%d %H:00",
+                            time.localtime(bucket * 3600),
+                        ),
+                    })
+            if cursor == 0:
+                break
+
+        # 상위 의심 IP (count 내림차순) 10개
+        top_ips = sorted(by_ip.values(), key=lambda x: x["count"], reverse=True)[:10]
+
+        # 시간대별 (오래된 것 → 최근)
+        hourly_list = [
+            {
+                "hour": time.strftime("%Y-%m-%d %H:00", time.localtime(b * 3600)),
+                "count": c,
+            }
+            for b, c in sorted(hourly.items())
+        ]
+
+        # alarm 정렬 (count 내림차순)
+        alarms_sorted = sorted(alarms, key=lambda x: x["count"], reverse=True)[:20]
+
+        return {
+            "window_hours": window_hours,
+            "total_blocked": total,
+            "by_action": {
+                k: {"count": v, "label": _ACTION_LABELS.get(k, k)}
+                for k, v in sorted(by_action.items(), key=lambda x: -x[1])
+            },
+            "top_ips": top_ips,
+            "hourly": hourly_list,
+            "alarms": alarms_sorted,
+            "thresholds": {
+                "alarm_at": ABUSE_ALARM_THRESHOLDS,
+                "rate_per_min": RATE_PER_MIN,
+                "rate_per_day": RATE_PER_DAY,
+                "daily_global_cap": DAILY_GLOBAL_CAP,
+            },
+        }
+    except Exception as e:
+        log.exception(f"collect_abuse_stats failed: {e}")
+        return {"error": str(e)}
+
+
+def collect_current_usage(window_hours: int = 1) -> dict[str, Any]:
+    """현재 활성 사용자 (분/일 카운터). 실시간 사용 패턴."""
+    redis = _get_redis()
+    if redis is None:
+        return {"error": "redis unavailable"}
+
+    now = int(time.time())
+    by_ip_min: dict[str, int] = {}
+    by_ip_day: dict[str, int] = {}
+    ws_active: list[str] = []
+
+    try:
+        # 분당 — 최근 5분
+        for offset in range(5):
+            bucket = (now // 60) - offset
+            cursor = 0
+            while True:
+                cursor, keys = redis.scan(
+                    cursor=cursor, match=f"pcb:rl:m:*:{bucket}", count=200
+                )
+                for key in keys:
+                    parts = key.split(":")
+                    if len(parts) != 5:
+                        continue
+                    ip = parts[3]
+                    try:
+                        n = int(redis.get(key) or 0)
+                    except Exception:
+                        continue
+                    by_ip_min[ip] = by_ip_min.get(ip, 0) + n
+                if cursor == 0:
+                    break
+
+        # 일당
+        day_bucket = now // 86400
+        cursor = 0
+        while True:
+            cursor, keys = redis.scan(
+                cursor=cursor, match=f"pcb:rl:d:*:{day_bucket}", count=200
+            )
+            for key in keys:
+                parts = key.split(":")
+                if len(parts) != 5:
+                    continue
+                ip = parts[3]
+                try:
+                    by_ip_day[ip] = int(redis.get(key) or 0)
+                except Exception:
+                    continue
+            if cursor == 0:
+                break
+
+        # 활성 WS slots
+        cursor = 0
+        while True:
+            cursor, keys = redis.scan(cursor=cursor, match="pcb:ws:*", count=200)
+            for key in keys:
+                parts = key.split(":")
+                if len(parts) == 3:
+                    ws_active.append(parts[2])
+            if cursor == 0:
+                break
+
+        # 전체 일일 호출
+        gd_key = f"pcb:rl:gd:{day_bucket}"
+        try:
+            total_today = int(redis.get(gd_key) or 0)
+        except Exception:
+            total_today = 0
+
+        top_min = sorted(
+            [{"ip": ip, "count": n} for ip, n in by_ip_min.items()],
+            key=lambda x: -x["count"],
+        )[:10]
+        top_day = sorted(
+            [{"ip": ip, "count": n} for ip, n in by_ip_day.items()],
+            key=lambda x: -x["count"],
+        )[:10]
+
+        return {
+            "total_calls_today": total_today,
+            "daily_global_cap": DAILY_GLOBAL_CAP,
+            "active_ws_count": len(ws_active),
+            "active_ws_ips": ws_active[:20],
+            "active_users_last5min": len(by_ip_min),
+            "active_users_today": len(by_ip_day),
+            "top_users_last5min": top_min,
+            "top_users_today": top_day,
+        }
+    except Exception as e:
+        log.exception(f"collect_current_usage failed: {e}")
+        return {"error": str(e)}

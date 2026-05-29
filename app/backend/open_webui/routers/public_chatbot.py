@@ -175,7 +175,7 @@ def _humanize_reply(text: str) -> str:
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from starlette.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 # (참고) 음성 응답 출력은 Phase 2a에서 브라우저 speechSynthesis API 활용,
 # Phase 2b에서 Qwen3-TTS 서버 사이드 합성으로 전환 예정.
@@ -188,7 +188,10 @@ from open_webui.utils.middleware import process_chat_payload
 from open_webui.utils.public_chatbot_rate_limit import (
     enforce_rate_limit_http as _enforce_rate_limit,
     enforce_text_input as _enforce_text_input,
+    collect_abuse_stats as _collect_abuse_stats,
+    collect_current_usage as _collect_current_usage,
 )
+from open_webui.utils.auth import get_admin_user
 from open_webui.utils.models import get_all_models
 from open_webui.utils.public_voice import understand_public_voice
 
@@ -1490,3 +1493,137 @@ async def public_voice_chat(
         "reason": voice_understanding.reason,
         "corrections": voice_understanding.corrections,
     })
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Phase C — 관측 endpoint (admin 만). abuse 통계 + 현재 사용 패턴.
+# ────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/admin/abuse-stats")
+async def admin_abuse_stats(
+    window_hours: int = 24,
+    user=Depends(get_admin_user),
+):
+    """오남용 통계 — Redis 의 abuse counter 집계.
+
+    Query:
+        window_hours: 최근 N 시간 (default 24, max 168=7일)
+
+    Returns:
+        총 차단 수, action 별, IP 별 top, 시간대별, alarm list.
+    """
+    window_hours = max(1, min(168, int(window_hours)))
+    return _collect_abuse_stats(window_hours=window_hours)
+
+
+@router.get("/admin/usage-now")
+async def admin_usage_now(user=Depends(get_admin_user)):
+    """현재 챗봇 사용 패턴 (실시간).
+
+    최근 5분 활성 사용자, 일일 누적 사용자, 활성 WS 연결, 상위 사용자.
+    """
+    return _collect_current_usage()
+
+
+@router.get("/admin/dashboard", response_class=HTMLResponse)
+async def admin_dashboard(user=Depends(get_admin_user)):
+    """간단한 abuse 모니터링 대시보드 (admin 만).
+
+    Chart.js 로 시간대별 차단, action 별 분포, 활성 사용자 표시.
+    """
+    return """<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>전북도청 챗봇 abuse 모니터링</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;margin:24px;background:#f5f5f7;color:#1d1d1f;max-width:1200px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:#6b7280;font-size:13px;margin-bottom:24px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+.card{background:#fff;border-radius:12px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card h2{font-size:15px;margin:0 0 12px;color:#374151}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:6px 8px;text-align:left;border-bottom:1px solid #e5e7eb}
+th{color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase}
+.warn{color:#dc2626;font-weight:600}
+.ok{color:#16a34a}
+.kpi{display:flex;gap:20px;margin-bottom:16px;flex-wrap:wrap}
+.kpi .item{background:#fff;border-radius:8px;padding:10px 14px;min-width:120px}
+.kpi .label{font-size:11px;color:#6b7280;text-transform:uppercase}
+.kpi .value{font-size:22px;font-weight:600}
+.refresh{float:right;background:#3b82f6;color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer}
+</style></head><body>
+<button class="refresh" onclick="loadAll()">새로고침</button>
+<h1>전북도청 챗봇 abuse 모니터링</h1>
+<p class="sub">최근 24시간 차단 통계 + 실시간 사용 패턴. <span id="updated"></span></p>
+
+<div class="kpi" id="kpi"></div>
+
+<div class="grid">
+  <div class="card"><h2>시간대별 차단 (최근 24시간)</h2><canvas id="chartHourly"></canvas></div>
+  <div class="card"><h2>차단 사유 분포</h2><canvas id="chartAction"></canvas></div>
+  <div class="card"><h2>상위 의심 IP (24시간)</h2><div id="topIps"></div></div>
+  <div class="card"><h2>최근 5분 활성 사용자 top</h2><div id="topNow"></div></div>
+  <div class="card"><h2>알람 (임계값 도달)</h2><div id="alarms"></div></div>
+</div>
+
+<script>
+let charts = {};
+async function loadAll() {
+  document.getElementById('updated').textContent = '갱신 중...';
+  const [stats, usage] = await Promise.all([
+    fetch('/api/v1/public-chatbot/admin/abuse-stats?window_hours=24').then(r => r.json()),
+    fetch('/api/v1/public-chatbot/admin/usage-now').then(r => r.json()),
+  ]);
+  document.getElementById('updated').textContent = '갱신: ' + new Date().toLocaleTimeString('ko-KR');
+
+  // KPI
+  document.getElementById('kpi').innerHTML = [
+    {label:'24시간 총 차단', value: stats.total_blocked || 0, warn: (stats.total_blocked||0) > 100},
+    {label:'활성 WS 연결', value: usage.active_ws_count || 0},
+    {label:'오늘 활성 사용자', value: usage.active_users_today || 0},
+    {label:'오늘 총 호출', value: usage.total_calls_today || 0},
+    {label:'전체 일일 cap', value: usage.daily_global_cap || 0},
+  ].map(k => `<div class="item"><div class="label">${k.label}</div><div class="value ${k.warn?'warn':''}">${k.value}</div></div>`).join('');
+
+  // hourly chart
+  if (charts.hourly) charts.hourly.destroy();
+  const hourly = stats.hourly || [];
+  charts.hourly = new Chart(document.getElementById('chartHourly'), {
+    type:'bar',
+    data:{labels: hourly.map(h => h.hour.slice(-5)), datasets:[{label:'차단 수', data: hourly.map(h => h.count), backgroundColor:'#3b82f6'}]},
+    options:{responsive:true,plugins:{legend:{display:false}}}
+  });
+
+  // action chart
+  if (charts.action) charts.action.destroy();
+  const ba = stats.by_action || {};
+  charts.action = new Chart(document.getElementById('chartAction'), {
+    type:'doughnut',
+    data:{labels: Object.values(ba).map(v=>v.label), datasets:[{data: Object.values(ba).map(v=>v.count), backgroundColor:['#3b82f6','#f59e0b','#ef4444','#10b981','#8b5cf6','#ec4899']}]},
+    options:{responsive:true}
+  });
+
+  // top IPs
+  document.getElementById('topIps').innerHTML = `<table><tr><th>IP</th><th>차단 수</th><th>유형</th></tr>${
+    (stats.top_ips||[]).map(ip => `<tr><td>${ip.ip}</td><td class="warn">${ip.count}</td><td>${Object.keys(ip.actions).join(', ')}</td></tr>`).join('')
+  }</table>`;
+
+  // top now
+  document.getElementById('topNow').innerHTML = `<table><tr><th>IP</th><th>최근 5분 호출</th></tr>${
+    (usage.top_users_last5min||[]).map(u => `<tr><td>${u.ip}</td><td>${u.count}</td></tr>`).join('')
+  }</table>`;
+
+  // alarms
+  const alarms = stats.alarms || [];
+  document.getElementById('alarms').innerHTML = alarms.length === 0
+    ? '<p class="ok">없음 ✓</p>'
+    : `<table><tr><th>IP</th><th>유형</th><th>건수</th><th>시각</th></tr>${
+        alarms.map(a => `<tr><td>${a.ip}</td><td>${a.action_label}</td><td class="warn">${a.count}</td><td>${a.hour}</td></tr>`).join('')
+      }</table>`;
+}
+loadAll();
+setInterval(loadAll, 30000);  // 30초마다 자동 갱신
+</script>
+</body></html>"""
