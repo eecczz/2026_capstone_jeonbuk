@@ -285,11 +285,14 @@ def build_rag_processor(request: Request, websocket=None):
                     "예: ['답례품 뭐있어?', '그중에 농산물', '아니 농산물만'] → '답례품 중 농산물'.\n"
                     "2) STT 노이즈 ('앞니', '담배', '발휘', '왼쪽만 천천히' 등 도청 주제 무관) 무시. "
                     "추임새 ('어', '음', '아', '잠깐', '아니', '그게', '네') 무시.\n"
-                    "3) 음 유사 변형 ('암례품', '담레품', '담배품', '덕래품') → 도청 어휘 통합 "
-                    "(답례품, 고향사랑기부제, 청년지원, 종합계획 등 우선).\n"
+                    "3) 음 유사 변형 — **확실히** 도청 어휘를 잘못 STT 한 것 같을 때만 보정. "
+                    "예: '담배품→답례품' (자음 모음 매우 유사). 확신 없으면 **원문 그대로 두고 도청 어휘로 임의 변환 금지**. "
+                    "원칙: 끼워맞춤보다 원문 보존.\n"
                     "4) 사용자가 한 발화에서 다른 발화로 의도를 정정·구체화했으면 "
                     "**가장 구체적이고 마지막에 정착된 의도** 를 우선 (예: '답례품' → '농산물 답례품').\n"
-                    "5) keyword 와 summary 는 의미 일관.\n\n"
+                    "5) keyword 와 summary 는 의미 일관.\n"
+                    "6) **단답·추임새만 들어왔으면 keyword 를 빈 문자열 `\"\"` 로 출력**. "
+                    "임의 키워드로 추측하지 말 것. 예: '네' / '음' → {\"keyword\":\"\", \"summary\":\"네\"}.\n\n"
                     "출력 형식 (정확히 이 JSON, 추가 설명 금지):\n"
                     '{"keyword": "고향사랑기부제 답례품 농산물", '
                     '"summary": "질문은 고향사랑기부제 답례품 중 농산물이 무엇인지입니다."}\n\n'
@@ -529,6 +532,33 @@ def build_rag_processor(request: Request, websocket=None):
                 # 가 아닌 정리된 문장 ("질문은 전북도청 종합계획이 무엇인지입니다").
                 _summary_src = user_text.strip().replace("\n", " ")
                 _summary_fallback = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
+
+                # 단답/추임새 가드 — mini-LLM cleaning prompt 가 "도청 어휘 우선"
+                # 원칙으로 짧은 발화를 임의 키워드 (예: "고향사랑기부제") 로 끼워맞춤.
+                # "네", "음", "어" 같은 단답은 cleaning + retrieval 둘 다 skip 하고
+                # history 컨텍스트만으로 LLM 이 답변하도록 raw user_text 그대로 전달.
+                _FILLER_SET = {
+                    "네", "넵", "예", "음", "어", "아", "오", "응", "그", "그게",
+                    "잠깐", "아니", "맞아요", "맞아", "글쎄", "흠", "그러게",
+                    "어머", "와", "헐", "뭐"
+                }
+                _stripped = user_text.strip().strip(".,!?~")
+                is_short_or_filler = (
+                    len(_stripped) <= 3
+                    or _stripped in _FILLER_SET
+                    or all(tok in _FILLER_SET for tok in _stripped.split())
+                )
+
+                if is_short_or_filler:
+                    log.info(f"[voice_ws] short/filler user_text={_stripped!r} — skip cleaning + retrieval")
+                    cleaned_keyword = None
+                    await _send_caption("phase_overlay", f"질문은 “{_summary_fallback}”")
+                    await _send_caption("phase_label", "응답 준비 중")
+                    # retrieval skip — public_chatbot 의 retrieval_query 를 빈 문자열로
+                    # 보내면 RAG 우회. LLM 이 history 컨텍스트만으로 답변.
+                    await self._generate_reply(generation_id, user_text, retrieval_query="")
+                    return
+
                 # mini-LLM 한 호출로 (keyword, summary) 두 결과 — 의미 일관 보장.
                 #   keyword  → RAG retrieval query (정확도 ↑)
                 #   summary  → phase_overlay 화면 자막 (자연 한국어, cleaning 효과 반영)

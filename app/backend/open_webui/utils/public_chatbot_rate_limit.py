@@ -38,6 +38,9 @@ RATE_PER_MIN = int(os.environ.get("PUBLIC_CHATBOT_RATE_PER_MIN", "10"))
 RATE_PER_DAY = int(os.environ.get("PUBLIC_CHATBOT_RATE_PER_DAY", "100"))
 DAILY_GLOBAL_CAP = int(os.environ.get("PUBLIC_CHATBOT_DAILY_CAP", "5000"))
 WS_TTL_SEC = int(os.environ.get("PUBLIC_CHATBOT_WS_TTL_SEC", "1800"))
+
+# 전체 OFF 스위치 — 테스트 중 디버그 / 데모. ENV="1" 또는 "true" 면 모든 가드 패스.
+ABUSE_DISABLED = os.environ.get("PUBLIC_CHATBOT_ABUSE_DISABLED", "0").lower() in ("1", "true", "yes")
 MAX_TEXT_LEN = int(os.environ.get("PUBLIC_CHATBOT_MAX_TEXT_LEN", "500"))
 MIN_KR_RATIO = float(os.environ.get("PUBLIC_CHATBOT_MIN_KR_RATIO", "0.3"))
 
@@ -116,6 +119,8 @@ def check_rate_limit(req: Request | WebSocket) -> dict[str, Any]:
 
     Redis 없으면 fail-open ({"allowed": True}).
     """
+    if ABUSE_DISABLED:
+        return {"allowed": True, "ip": get_client_ip(req), "disabled": True}
     redis = _get_redis()
     if redis is None:
         return {"allowed": True, "ip": get_client_ip(req)}
@@ -184,6 +189,8 @@ def acquire_ws_slot(ws: WebSocket) -> bool:
 
     Abuse 가드는 별도 — 분당 RATE_PER_MIN 이 이미 IP 당 동시 폭증을 막음.
     """
+    if ABUSE_DISABLED:
+        return True
     redis = _get_redis()
     if redis is None:
         return True
