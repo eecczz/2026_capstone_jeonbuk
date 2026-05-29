@@ -123,20 +123,24 @@ async def voice_ws(websocket: WebSocket):
 
     cfg = app.state.config
 
+    # NOTE: AppConfig 의 attribute name 은 OWI main.py 에서 'STT_*'/'TTS_*' prefix 로
+    # attach 됨 (env_name 'AUDIO_STT_*'/'AUDIO_TTS_*' 와 별개). 옛 코드가 env_name 으로
+    # access 해서 KeyError → fallback ('qwen3-tts'/'Sohee') 만 사용해 옴 — DB 변경/
+    # admin UI save 가 전혀 반영 안 되는 버그. 올바른 attribute name 으로 fix.
     stt_base = (
-        getattr(cfg, "AUDIO_STT_OPENAI_API_BASE_URL", "")
+        getattr(cfg, "STT_OPENAI_API_BASE_URL", "")
         or "http://192.168.30.2:30210/v1"
     )
-    stt_key = getattr(cfg, "AUDIO_STT_OPENAI_API_KEY", "") or "dummy"
-    stt_model = getattr(cfg, "AUDIO_STT_MODEL", "") or "cohere-transcribe"
+    stt_key = getattr(cfg, "STT_OPENAI_API_KEY", "") or "dummy"
+    stt_model = getattr(cfg, "STT_MODEL", "") or "cohere-transcribe"
 
     tts_base = (
-        getattr(cfg, "AUDIO_TTS_OPENAI_API_BASE_URL", "")
+        getattr(cfg, "TTS_OPENAI_API_BASE_URL", "")
         or "http://192.168.30.2:30201/v1"
     )
-    tts_key = getattr(cfg, "AUDIO_TTS_OPENAI_API_KEY", "") or "dummy"
-    tts_model = getattr(cfg, "AUDIO_TTS_MODEL", "") or "qwen3-tts"
-    tts_voice = getattr(cfg, "AUDIO_TTS_VOICE", "") or "Sohee"
+    tts_key = getattr(cfg, "TTS_OPENAI_API_KEY", "") or "dummy"
+    tts_model = getattr(cfg, "TTS_MODEL", "") or "qwen3-tts"
+    tts_voice = getattr(cfg, "TTS_VOICE", "") or "Sohee"
 
     log.info(
         f"voice_ws connected | STT {stt_base}/{stt_model} | TTS {tts_base}/{tts_model}/{tts_voice}"

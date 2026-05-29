@@ -272,19 +272,28 @@ def build_rag_processor(request: Request, websocket=None):
 
                 user_obj = _get_pu(self._owi_request)
                 prompt = (
-                    "다음은 사용자가 음성으로 한 발화입니다 (STT 오인식 섞임). "
+                    "다음은 사용자가 음성으로 말한 **여러 발화가 누적되어 한 문자열로 합쳐진** "
+                    "텍스트입니다. 한 사람이 같은 의도를 여러 번 다른 식으로 시도한 흐름이 "
+                    "이어붙어 있고, STT 오인식·추임새·반복도 섞여 있어요.\n\n"
                     "두 결과를 JSON 한 줄로 출력해 주세요:\n"
-                    " - keyword: RAG 검색용 키워드. 30자 이내. 명사구. 조사·문장부호 빼고.\n"
-                    " - summary: 화면 자막용 자연 한국어. '질문은 …입니다.' 종결. 50자 이내.\n\n"
+                    " - keyword: 모든 발화의 의도를 통합한 RAG 검색용 키워드. 30자 이내. "
+                    "명사구. 조사·문장부호 빼고.\n"
+                    " - summary: 모든 발화의 의도를 합쳐 화면에 보여줄 자연 한국어 한 문장. "
+                    "'질문은 …입니다.' 종결. 60자 이내.\n\n"
                     "원칙:\n"
-                    "1) STT 노이즈 ('앞니', '담배', '발휘', '왼쪽만 천천히' 등 도청 주제 무관) 무시.\n"
-                    "2) 음 유사 변형 ('암례품', '담레품', '담배품', '덕래품') → 도청 어휘 통합 "
+                    "1) **마지막 발화만 보지 말 것** — 누적된 모든 시도를 모아 한 의도로 통합. "
+                    "예: ['답례품 뭐있어?', '그중에 농산물', '아니 농산물만'] → '답례품 중 농산물'.\n"
+                    "2) STT 노이즈 ('앞니', '담배', '발휘', '왼쪽만 천천히' 등 도청 주제 무관) 무시. "
+                    "추임새 ('어', '음', '아', '잠깐', '아니', '그게', '네') 무시.\n"
+                    "3) 음 유사 변형 ('암례품', '담레품', '담배품', '덕래품') → 도청 어휘 통합 "
                     "(답례품, 고향사랑기부제, 청년지원, 종합계획 등 우선).\n"
-                    "3) keyword 와 summary 는 의미 일관.\n\n"
+                    "4) 사용자가 한 발화에서 다른 발화로 의도를 정정·구체화했으면 "
+                    "**가장 구체적이고 마지막에 정착된 의도** 를 우선 (예: '답례품' → '농산물 답례품').\n"
+                    "5) keyword 와 summary 는 의미 일관.\n\n"
                     "출력 형식 (정확히 이 JSON, 추가 설명 금지):\n"
                     '{"keyword": "고향사랑기부제 답례품 농산물", '
                     '"summary": "질문은 고향사랑기부제 답례품 중 농산물이 무엇인지입니다."}\n\n'
-                    f"발화: {user_text}"
+                    f"누적 발화 (공백 구분): {user_text}"
                 )
                 form_data = {
                     "model": model_id,
@@ -560,17 +569,10 @@ def build_rag_processor(request: Request, websocket=None):
             full_reply = ""
             sentence_count = 0
             _stream_t0 = None
-            # sentence 분리 사실상 끔. 진단 (/var/log/owi.log):
-            #   - Qwen3-TTS endpoint 가 batch (chunked streaming 미지원). sentence
-            #     합성이 끝나야 audio 720KB 한 번에 도착.
-            #   - PipeCat TTSService 가 sentence 합성을 sequential 처리 (#1 끝나야 #2 시작).
-            #   - sentence #1 재생 시간(~8s) < #2 합성 시간(~13s) → 항상 무음 갭.
-            # 답변 길이를 줄여도 sentence 당 13s 합성은 그대로라 본질 fix 안 됨.
-            # → LLM stream 동안 절대 split push 안 하고, stream done 시점에 답변
-            #   전체를 단일 TTS 호출로 보냄. 무음 0 보장 (TTS 합성 횟수 = 1, 톤도 일관).
-            #   첫 음성 latency 는 LLM done + 단일 합성 (~20~30s) 로 증가하지만,
-            #   사용자가 더 싫어하는 "재생 중 무음 갭" 을 차단.
-            MIN_SENT_LEN = 10**9
+            # 60자 이상에서 sentence 분리 push. OpenAI gpt-4o-mini-tts 는 chunked
+            # streaming 지원 + 빠른 합성이라 sentence by sentence 가 첫 음성 latency
+            # 작아 더 유리. (단일 합성은 Qwen3 batch 한계 가정의 fix 였음 — 롤백)
+            MIN_SENT_LEN = 60
 
             try:
                 from open_webui.routers.public_chatbot import (
