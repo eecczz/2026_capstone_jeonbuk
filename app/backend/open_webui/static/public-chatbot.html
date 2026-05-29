@@ -63,6 +63,77 @@
     height: 220px;
     user-select: none;
   }
+
+  /* ─────────── Visual toggle (Orb ↔ Character) ─────────── */
+  .visual-toggle {
+    display: inline-flex;
+    gap: 4px;
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 10px;
+    padding: 3px;
+    margin-bottom: 14px;
+  }
+  .visual-toggle .vt-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #6b7280;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .visual-toggle .vt-btn:hover { color: #374151; }
+  .visual-toggle .vt-btn.vt-active {
+    background: #fff;
+    color: #0b3d6e;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    font-weight: 600;
+  }
+  body.mode-dark .visual-toggle {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+  body.mode-dark .visual-toggle .vt-btn.vt-active {
+    background: #1f2937;
+    color: #93c5fd;
+  }
+
+  /* ─────────── VRM wrap (캐릭터 모드) ─────────── */
+  .vrm-wrap {
+    position: relative;
+    width: 280px;
+    height: 360px;
+    user-select: none;
+    border-radius: 12px;
+    overflow: hidden;
+    background: linear-gradient(180deg, #f5f7fa 0%, #e8edf5 100%);
+  }
+  body.mode-dark .vrm-wrap {
+    background: linear-gradient(180deg, #1f2937 0%, #111827 100%);
+  }
+  .vrm-wrap canvas { display: block; width: 100%; height: 100%; }
+  .vrm-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #6b7280;
+    text-align: center;
+    pointer-events: none;
+  }
+  body.mode-dark .vrm-placeholder { color: #9ca3af; }
+  .vrm-wrap.vrm-loaded .vrm-placeholder { display: none; }
+
+  /* mode 토글 시 표시 분기 — 기본은 orb. body.visual-character 면 캐릭터 */
+  body.visual-character .orb-wrap { display: none; }
+  body:not(.visual-character) .vrm-wrap { display: none !important; }
   .orb {
     position: relative;
     width: 100%;
@@ -344,6 +415,18 @@
   </header>
 
   <div class="voice-stage">
+    <!-- 표시 모드 토글 — Orb ↔ Character. localStorage(jb_voice_visual) 에 저장. -->
+    <div class="visual-toggle" id="visualToggle" aria-label="시각 모드 전환">
+      <button type="button" class="vt-btn vt-active" data-mode="orb" title="오브 모드">
+        <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="12" r="8"/></svg>
+        오브
+      </button>
+      <button type="button" class="vt-btn" data-mode="character" title="캐릭터 모드">
+        <svg viewBox="0 0 24 24" width="14" height="14"><circle cx="12" cy="8" r="3.5"/><path d="M5 21c0-4 3.5-7 7-7s7 3 7 7"/></svg>
+        캐릭터
+      </button>
+    </div>
+
     <div class="orb-wrap" id="orb" role="button" aria-label="음성 입력 시작/중지" tabindex="0">
       <div class="orb">
         <!-- thinking 상태: yin-yang 회전 -->
@@ -357,6 +440,19 @@
         </div>
       </div>
     </div>
+
+    <!-- 캐릭터 모드 — Three.js + three-vrm scene. 모델 파일 /static/character.vrm 필요. -->
+    <div class="vrm-wrap" id="vrmWrap" role="button" aria-label="음성 입력 시작/중지" tabindex="0" style="display:none">
+      <canvas id="vrmCanvas" width="280" height="360"></canvas>
+      <div class="vrm-placeholder" id="vrmPlaceholder">
+        <svg viewBox="0 0 24 24" width="48" height="48" style="opacity:.35">
+          <circle cx="12" cy="8" r="3.5"/><path d="M5 21c0-4 3.5-7 7-7s7 3 7 7"/>
+        </svg>
+        <div style="margin-top:12px;font-size:13px;opacity:.6">캐릭터 모델 로드 중…</div>
+        <div style="margin-top:4px;font-size:11px;opacity:.4">/static/character.vrm</div>
+      </div>
+    </div>
+
     <div class="voice-state" id="voiceState"></div>
     <div class="voice-hint" id="voiceHint"></div>
     <div class="voice-caption" id="voiceCaption">
@@ -689,6 +785,47 @@
     if (saved) history = JSON.parse(saved);
   } catch (e) { history = []; }
 
+  // ─────────── Visual mode toggle (Orb ↔ Character) ───────────
+  // localStorage 에 저장. 기본 = orb. 캐릭터 모드는 VRM scene 로딩 (Phase B+).
+  const VISUAL_KEY = "jb_voice_visual";
+  let visualMode = localStorage.getItem(VISUAL_KEY) || "orb"; // "orb" | "character"
+  const vrmWrap = document.getElementById("vrmWrap");
+
+  function applyVisualMode() {
+    document.body.classList.toggle("visual-character", visualMode === "character");
+    const btns = document.querySelectorAll(".visual-toggle .vt-btn");
+    btns.forEach(b => b.classList.toggle("vt-active", b.dataset.mode === visualMode));
+    if (visualMode === "character" && typeof window.vrmLoadIfNeeded === "function") {
+      window.vrmLoadIfNeeded();
+    }
+  }
+  document.querySelectorAll(".visual-toggle .vt-btn").forEach(b => {
+    b.addEventListener("click", () => {
+      visualMode = b.dataset.mode;
+      localStorage.setItem(VISUAL_KEY, visualMode);
+      applyVisualMode();
+    });
+  });
+  applyVisualMode();
+
+  // VRM Adapter — Phase B 에서 진짜 Three.js scene 으로 교체될 hook.
+  // 지금은 stub: setMode 호출 시 placeholder UI 만 표시. 모델 파일 준비되면
+  // 이 함수들 안에서 vrm.expressionManager / lookAt / blendshape 호출.
+  window.vrmAdapter = {
+    onMode(next /* listening|thinking|speaking|idle */) {
+      // TODO Phase B: vrm.expressionManager.setValue(...) 등
+    },
+    onPhaseLabel(text) {
+      // TODO Phase B: 자막 도착 시 캐릭터 끄덕 등
+    },
+    onBotStartSpeaking() { /* TODO Phase B: lip sync 시작 */ },
+    onBotStopSpeaking() { /* TODO Phase B: lip sync 종료 */ },
+  };
+  window.vrmLoadIfNeeded = function() {
+    // Phase B 에서 Three.js + three-vrm 로 character.vrm 로드.
+    // 지금은 placeholder 유지.
+  };
+
   let mode = "idle"; // idle | listening | thinking | speaking
   function setMode(next, label, hint) {
     mode = next;
@@ -697,6 +834,8 @@
     orbEl.classList.toggle("speaking",  next === "speaking");
     if (label !== undefined) stateEl.textContent = label;
     if (hint  !== undefined) hintEl.textContent  = hint;
+    // 캐릭터 모드면 VRM adapter 에도 알림
+    if (window.vrmAdapter) window.vrmAdapter.onMode(next);
   }
   setMode("idle", "탭하여 말하기", "한국어로 자연스럽게 질문해 주세요");
 
@@ -1166,6 +1305,13 @@
   orbEl.addEventListener("keydown", e => {
     if (e.key === " " || e.key === "Enter") { e.preventDefault(); onOrbTap(); }
   });
+  // 캐릭터 모드도 클릭으로 음성 입력 시작/중지 (orb 와 동일 동작)
+  if (vrmWrap) {
+    vrmWrap.addEventListener("click", onOrbTap);
+    vrmWrap.addEventListener("keydown", e => {
+      if (e.key === " " || e.key === "Enter") { e.preventDefault(); onOrbTap(); }
+    });
+  }
 
   sendBtn.addEventListener("click", () => sendMessage(inputEl.value));
   inputEl.addEventListener("keydown", e => {
