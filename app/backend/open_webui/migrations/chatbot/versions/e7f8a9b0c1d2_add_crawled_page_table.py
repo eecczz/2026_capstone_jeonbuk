@@ -1,12 +1,13 @@
-"""Add crawled_page table for Jeonbuk homepage crawler
+"""Add crawled_page table for Jeonbuk homepage crawler — chatbot_db root revision
 
 Revision ID: e7f8a9b0c1d2
-Revises: b2c3d4e5f6a7
+Revises: None  (chatbot_db root — OWI customui 의 alembic head 와 독립)
 Create Date: 2026-04-12 12:00:00.000000
 
 도청 + 직속기관 홈페이지를 일별 배치로 크롤링하며 각 페이지의 상태를 추적한다.
-ChromaDB 벡터 컬렉션과 병행 사용하며, 이 테이블은 증분 크롤링 판단
-(ETag / Last-Modified / content_hash 비교) 및 관리자 통계용으로 쓰인다.
+별도 chatbot_db 에 운영 (Phase 1a~1c 분리). customui (OWI 본체) 의 alembic
+head 와 독립 chain — down_revision 을 None 으로 변경해 chatbot 의 root revision
+으로 한다. 향후 chatbot 측 새 마이그레이션은 이 위에 chain.
 """
 
 from typing import Sequence, Union
@@ -17,7 +18,7 @@ import sqlalchemy as sa
 from open_webui.migrations.util import get_existing_tables
 
 revision: str = "e7f8a9b0c1d2"
-down_revision: Union[str, None] = "b2c3d4e5f6a7"
+down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
