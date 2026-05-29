@@ -236,12 +236,20 @@ def build_rag_processor(request: Request, websocket=None):
                 self._stt_timeout_task.cancel()
             self._stt_timeout_task = None
 
-        async def _compose_summary_overlay(self, user_text: str) -> str | None:
-            """mini-LLM 호출로 사용자 발화를 '질문은 …입니다' 한 문장 정리.
+        async def _compose_summary_overlay(self, user_text: str) -> tuple[str, str] | None:
+            """mini-LLM 한 호출로 두 결과 동시 추출 — STT noise 제거된 의미 일관.
 
-            예: "그 뭐야 전북도청 종합계획?" → "질문은 전북도청 종합계획이 무엇인지입니다."
+            반환: (keyword, overlay_sentence) 튜플
+              1) keyword — RAG retrieval query 용. 30자 이내 명사구. 조사/문장부호 X
+                 (BGE M3 embedding 의 정확도 ↑)
+              2) overlay_sentence — phase_overlay 화면 자막용 자연 한국어
+                 "질문은 …입니다." 형식. (1) 과 의미 일관.
 
-            timeout 1.5s. 실패 시 None — caller 가 원문 자르기 fallback 사용.
+            예: "그 뭐야 답례품 그 중에서 농산물인 게 뭐 있어?"
+                → ("고향사랑기부제 답례품 농산물",
+                   "질문은 고향사랑기부제 답례품 중 농산물이 무엇인지입니다.")
+
+            timeout 1.5s. 실패 시 None — caller 가 원문 자르기 fallback.
             """
             try:
                 from open_webui.utils.chat import (
@@ -252,18 +260,30 @@ def build_rag_processor(request: Request, websocket=None):
                 )
 
                 cfg = self._owi_request.app.state.config
-                model_id = getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot")
+                # cleaning 은 짧은 JSON 출력만 필요하므로 fallback (mini 모델) 우선.
+                # public_chatbot_model 은 RAG 답변용 큰 모델이라 응답 시간 4~11s 걸려
+                # timeout 1.5~5s 안에 못 들어옴 → cleaning fail → noise query → 못 찾음.
                 fallback_model = getattr(cfg, "PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini")
+                main_model = getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot")
                 models = getattr(self._owi_request.app.state, "MODELS", None) or {}
-                if model_id not in models:
-                    model_id = fallback_model if fallback_model in models else model_id
+                model_id = fallback_model if fallback_model in models else (
+                    main_model if main_model in models else fallback_model
+                )
 
                 user_obj = _get_pu(self._owi_request)
                 prompt = (
-                    "다음은 사용자가 음성으로 한 발화입니다. 이 발화의 핵심 의도를 "
-                    "'질문은 …입니다.' 형식의 매끄러운 한 문장으로 정리해 주세요. "
-                    "원문을 그대로 인용하지 말고 의도만 다듬어. 50자 이내. "
-                    "응답은 정리된 한 문장만 — 추가 설명/질문 금지.\n\n"
+                    "다음은 사용자가 음성으로 한 발화입니다 (STT 오인식 섞임). "
+                    "두 결과를 JSON 한 줄로 출력해 주세요:\n"
+                    " - keyword: RAG 검색용 키워드. 30자 이내. 명사구. 조사·문장부호 빼고.\n"
+                    " - summary: 화면 자막용 자연 한국어. '질문은 …입니다.' 종결. 50자 이내.\n\n"
+                    "원칙:\n"
+                    "1) STT 노이즈 ('앞니', '담배', '발휘', '왼쪽만 천천히' 등 도청 주제 무관) 무시.\n"
+                    "2) 음 유사 변형 ('암례품', '담레품', '담배품', '덕래품') → 도청 어휘 통합 "
+                    "(답례품, 고향사랑기부제, 청년지원, 종합계획 등 우선).\n"
+                    "3) keyword 와 summary 는 의미 일관.\n\n"
+                    "출력 형식 (정확히 이 JSON, 추가 설명 금지):\n"
+                    '{"keyword": "고향사랑기부제 답례품 농산물", '
+                    '"summary": "질문은 고향사랑기부제 답례품 중 농산물이 무엇인지입니다."}\n\n'
                     f"발화: {user_text}"
                 )
                 form_data = {
@@ -291,21 +311,36 @@ def build_rag_processor(request: Request, websocket=None):
                 except Exception:
                     pass
 
+                # timeout 5s — mini 모델이 평소 1~2s, 가끔 3~4s 걸려서 1.5s 너무 빡빡.
+                # cleaning fail 시 retrieval 이 raw STT noise 로 검색해 정답 chunk miss.
                 resp = await asyncio.wait_for(
                     _gen_chat(self._owi_request, form_data, user=user_obj, bypass_filter=True),
-                    timeout=1.5,
+                    timeout=5.0,
                 )
                 if isinstance(resp, dict):
                     choices = resp.get("choices") or []
                     if choices:
                         text = (choices[0].get("message") or {}).get("content", "").strip()
-                        text = text.split("\n")[0].strip().strip("\"'`“”")
-                        for prefix in ("요약:", "정리:", "응답:", "한 문장:"):
-                            if text.startswith(prefix):
-                                text = text[len(prefix):].strip()
-                        if text and 5 <= len(text) <= 80:
-                            log.info(f"[voice_ws] summary overlay: {text!r}")
-                            return text
+                        # mini-LLM 이 ```json ... ``` 로 감싸면 풀기
+                        text = text.strip("`").strip()
+                        if text.startswith("json"):
+                            text = text[4:].strip()
+                        # 첫 { 부터 마지막 } 까지만 (앞뒤 설명 잘라냄)
+                        import json as _json
+                        try:
+                            i = text.index("{"); j = text.rindex("}")
+                            data = _json.loads(text[i:j+1])
+                            keyword = (data.get("keyword") or "").strip().strip("\"'`“”")
+                            summary = (data.get("summary") or "").strip().strip("\"'`“”")
+                            if keyword and summary and 3 <= len(keyword) <= 40 and 5 <= len(summary) <= 80:
+                                log.info(f"[voice_ws] cleaned keyword={keyword!r} summary={summary!r}")
+                                return (keyword, summary)
+                        except Exception as pe:
+                            log.info(f"[voice_ws] summary JSON parse fail: {pe} raw={text[:120]!r}")
+                            # JSON 실패 시 한 줄 text 를 keyword 로 + wrap 으로 summary
+                            line = text.split("\n")[0].strip().strip("\"'`“”.,!?")
+                            if line and 3 <= len(line) <= 40:
+                                return (line, f"질문은 {line}에 대한 것입니다.")
                 return None
             except asyncio.TimeoutError:
                 log.info("[voice_ws] summary overlay timed out (>1.5s)")
@@ -485,13 +520,18 @@ def build_rag_processor(request: Request, websocket=None):
                 # 가 아닌 정리된 문장 ("질문은 전북도청 종합계획이 무엇인지입니다").
                 _summary_src = user_text.strip().replace("\n", " ")
                 _summary_fallback = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
-                summary_text = await self._compose_summary_overlay(user_text)
-                if summary_text:
-                    await _send_caption("phase_overlay", summary_text)
+                # mini-LLM 한 호출로 (keyword, summary) 두 결과 — 의미 일관 보장.
+                #   keyword  → RAG retrieval query (정확도 ↑)
+                #   summary  → phase_overlay 화면 자막 (자연 한국어, cleaning 효과 반영)
+                cleaned = await self._compose_summary_overlay(user_text)
+                if cleaned:
+                    cleaned_keyword, cleaned_summary = cleaned
+                    await _send_caption("phase_overlay", cleaned_summary)
                 else:
+                    cleaned_keyword = None
                     await _send_caption("phase_overlay", f"질문은 “{_summary_fallback}”")
                 await _send_caption("phase_label", "관련 자료 찾는 중")
-                await self._generate_reply(generation_id, user_text)
+                await self._generate_reply(generation_id, user_text, retrieval_query=cleaned_keyword)
             except asyncio.CancelledError:
                 log.info("[voice_ws] generation task cancelled id=%s", generation_id)
                 raise
@@ -504,7 +544,7 @@ def build_rag_processor(request: Request, websocket=None):
                 return
             await self.push_frame(TTSSpeakFrame(text=text))
 
-        async def _generate_reply(self, generation_id: int, user_text: str):
+        async def _generate_reply(self, generation_id: int, user_text: str, retrieval_query: str | None = None):
             import re as _re
             import uuid as _uuid
 
@@ -520,10 +560,17 @@ def build_rag_processor(request: Request, websocket=None):
             full_reply = ""
             sentence_count = 0
             _stream_t0 = None
-            # 60자 이상에서만 sentence 분리 push — 합성 시간을 재생 시간보다 길게
-            # 유지해 audio buffer 가 비는 무음 구간 방지. 첫 sentence 도 60자가
-            # 모일 때까지 대기하므로 응답 시작 latency 가 0.5~1s 추가될 수 있음.
-            MIN_SENT_LEN = 60
+            # sentence 분리 사실상 끔. 진단 (/var/log/owi.log):
+            #   - Qwen3-TTS endpoint 가 batch (chunked streaming 미지원). sentence
+            #     합성이 끝나야 audio 720KB 한 번에 도착.
+            #   - PipeCat TTSService 가 sentence 합성을 sequential 처리 (#1 끝나야 #2 시작).
+            #   - sentence #1 재생 시간(~8s) < #2 합성 시간(~13s) → 항상 무음 갭.
+            # 답변 길이를 줄여도 sentence 당 13s 합성은 그대로라 본질 fix 안 됨.
+            # → LLM stream 동안 절대 split push 안 하고, stream done 시점에 답변
+            #   전체를 단일 TTS 호출로 보냄. 무음 0 보장 (TTS 합성 횟수 = 1, 톤도 일관).
+            #   첫 음성 latency 는 LLM done + 단일 합성 (~20~30s) 로 증가하지만,
+            #   사용자가 더 싫어하는 "재생 중 무음 갭" 을 차단.
+            MIN_SENT_LEN = 10**9
 
             try:
                 from open_webui.routers.public_chatbot import (
@@ -579,6 +626,7 @@ def build_rag_processor(request: Request, websocket=None):
                     effective_history,
                     session_id,
                     voice_mode=True,
+                    retrieval_query=retrieval_query,
                 ):
                     if not self._is_current_generation(generation_id):
                         log.info("[voice_ws] stale stream ignored id=%s", generation_id)

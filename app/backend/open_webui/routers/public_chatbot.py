@@ -397,6 +397,66 @@ def _today_context_prefix() -> str:
     return f"\n\n[오늘 날짜] {now.strftime('%Y년 %m월 %d일')} ({weekday_kr}요일)"
 
 
+def _augment_with_graph_context(system_prompt: str, query_text: str) -> str:
+    """Neo4j GraphRAG (Page fulltext + Entity 1-hop) 결과를 system_prompt 에 append.
+
+    vector RAG (Qdrant top-k) 와 dual-track. voice ↔ text 둘 다 같은 함수 호출해
+    동일 retrieval 결과 보장. graph 실패 시 silently skip (LLM 답변에 영향 X).
+    """
+    try:
+        from open_webui.retrieval.graphrag.neo4j_client import (
+            search_pages_by_text,
+            search_entities_neighbors,
+        )
+
+        gpages = search_pages_by_text(query_text, limit=5)
+        ent_hits = search_entities_neighbors(query_text, limit=5)
+        sections: list[str] = []
+
+        if gpages:
+            lines = []
+            for p in gpages:
+                t = (p.get("title") or "").strip()[:80]
+                u = (p.get("url") or "").strip()
+                inst = (p.get("institution") or "").strip()
+                cat = (p.get("category") or "").strip()
+                preview = (p.get("content_preview") or "").strip()[:300]
+                lines.append(f"- [{inst}/{cat}] {t} ({u})\n  {preview}")
+            sections.append(
+                "\n\n# 관련 페이지 (지식그래프 검색 결과)\n"
+                "다음은 사용자 질문과 관련 가능성 있는 페이지의 요약입니다. "
+                "필요 시 참고하되 구체 답변은 RAG 컨텍스트에서 인용해 주세요.\n"
+                + "\n".join(lines)
+            )
+
+        if ent_hits:
+            ent_lines = []
+            for e in ent_hits:
+                name = (e.get("name") or "").strip()
+                etype = (e.get("type") or "").strip()
+                neighbors = e.get("neighbors") or []
+                nb_strs = []
+                for n in neighbors[:8]:
+                    if not isinstance(n, dict) or not n.get("name"):
+                        continue
+                    nb_strs.append(f"{n.get('predicate','')}: {n.get('name')}")
+                if nb_strs:
+                    ent_lines.append(f"- {name} ({etype}) — " + "; ".join(nb_strs))
+            if ent_lines:
+                sections.append(
+                    "\n\n# 관련 엔티티 (지식그래프 1-hop)\n"
+                    "사용자 질문과 매치된 엔티티 및 직접 연결된 정보. "
+                    "예: 사업명·자격·금액·담당부서 등 관계 추론 시 참고.\n"
+                    + "\n".join(ent_lines)
+                )
+
+        if sections:
+            return system_prompt + "".join(sections)
+    except Exception as e:
+        log.debug(f"graphrag search skipped: {e}")
+    return system_prompt
+
+
 ####################
 # 메인 챗 엔드포인트
 ####################
@@ -448,13 +508,16 @@ async def _run_public_llm(
 
     model = request.app.state.MODELS[model_id]
 
-    # 2. 시스템 프롬프트 (설정값 + 오늘 날짜)
+    # 2. 시스템 프롬프트 (설정값 + 오늘 날짜 + graph RAG)
     system_prompt = getattr(
         request.app.state.config,
         "PUBLIC_CHATBOT_SYSTEM_PROMPT",
         "당신은 전북특별자치도청 대도민 안내 AI입니다.",
     )
     system_prompt = system_prompt + _today_context_prefix()
+    # voice 모드와 동일하게 graph RAG (Neo4j) 도 텍스트 모드에 적용 — 두 모드
+    # 답변 일관성. 시군별 답례품/세부 품목 같은 fan-out 정보가 vector 만으론 누락.
+    system_prompt = _augment_with_graph_context(system_prompt, user_message)
 
     # 3. messages 조립 (system → history → 현재 질문)
     messages: list[dict[str, Any]] = [
@@ -517,6 +580,11 @@ async def _run_public_llm(
 
     # 6. 핵심 — process_chat_payload로 RAG 컨텍스트/도구 주입
     rag_sources: list[dict] = []
+    log.info(
+        f"[RAG-call sync] q={messages[-1]['content'][:60]!r} "
+        f"sys_len={len(system_prompt)} hist={len(messages)-2} "
+        f"files={len(rag_files)} model={model_id!r}"
+    )
     try:
         form_data, metadata, events = await process_chat_payload(
             request, form_data, user, metadata, model
@@ -645,7 +713,8 @@ async def _run_public_llm(
 _VOICE_MODE_DIRECTIVES = (
     "\n\n참고: 이번 답변은 도민에게 음성으로 들려드립니다. "
     "자연스러운 한국어 구어체로 3~4 문장 안에 풀어서 말씀해 주세요. "
-    "URL 이나 영문 코드명은 직접 쓰지 말고 '전북도청 홈페이지에서 보실 수 있어요' 처럼 풀어서 표현해 주세요. "
+    "URL·영문 코드명·영어 약어 (KTX/USB 등) 는 직접 쓰지 말고 한국어 풀어쓰기 ('전북도청 홈페이지', '고속철도') 로 바꿔 주세요. "
+    "외래어/외국어 단어는 가능하면 한국어 동의어로 대체. "
     "콜론 정렬 목록 대신 자연 문장으로 이어가 주세요."
     "\n\n## 음성 인식(STT) 오류 대처 — 핵심 의도 파악 우선\n"
     "사용자 발화는 음성→텍스트 변환을 거쳐 오므로 단어 단위 오인식이 자주 섞여 있다. "
@@ -674,6 +743,7 @@ async def _stream_public_llm_reply(
     history: list[dict],
     session_id: str,
     voice_mode: bool = False,
+    retrieval_query: str | None = None,
 ):
     """LLM 응답을 SSE delta 별로 yield 하는 async generator.
 
@@ -684,7 +754,12 @@ async def _stream_public_llm_reply(
 
     voice_mode=True 면 system_prompt 끝에 구어체 / URL 금지 등 음성용 가이드 append.
     텍스트 모드 (/chat) 는 voice_mode=False 라 영향 없음.
+
+    retrieval_query (음성 모드 전용): mini-LLM 으로 STT noise 제거한 깨끗한 키워드.
+      - graph + vector RAG retrieval 단계에서만 사용 (정확한 chunk hit)
+      - LLM 답변 생성에는 원본 user_message 그대로 (사용자 의도/맥락 보존)
     """
+    effective_retrieval_query = (retrieval_query or "").strip() or user_message
     # 1. 모델 결정
     model_id = getattr(
         request.app.state.config,
@@ -717,61 +792,10 @@ async def _stream_public_llm_reply(
     if voice_mode:
         system_prompt = system_prompt + _VOICE_MODE_DIRECTIVES
 
-    # GraphRAG context — Neo4j Page fulltext + Entity 1-hop 결합.
-    # vector RAG (Qdrant top-k via process_chat_payload) 와 dual-track.
-    try:
-        from open_webui.retrieval.graphrag.neo4j_client import (
-            search_pages_by_text,
-            search_entities_neighbors,
-        )
-
-        gpages = search_pages_by_text(user_message, limit=5)
-        ent_hits = search_entities_neighbors(user_message, limit=5)
-        graph_sections = []
-
-        if gpages:
-            lines = []
-            for p in gpages:
-                t = (p.get("title") or "").strip()[:80]
-                u = (p.get("url") or "").strip()
-                inst = (p.get("institution") or "").strip()
-                cat = (p.get("category") or "").strip()
-                preview = (p.get("content_preview") or "").strip()[:300]
-                lines.append(f"- [{inst}/{cat}] {t} ({u})\n  {preview}")
-            graph_sections.append(
-                "\n\n# 관련 페이지 (지식그래프 검색 결과)\n"
-                "다음은 사용자 질문과 관련 가능성 있는 페이지의 요약입니다. "
-                "필요 시 참고하되 구체 답변은 RAG 컨텍스트에서 인용해 주세요.\n"
-                + "\n".join(lines)
-            )
-
-        if ent_hits:
-            ent_lines = []
-            for e in ent_hits:
-                name = (e.get("name") or "").strip()
-                etype = (e.get("type") or "").strip()
-                neighbors = e.get("neighbors") or []
-                nb_strs = []
-                for n in neighbors[:8]:
-                    if not isinstance(n, dict) or not n.get("name"):
-                        continue
-                    nb_strs.append(
-                        f"{n.get('predicate','')}: {n.get('name')}"
-                    )
-                if nb_strs:
-                    ent_lines.append(f"- {name} ({etype}) — " + "; ".join(nb_strs))
-            if ent_lines:
-                graph_sections.append(
-                    "\n\n# 관련 엔티티 (지식그래프 1-hop)\n"
-                    "사용자 질문과 매치된 엔티티 및 직접 연결된 정보. "
-                    "예: 사업명·자격·금액·담당부서 등 관계 추론 시 참고.\n"
-                    + "\n".join(ent_lines)
-                )
-
-        if graph_sections:
-            system_prompt = system_prompt + "".join(graph_sections)
-    except Exception as e:
-        log.debug(f"graphrag search skipped: {e}")
+    # GraphRAG (Neo4j) 결과를 system_prompt 에 inject — 시군별 답례품/세부 품목
+    # 같은 fan-out 정보가 vector chunk 만으로는 누락되기 쉬워서 graph 보조 검색.
+    # voice ↔ text 일관성을 위해 _run_chat_internal (텍스트) 에도 동일 graph 호출.
+    system_prompt = _augment_with_graph_context(system_prompt, effective_retrieval_query)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for turn in history or []:
@@ -783,7 +807,11 @@ async def _stream_public_llm_reply(
         )
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": user_message})
+    # process_chat_payload 가 messages 마지막 user content 를 query 로 retrieval 호출.
+    # 음성 모드면 effective_retrieval_query (cleaned keyword) 를 임시로 넣어 정확
+    # retrieval 받고, 호출 후 다시 원본 user_message 로 swap 해 LLM 답변에는 원본
+    # 의도가 전달되도록.
+    messages.append({"role": "user", "content": effective_retrieval_query})
 
     # 4. metadata
     message_id = str(uuid.uuid4())
@@ -827,6 +855,12 @@ async def _stream_public_llm_reply(
 
     # 6. RAG 컨텍스트 주입
     rag_sources: list[dict] = []
+    log.info(
+        f"[RAG-call stream] voice_mode={voice_mode} "
+        f"q={messages[-1]['content'][:60]!r} "
+        f"sys_len={len(system_prompt)} hist={len(messages)-2} "
+        f"files={len(rag_files)} model={model_id!r}"
+    )
     try:
         form_data, metadata, _events = await process_chat_payload(
             request, form_data, user, metadata, model
@@ -835,6 +869,17 @@ async def _stream_public_llm_reply(
         log.info(
             f"public_chatbot stream RAG sources from metadata: {len(rag_sources)} groups"
         )
+        # 음성 모드 retrieval swap 복구 — RAG context 는 보존하면서 cleaned keyword 만
+        # 원본 user_message 로 한 번 replace. LLM 이 사용자 원본 의도/맥락을 그대로 봄.
+        if effective_retrieval_query != user_message:
+            for _msg in reversed(form_data.get("messages") or []):
+                if _msg.get("role") == "user":
+                    _c = _msg.get("content")
+                    if isinstance(_c, str) and effective_retrieval_query in _c:
+                        _msg["content"] = _c.replace(
+                            effective_retrieval_query, user_message, 1
+                        )
+                    break
     except Exception as e:
         log.warning(f"process_chat_payload failed in stream: {e}")
 

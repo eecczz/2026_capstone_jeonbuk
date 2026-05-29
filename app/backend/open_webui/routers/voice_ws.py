@@ -181,21 +181,22 @@ async def voice_ws(websocket: WebSocket):
     # |-------------|-------|-------|--------------------------------------------|
     # | confidence  | 0.4   | 0.55  | Silero 모델 확률. ↑ 시 misfire 억제        |
     # | min_volume  | 0.02  | 0.025 | RMS 임계. ↑ 시 작은 소음 차단 (사용자 요청)│
-    # | start_secs  | 0.10  | 0.15  | 발화 시작 인정 시간. ↑ 시 짧은 spike 차단  │
+    # | start_secs  | 0.10  | 0.10  | 0.15 으로 올렸더니 첫 글자가 잘리는 문제   │
+    # |             |       |       | ("답례품"→"압례품") 발생 — 0.10 으로 복원   │
     # | stop_secs   | 0.5   | 0.8   | 무음 견디기. ↑ 시 한 문장 두 chunk 분할 ↓ │
     vad_processor = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
             params=VADParams(
                 confidence=0.55,
-                start_secs=0.15,
+                start_secs=0.10,
                 stop_secs=0.8,
                 min_volume=0.025,
             )
         ),
     )
 
-    # STT prompt 일시 제거 (진단 중) — Cohere 가 긴 prompt + 짧은 발화 조합에서
-    # 빈 결과 반환하는 케이스 의심. 어휘 편향 손실 대신 transcript 자체 우선.
+    # STT prompt 제거 (commit a60bc1c) — 긴 prompt 는 Cohere 빈 결과,
+    # 짧은 prompt 도 효과 미검증. 일단 prompt 없이 운영.
     stt = OpenAISTTService(
         base_url=stt_base,
         api_key=stt_key,
@@ -212,16 +213,21 @@ async def voice_ws(websocket: WebSocket):
     from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame
 
     # TTS 톤·말투 초기 세팅 — Qwen3-TTS 에 OpenAI 호환 instructions 인자로 전달.
-    # 사용자 피드백: 디폴트 Sohee 가 "지친 말투" 같음 → 아나운서 톤으로 또박또박,
-    # 명확하게, 약간 밝게. 도청 도민 안내원 컨셉이라 정중하고 신뢰감 있는 어조.
+    # 사용자 피드백: turn 간 말투 일관성 들쭉날쭉 → endpoint 측 prosody 변동 폭 큼.
+    # instructions 를 더 단호하게 "동일한 한 명의 안내원" 정체성 명시 + 합성 seed
+    # 고정으로 매 호출 재현성 ↑.
     _TTS_INSTRUCTIONS = (
-        "정중하고 또박또박한 한국어 아나운서 톤으로 말씀해 주세요. "
-        "표준어 억양으로 분명하게, 너무 느리지 않게, 신뢰감 있는 어조로 발음해 주세요. "
-        "도청 도민 안내원이 시민에게 친절하게 설명한다고 생각하고 자연스럽게 읽어 주세요."
+        "당신은 전북도청 도민 안내원 '소희' 한 사람입니다. "
+        "매번 동일한 정체성·억양·말투를 유지하세요. "
+        "정중하고 또박또박한 한국어 표준어 아나운서 톤. "
+        "차분하고 신뢰감 있는 어조로, 너무 느리지도 빠르지도 않게, "
+        "감정 변동·연극적 강조 없이 일관된 평조로 발음해 주세요. "
+        "외국어 발음 시도 금지 — 영문 약어가 들어와도 한국어 음으로 읽으세요."
     )
-    # speed 디폴트 1.0 (endpoint 표준 동작). 1.05 는 약간 빠르긴 하지만 endpoint
-    # 측 합성 시간이 약간 늘어나고 톤이 어색해지는 부작용이 보여 디폴트로 복원.
     _TTS_SPEED = 1.0
+    # 합성 random seed 고정 — endpoint 가 seed 받으면 prosody 재현성 ↑.
+    # OpenAI SDK 정식 param 아니라 extra_body 로 전달. endpoint 미지원 시 무시됨 (안전).
+    _TTS_SEED = 42
 
     class _JeonbukOpenAITTSService(OpenAITTSService):
         async def run_tts(self, text: str, context_id: str):
@@ -243,6 +249,7 @@ async def voice_ws(websocket: WebSocket):
                     response_format="pcm",
                     instructions=_TTS_INSTRUCTIONS,
                     speed=_TTS_SPEED,
+                    extra_body={"seed": _TTS_SEED},
                 ) as r:
                     if r.status_code != 200:
                         error = await r.text()
