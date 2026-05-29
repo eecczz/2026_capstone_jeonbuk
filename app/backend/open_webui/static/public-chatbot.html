@@ -127,7 +127,7 @@
   body.mode-dark .vrm-wrap {
     background: linear-gradient(180deg, #1f2937 0%, #111827 100%);
   }
-  .vrm-wrap canvas { display: block; width: 100%; height: 100%; }
+  .vrm-wrap canvas { display: block; width: 100%; height: 100%; position: relative; z-index: 1; }
   .vrm-placeholder {
     position: absolute;
     inset: 0;
@@ -880,8 +880,9 @@
               scene.add(vrm.scene);
               loaded = true;
               const ph = document.getElementById("vrmPlaceholder");
-              if (ph) ph.style.display = "none";
-              document.getElementById("vrmWrap")?.classList.add("vrm-loaded");
+              if (ph) ph.remove();   // 단순 display:none 으론 CSS 충돌 가능 — DOM 통째 제거
+              const wrap = document.getElementById("vrmWrap");
+              if (wrap) wrap.classList.add("vrm-loaded");
               console.log("[VRM] loaded");
               resolve();
             },
@@ -926,8 +927,9 @@
               };
               loaded = true;
               const ph = document.getElementById("vrmPlaceholder");
-              if (ph) ph.style.display = "none";
-              document.getElementById("vrmWrap")?.classList.add("vrm-loaded");
+              if (ph) ph.remove();   // 단순 display:none 으론 CSS 충돌 가능 — DOM 통째 제거
+              const wrap = document.getElementById("vrmWrap");
+              if (wrap) wrap.classList.add("vrm-loaded");
               console.log("[VRM] primitive fallback ready");
               resolve();
             }
