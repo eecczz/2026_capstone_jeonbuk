@@ -42,8 +42,37 @@ MAX_TEXT_LEN = int(os.environ.get("PUBLIC_CHATBOT_MAX_TEXT_LEN", "500"))
 MIN_KR_RATIO = float(os.environ.get("PUBLIC_CHATBOT_MIN_KR_RATIO", "0.3"))
 
 
+# abuse pattern 알람 임계값 (hourly 누적)
+ABUSE_ALARM_THRESHOLDS = [5, 20, 100]
+
+
 _redis = None
 _redis_failed = False
+
+
+def _track_abuse(ip: str, action: str) -> None:
+    """abuse 행동 hourly count. 임계값 도달 시 WARNING — admin 모니터링 hook.
+
+    action: rate_min / rate_day / global_cap / text_too_long / non_korean /
+            ws_slot_busy
+    """
+    redis = _get_redis()
+    if redis is None:
+        return
+    try:
+        import time as _t
+        bucket = int(_t.time()) // 3600
+        k = f"pcb:abuse:{ip}:{action}:{bucket}"
+        n = redis.incr(k)
+        if n == 1:
+            redis.expire(k, 3700)
+        if n in ABUSE_ALARM_THRESHOLDS:
+            log.warning(
+                f"ABUSE pattern detected: ip={ip} action={action} "
+                f"count={n}/hour — 의심 사용자 가능성"
+            )
+    except Exception:
+        pass
 
 
 def _get_redis():
@@ -102,6 +131,7 @@ def check_rate_limit(req: Request | WebSocket) -> dict[str, Any]:
             redis.expire(k_min, 70)
         if n_min > RATE_PER_MIN:
             log.warning(f"rate_limit minute exceeded ip={ip} n={n_min}")
+            _track_abuse(ip, "rate_min")
             return {
                 "allowed": False,
                 "reason": f"잠시만요. 분당 {RATE_PER_MIN}회 한도를 넘었어요.",
@@ -116,6 +146,7 @@ def check_rate_limit(req: Request | WebSocket) -> dict[str, Any]:
             redis.expire(k_day, 86460)
         if n_day > RATE_PER_DAY:
             log.warning(f"rate_limit daily exceeded ip={ip} n={n_day}")
+            _track_abuse(ip, "rate_day")
             return {
                 "allowed": False,
                 "reason": f"오늘은 {RATE_PER_DAY}회 한도를 다 사용하셨어요. 내일 다시 시도해 주세요.",
@@ -130,6 +161,7 @@ def check_rate_limit(req: Request | WebSocket) -> dict[str, Any]:
             redis.expire(k_gd, 86460)
         if n_gd > DAILY_GLOBAL_CAP:
             log.warning(f"rate_limit global cap exceeded n={n_gd}")
+            _track_abuse(ip, "global_cap")
             return {
                 "allowed": False,
                 "reason": "오늘 챗봇 전체 사용량 한도에 도달했어요. 내일 다시 시도해 주세요.",
@@ -154,6 +186,8 @@ def acquire_ws_slot(ws: WebSocket) -> bool:
     ip = get_client_ip(ws)
     try:
         acquired = redis.set(f"pcb:ws:{ip}", "1", nx=True, ex=WS_TTL_SEC)
+        if not acquired:
+            _track_abuse(ip, "ws_slot_busy")
         return bool(acquired)
     except Exception as e:
         log.warning(f"WS slot 획득 오류 — 허용: {e}")
@@ -213,8 +247,11 @@ def enforce_rate_limit_http(req: Request) -> None:
         )
 
 
-def enforce_text_input(text: str) -> None:
-    """HTTP endpoint 용 — 입력 검증 실패 시 HTTPException."""
+def enforce_text_input(text: str, ip: str | None = None) -> None:
+    """HTTP endpoint 용 — 입력 검증 실패 시 HTTPException + abuse 추적."""
     v = validate_text_input(text)
     if not v["ok"]:
+        if ip:
+            action = "text_too_long" if "너무 길어요" in v["reason"] else "non_korean"
+            _track_abuse(ip, action)
         raise HTTPException(status_code=400, detail=v["reason"])

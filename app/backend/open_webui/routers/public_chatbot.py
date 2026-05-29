@@ -401,6 +401,30 @@ def _today_context_prefix() -> str:
     return f"\n\n[오늘 날짜] {now.strftime('%Y년 %m월 %d일')} ({weekday_kr}요일)"
 
 
+# 도메인 한정 가이드 — 챗봇이 개인 LLM 처럼 남용되지 않도록 LLM 측에서 1차 필터.
+# Phase B (회의 안건 7) — rate limit 외에 LLM instruction-following 으로 비도청 질문
+# 정중 거부. Qwen 397B 가 잘 따른다.
+_DOMAIN_GUARD_DIRECTIVES = (
+    "\n\n## 답변 범위 — 가장 엄격하게 지킬 것\n"
+    "당신은 **전북도청 및 산하·유관 기관 안내 전용 챗봇**입니다. 도청 업무·정책·"
+    "사업·민원 안내·산하기관 정보 외 일반 지식 질문에는 답하지 마세요.\n\n"
+    "다음 카테고리는 **반드시 거부**:\n"
+    "- 코딩/프로그래밍 도움 (Python·SQL·HTML·디버깅 등)\n"
+    "- 번역 (영-한, 한-영, 기타 언어 번역)\n"
+    "- 일반 상식·수학·과학·역사·인물 질문 (도청 무관)\n"
+    "- 글쓰기·작문·요약·기사 작성 도움\n"
+    "- 의료·법률·금융 상담 (도청 안내 외)\n"
+    "- 시·소설·노래 가사 등 창작\n"
+    "- 다른 지자체·정부기관·외국 행정 안내 (전북도청 외)\n\n"
+    "거부 멘트 (정중하게, 짧게):\n"
+    '  "전북도청 대도민 안내 챗봇이라 그 질문은 도와드리기 어려워요. '
+    "전북도청과 산하기관 안내 관련해 궁금하신 점 있으시면 말씀해 주세요.\"\n\n"
+    "도청 어휘 (전북도청·전북특별자치도·시군청·도지사·정책·사업·답례품·"
+    "고향사랑기부제·청년지원·신청·민원·홈페이지 등) 가 한 단어라도 들어가면 "
+    "정상 답변. 애매하면 도청 관련 가능성 우선 가정."
+)
+
+
 def _augment_with_graph_context(system_prompt: str, query_text: str) -> str:
     """Neo4j GraphRAG (Page fulltext + Entity 1-hop) 결과를 system_prompt 에 append.
 
@@ -518,7 +542,7 @@ async def _run_public_llm(
         "PUBLIC_CHATBOT_SYSTEM_PROMPT",
         "당신은 전북특별자치도청 대도민 안내 AI입니다.",
     )
-    system_prompt = system_prompt + _today_context_prefix()
+    system_prompt = system_prompt + _today_context_prefix() + _DOMAIN_GUARD_DIRECTIVES
     # voice 모드와 동일하게 graph RAG (Neo4j) 도 텍스트 모드에 적용 — 두 모드
     # 답변 일관성. 시군별 답례품/세부 품목 같은 fan-out 정보가 vector 만으론 누락.
     system_prompt = _augment_with_graph_context(system_prompt, user_message)
@@ -800,7 +824,7 @@ async def _stream_public_llm_reply(
         request.app.state.config,
         "PUBLIC_CHATBOT_SYSTEM_PROMPT",
         "당신은 전북특별자치도청 대도민 안내 AI입니다.",
-    ) + _today_context_prefix()
+    ) + _today_context_prefix() + _DOMAIN_GUARD_DIRECTIVES
     if voice_mode:
         system_prompt = system_prompt + _VOICE_MODE_DIRECTIVES
 
@@ -1037,7 +1061,8 @@ async def public_chat(request: Request, body: PublicChatRequest):
     # 오남용 방지: 기존 분당 + 새로 추가된 일당/전체 cap, 입력 검증.
     await _check_rate_limit(request)
     _enforce_rate_limit(request)
-    _enforce_text_input(body.message)
+    from open_webui.utils.public_chatbot_rate_limit import get_client_ip as _get_ip
+    _enforce_text_input(body.message, ip=_get_ip(request))
 
     user = _get_public_user(request)
     session_id = body.session_id or str(uuid.uuid4())
