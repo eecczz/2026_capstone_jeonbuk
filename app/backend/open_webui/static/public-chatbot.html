@@ -4,6 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>전북도청 AI 안내원</title>
+<!-- Three.js / three-vrm 의 bare specifier "three" 해소용 import map.
+     GLTFLoader.js 와 three-vrm.module.js 가 내부에서 `import ... from 'three'` 하는데
+     브라우저는 importmap 없이는 bare specifier 를 못 푼다. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 <style>
   :root {
     --primary: #111111;
@@ -993,7 +1004,7 @@
         if (ph) {
           ph.style.display = "block";
           ph.innerHTML = `
-            <svg id="svgCharacter" viewBox="0 0 200 360" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+            <svg id="svgCharacter" viewBox="0 0 200 360" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="display:block;width:100%;height:100%;max-height:360px;">
               <defs>
                 <linearGradient id="suit" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stop-color="#2d4a8a"/>
