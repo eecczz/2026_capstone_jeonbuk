@@ -83,13 +83,40 @@ from open_webui.utils.voice_tts_text import (
 
 # PipeCat FrameProcessor 3종 + RAG 파이프라인 빌더는 utils/voice_rag_pipeline.py 로 분리.
 from open_webui.utils.voice_rag_pipeline import build_rag_processor as _build_rag_processor
+from open_webui.utils.public_chatbot_rate_limit import (
+    acquire_ws_slot as _acquire_ws_slot,
+    release_ws_slot as _release_ws_slot,
+    check_rate_limit as _check_ws_rate_limit,
+    get_client_ip as _get_client_ip,
+)
 
 @router.websocket("/voice-ws")
 async def voice_ws(websocket: WebSocket):
     """음성 챗봇 WebSocket 엔드포인트.
 
     인증 없음 (대도민 공개). request.app.state.config 에서 STT/TTS endpoint 동적 로드.
+
+    오남용 방지:
+    - IP 당 동시 WS 연결 1개 (Redis SETNX, TTL 30분)
+    - 연결 시점 분당/일당/전체 cap 체크 (rate limit util)
     """
+    # 1) Rate limit (분당/일당/전체 cap)
+    rl = _check_ws_rate_limit(websocket)
+    if not rl["allowed"]:
+        log.warning(f"voice_ws rate_limit denied ip={rl.get('ip')} reason={rl['reason']}")
+        await websocket.close(code=1008, reason=rl["reason"][:120])
+        return
+
+    # 2) 동시 연결 1개 (Redis SETNX)
+    if not _acquire_ws_slot(websocket):
+        ip = _get_client_ip(websocket)
+        log.warning(f"voice_ws slot busy ip={ip}")
+        await websocket.close(
+            code=1008,
+            reason="이미 다른 음성 세션이 열려 있어요. 잠시 후 다시 시도해 주세요.",
+        )
+        return
+
     await websocket.accept()
     # Pipecat 의 FastAPIWebsocketTransport 가 websocket 만 받으므로 우리는 app 컨텍스트
     # 를 별도 변수로 보관해 RAG processor 에 Request-like 프록시로 전달.
@@ -332,6 +359,8 @@ async def voice_ws(websocket: WebSocket):
     except Exception as e:
         log.exception(f"voice_ws pipeline error: {e}")
     finally:
+        # WS 슬롯 해제 — 다음 사용자가 새 세션 열 수 있게.
+        _release_ws_slot(websocket)
         try:
             await websocket.close()
         except Exception:
@@ -350,6 +379,8 @@ async def voice_ws(websocket: WebSocket):
 async def voice_sim_ws(websocket: WebSocket):
     """텍스트로 STT/VAD 흉내내 turn merge 로직 테스트.
 
+    오남용 방지 — voice_ws 와 동일 정책.
+
     Client → server (text JSON):
         {"type":"stt","text":"발화 텍스트"}    — TranscriptionFrame 등가
         {"type":"vad_start"}                  — VADUserStartedSpeakingFrame 등가
@@ -362,6 +393,22 @@ async def voice_sim_ws(websocket: WebSocket):
     """
     import json as _json
     import uuid as _uuid
+
+    # 1) Rate limit
+    rl = _check_ws_rate_limit(websocket)
+    if not rl["allowed"]:
+        log.warning(f"voice_sim_ws rate_limit denied ip={rl.get('ip')} reason={rl['reason']}")
+        await websocket.close(code=1008, reason=rl["reason"][:120])
+        return
+
+    # 2) 동시 연결 1개
+    if not _acquire_ws_slot(websocket):
+        log.warning(f"voice_sim_ws slot busy ip={_get_client_ip(websocket)}")
+        await websocket.close(
+            code=1008,
+            reason="이미 다른 세션이 열려 있어요. 잠시 후 다시 시도해 주세요.",
+        )
+        return
 
     await websocket.accept()
     log.info("[voice_sim] connected")
@@ -571,6 +618,8 @@ async def voice_sim_ws(websocket: WebSocket):
     finally:
         if state["task"] and not state["task"].done():
             state["task"].cancel()
+        # WS 슬롯 해제 — 다음 사용자가 새 세션 열 수 있게.
+        _release_ws_slot(websocket)
         try:
             await websocket.close()
         except Exception:

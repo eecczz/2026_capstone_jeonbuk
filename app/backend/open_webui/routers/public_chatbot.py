@@ -185,6 +185,10 @@ from open_webui.models.users import UserModel
 from open_webui.models.models import Models
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.middleware import process_chat_payload
+from open_webui.utils.public_chatbot_rate_limit import (
+    enforce_rate_limit_http as _enforce_rate_limit,
+    enforce_text_input as _enforce_text_input,
+)
 from open_webui.utils.models import get_all_models
 from open_webui.utils.public_voice import understand_public_voice
 
@@ -1030,7 +1034,10 @@ async def public_chat(request: Request, body: PublicChatRequest):
             detail="공개 챗봇 서비스가 비활성화되어 있습니다.",
         )
 
+    # 오남용 방지: 기존 분당 + 새로 추가된 일당/전체 cap, 입력 검증.
     await _check_rate_limit(request)
+    _enforce_rate_limit(request)
+    _enforce_text_input(body.message)
 
     user = _get_public_user(request)
     session_id = body.session_id or str(uuid.uuid4())
@@ -1290,6 +1297,8 @@ async def public_voice_chat(
         )
 
     await _check_rate_limit(request)
+    _enforce_rate_limit(request)
+    # 음성 업로드는 텍스트 검증 X (STT 결과로 들어오는 텍스트는 별도)
 
     # 1. 업로드 오디오 파일을 임시 경로에 저장
     try:
