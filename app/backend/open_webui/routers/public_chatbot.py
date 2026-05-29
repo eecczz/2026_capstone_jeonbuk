@@ -90,26 +90,6 @@ def _looks_like_korean(text: str, threshold: float = 0.35) -> bool:
 _RE_SENTENCE_END = re.compile(r"([.!?。…]|다[\.\s]|요[\.\s]|니다[\.\s]|에요[\.\s])")
 
 
-# Cohere transcribe / Whisper 호환 STT 의 prompt 파라미터.
-# 디코딩 시 어휘 편향을 줘서 "전북특별자치도", "인재개발원" 등 도청 도메인 용어가
-# 비슷한 발음의 다른 단어("한국/반북", "재개발원") 보다 우선 출력되도록 한다.
-# 첫 번째 문장은 도민이 자주 쓰는 정중한 한국어 어조 예시 — Whisper API 의
-# prompt 는 "이전 발화 예시" 로 해석되므로 어조도 안내함.
-_PUBLIC_STT_DOMAIN_PROMPT = (
-    "안녕하세요. 전북특별자치도청에 문의드립니다. "
-    "전북특별자치도, 전북도청, 인재개발원, 농업기술원, 보건환경연구원, "
-    "산림환경연구원, 도립국악원, 도립미술관, 어린이창의체험관, "
-    "농식품인력개발원, 경제통상진흥원, 일자리센터, 동물위생시험소, "
-    "수산기술연구소, 축산연구소, 도로관리사업소, 투어전북. "
-    "전주시, 익산시, 군산시, 정읍시, 김제시, 남원시, "
-    "진안군, 무주군, 장수군, 임실군, 순창군, 고창군, 부안군, 완주군. "
-    "정보공개청구, 행정정보공개, 추경예산, 본예산, 지방재정공시, "
-    "세입세출결산, 시민제안, 옴부즈만, 민원24. "
-    "농어민기본소득, 청년수당, 공공일자리, 재난지원금, 소상공인지원, 정보화교육. "
-    "국민취업지원제도, 구직촉진수당, 내일배움카드, 고용센터, 고용24, 워크넷."
-)
-
-
 def _trim_text_for_tts(text: str, max_chars: int = 140, max_sentences: int = 2) -> str:
     """음성으로 들려줄 텍스트만 추출.
 
@@ -173,7 +153,7 @@ def _humanize_reply(text: str) -> str:
     text = _RE_MULTI_NEWLINE.sub("\n\n", text)
     return text.strip()
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
@@ -193,7 +173,6 @@ from open_webui.utils.public_chatbot_rate_limit import (
 )
 from open_webui.utils.auth import get_admin_user
 from open_webui.utils.models import get_all_models
-from open_webui.utils.public_voice import understand_public_voice
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -422,9 +401,7 @@ _DOMAIN_GUARD_DIRECTIVES = (
     "거부 멘트 (정중하게, 짧게):\n"
     '  "전북도청 대도민 안내 챗봇이라 그 질문은 도와드리기 어려워요. '
     "전북도청과 산하기관 안내 관련해 궁금하신 점 있으시면 말씀해 주세요.\"\n\n"
-    "도청 어휘 (전북도청·전북특별자치도·시군청·도지사·정책·사업·답례품·"
-    "고향사랑기부제·청년지원·신청·민원·홈페이지 등) 가 한 단어라도 들어가면 "
-    "정상 답변. 애매하면 도청 관련 가능성 우선 가정."
+    "도청 도메인 질문이면 정상 답변. 의도가 명확히 비도청이면 거부."
 )
 
 
@@ -547,7 +524,7 @@ async def _run_public_llm(
     )
     system_prompt = system_prompt + _today_context_prefix() + _DOMAIN_GUARD_DIRECTIVES
     # voice 모드와 동일하게 graph RAG (Neo4j) 도 텍스트 모드에 적용 — 두 모드
-    # 답변 일관성. 시군별 답례품/세부 품목 같은 fan-out 정보가 vector 만으론 누락.
+    # 답변 일관성. 카테고리별 세부 항목 같은 fan-out 정보가 vector 만으론 누락.
     system_prompt = _augment_with_graph_context(system_prompt, user_message)
 
     # 3. messages 조립 (system → history → 현재 질문)
@@ -756,22 +733,9 @@ _VOICE_MODE_DIRECTIVES = (
     "외래어/외국어 단어는 가능하면 한국어 동의어로 대체. "
     "콜론 정렬 목록 대신 자연 문장으로 이어가 주세요."
     "\n\n## 음성 인식(STT) 오류 대처 — 핵심 의도 파악 우선\n"
-    "사용자 발화는 음성→텍스트 변환을 거쳐 오므로 단어 단위 오인식이 자주 섞여 있다. "
-    "특히 멀티턴 합치기로 여러 단편 발화가 한 user_text 로 들어올 때, 의미 없는 짧은 단편 "
-    "('어', '음', '아', '네', '맞', '잠깐', '그게' 등) 이나 도청 도메인과 무관한 한국어 동음 "
-    "오인식 단어 ('발휘', '강을 건너', '왼쪽만 천천히', '용기 부실이 없다' 등) 가 끼어 있어도 "
-    "**전체 발화의 핵심 의도만 파악해서 답하라**. "
-    "다음 원칙을 지킬 것:\n"
-    "1) 핵심 의도 파악이 우선 — 도청·시군·산하기관 어휘 (전북도청, 김관영 도지사, 종합계획, "
-    "청년지원, 보도자료, 기부제, 공고 등) 가 한 단어라도 보이면 그게 진짜 질문 의도다. "
-    "주변의 noise 단어는 STT 오인식으로 보고 무시한다.\n"
-    "2) '말씀하신 \"X\" 가 무엇인지 정확히 모르겠어요' 식 답변은 절대 금지 — X 가 도청 도메인 "
-    "어휘와 무관한 짧은 단편이면 STT 오인식일 가능성이 압도적으로 높다. 그런 단어는 답변에 "
-    "언급하지도 말고 무시하라.\n"
-    "3) 발화 안에서 도청 어휘를 한 개라도 잡으면 → 그 어휘에 대한 답을 자료에서 찾아 답한다. "
-    "두 개 이상이면 가장 마지막에 언급된 것 또는 의미상 가장 명확한 것 우선.\n"
-    "4) 정 모를 때만 '어떤 내용을 찾으시는지 한 번 더 말씀해 주실 수 있을까요?' 정도로 짧게 "
-    "되묻기 — 깨진 단어를 인용하지 말 것."
+    "사용자 발화는 음성→텍스트 변환을 거쳐 오므로 단어 단위 오인식이 섞일 수 있다. "
+    "추임새·반복·끼어든 noise 단어가 보여도 전체 발화의 핵심 의도만 파악해서 답하라. "
+    "깨진 단어를 그대로 인용하지 말고, 의도가 명확히 안 잡히면 한 번 짧게 되물어라."
 )
 
 
@@ -831,7 +795,7 @@ async def _stream_public_llm_reply(
     if voice_mode:
         system_prompt = system_prompt + _VOICE_MODE_DIRECTIVES
 
-    # GraphRAG (Neo4j) 결과를 system_prompt 에 inject — 시군별 답례품/세부 품목
+    # GraphRAG (Neo4j) 결과를 system_prompt 에 inject — 카테고리별 세부 항목
     # 같은 fan-out 정보가 vector chunk 만으로는 누락되기 쉬워서 graph 보조 검색.
     # voice ↔ text 일관성을 위해 _run_chat_internal (텍스트) 에도 동일 graph 호출.
     system_prompt = _augment_with_graph_context(system_prompt, effective_retrieval_query)
@@ -1400,75 +1364,14 @@ async def public_voice_chat(
         except Exception:
             log.warning(f"invalid history_json: {history_json[:200]}")
 
-    # 휴리스틱 재활성: 도메인 사전 보정 + directedness/intent/short utterance + sensitive 검증
-    stt_confidence = (stt_result or {}).get("confidence")
-    secs_since_bot: Optional[float] = None
-    if seconds_since_bot:
-        try:
-            secs_since_bot = float(seconds_since_bot)
-        except (TypeError, ValueError):
-            secs_since_bot = None
+    # 도메인 사전 보정·directedness·short-utterance heuristic 제거 — hardcoded
+    # vocab 의존이라 임의 끼워맞춤의 원천이었음. STT raw → LLM 직접.
+    log.info("voice-chat | transcript=%r (raw passthrough)", question_text[:120])
 
-    voice_understanding = understand_public_voice(
-        question_text,
-        history=history,
-        stt_confidence=stt_confidence,
-        seconds_since_bot=secs_since_bot,
-    )
-    log.info(
-        "voice-chat | transcript=%r | normalized=%r | action=%s | "
-        "directed=%.2f | conf=%.2f | intent=%s | corrections=%s",
-        question_text[:120],
-        voice_understanding.normalized_text[:120],
-        voice_understanding.action,
-        voice_understanding.directedness,
-        voice_understanding.confidence,
-        voice_understanding.intent,
-        voice_understanding.corrections,
-    )
-
-    # 옆 사람 대화/배경 소음으로 판단되면 응답 안 함
-    if voice_understanding.action == "ignore":
-        return JSONResponse({
-            "question": voice_understanding.raw_text,
-            "normalized_question": voice_understanding.normalized_text,
-            "reply": "",
-            "session_id": None,
-            "sources": [],
-            "audio_url": None,
-            "ignored": True,
-            "confidence": voice_understanding.confidence,
-            "directedness": voice_understanding.directedness,
-            "intent": voice_understanding.intent,
-            "reason": voice_understanding.reason,
-            "corrections": voice_understanding.corrections,
-        })
-
-    # 신뢰도 낮음 / sensitive intent → 확인 질문
-    if voice_understanding.action == "clarify":
-        reply_text = voice_understanding.confirmation or (
-            "제가 이해한 내용이 맞는지 한 번 확인해 주세요."
-        )
-        audio_url = await _synthesize_public_qwen_tts(request, reply_text)
-        return JSONResponse({
-            "question": voice_understanding.raw_text,
-            "normalized_question": voice_understanding.normalized_text,
-            "reply": reply_text,
-            "session_id": None,
-            "sources": [],
-            "audio_url": audio_url,
-            "needs_confirmation": True,
-            "confidence": voice_understanding.confidence,
-            "directedness": voice_understanding.directedness,
-            "intent": voice_understanding.intent,
-            "reason": voice_understanding.reason,
-            "corrections": voice_understanding.corrections,
-        })
-
-    # 4. LLM 호출 (RAG 포함) — 정규화된 transcript 로
+    # 4. LLM 호출 (RAG 포함) — raw transcript 그대로
     try:
         reply_text, session_id, sources = await _run_chat_internal(
-            request, voice_understanding.normalized_text, history
+            request, question_text, history
         )
     except HTTPException:
         raise
@@ -1479,19 +1382,14 @@ async def public_voice_chat(
     audio_url = await _synthesize_public_qwen_tts(request, reply_text)
 
     return JSONResponse({
-        "question": voice_understanding.raw_text,
-        "normalized_question": voice_understanding.normalized_text,
+        "question": question_text,
+        "normalized_question": question_text,
         "reply": reply_text,
         "session_id": session_id,
         "sources": sources,
         "audio_url": audio_url,
         "ignored": False,
         "needs_confirmation": False,
-        "confidence": voice_understanding.confidence,
-        "directedness": voice_understanding.directedness,
-        "intent": voice_understanding.intent,
-        "reason": voice_understanding.reason,
-        "corrections": voice_understanding.corrections,
     })
 
 

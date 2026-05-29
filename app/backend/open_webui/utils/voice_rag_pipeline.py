@@ -245,9 +245,7 @@ def build_rag_processor(request: Request, websocket=None):
               2) overlay_sentence — phase_overlay 화면 자막용 자연 한국어
                  "질문은 …입니다." 형식. (1) 과 의미 일관.
 
-            예: "그 뭐야 답례품 그 중에서 농산물인 게 뭐 있어?"
-                → ("고향사랑기부제 답례품 농산물",
-                   "질문은 고향사랑기부제 답례품 중 농산물이 무엇인지입니다.")
+            예: 추임새·반복이 섞인 누적 발화 → 핵심 명사구 + "질문은 …입니다" 한 줄
 
             timeout 1.5s. 실패 시 None — caller 가 원문 자르기 fallback.
             """
@@ -523,15 +521,12 @@ def build_rag_processor(request: Request, websocket=None):
                 # 로 자동 복귀. 끼어들기 형식이라 정상 순서를 안 깨뜨림.
                 #
                 # mini-LLM 요약 시도 (timeout 1.5s) — 실패 시 fallback (원문 자르기).
-                # 사용자 의도: 원문 그대로 ("질문은 '그 뭐야 전북도청 종합계획은?'")
-                # 가 아닌 정리된 문장 ("질문은 전북도청 종합계획이 무엇인지입니다").
+                # 사용자 의도: 원문 누적 그대로가 아닌 정리된 한 문장.
                 _summary_src = user_text.strip().replace("\n", " ")
                 _summary_fallback = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
 
-                # 단답/추임새 가드 — mini-LLM cleaning prompt 가 "도청 어휘 우선"
-                # 원칙으로 짧은 발화를 임의 키워드 (예: "고향사랑기부제") 로 끼워맞춤.
-                # "네", "음", "어" 같은 단답은 cleaning + retrieval 둘 다 skip 하고
-                # history 컨텍스트만으로 LLM 이 답변하도록 raw user_text 그대로 전달.
+                # 단답/추임새 가드 — "네", "음", "어" 같은 단답은 cleaning + retrieval
+                # 둘 다 skip 하고 history 컨텍스트만으로 LLM 이 답변하도록 raw 전달.
                 _FILLER_SET = {
                     "네", "넵", "예", "음", "어", "아", "오", "응", "그", "그게",
                     "잠깐", "아니", "맞아요", "맞아", "글쎄", "흠", "그러게",

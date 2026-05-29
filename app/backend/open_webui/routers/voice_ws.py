@@ -286,7 +286,7 @@ async def voice_ws(websocket: WebSocket):
     # | confidence  | 0.4   | 0.55  | Silero 모델 확률. ↑ 시 misfire 억제        |
     # | min_volume  | 0.02  | 0.025 | RMS 임계. ↑ 시 작은 소음 차단 (사용자 요청)│
     # | start_secs  | 0.10  | 0.10  | 0.15 으로 올렸더니 첫 글자가 잘리는 문제   │
-    # |             |       |       | ("답례품"→"압례품") 발생 — 0.10 으로 복원   │
+    # |             |       |       | 첫 글자 잘림 증상 발생 — 0.10 으로 복원       │
     # | stop_secs   | 0.5   | 0.8   | 무음 견디기. ↑ 시 한 문장 두 chunk 분할 ↓ │
     vad_processor = VADProcessor(
         vad_analyzer=SileroVADAnalyzer(
