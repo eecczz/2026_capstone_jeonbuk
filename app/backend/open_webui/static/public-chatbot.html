@@ -872,14 +872,48 @@
             },
             undefined,
             (err) => {
-              console.warn("[VRM] load failed (모델 파일 /static/character.vrm 없을 수 있음):", err);
-              const ph = document.getElementById("vrmPlaceholder");
-              if (ph) {
-                ph.innerHTML = `<div style="font-size:12px;opacity:.6;text-align:center;padding:20px">
-                  캐릭터 모델 (character.vrm) 을 찾을 수 없어요.<br>
-                  <span style="font-size:10px;opacity:.5">/static/character.vrm 위치에 배치 필요</span></div>`;
+              console.warn("[VRM] character.vrm 없음 — Three.js primitive 사람 형상 fallback 으로 표시:", err);
+              // Fallback: VRM 없이도 시각화. 단순 사람 형상 (머리=구, 몸통=실린더, 팔/다리)
+              const group = new THREE.Group();
+              const skin = new THREE.MeshLambertMaterial({ color: 0xf2c9a0 });
+              const cloth = new THREE.MeshLambertMaterial({ color: 0x1f3a8a }); // 정장 네이비
+              // 머리
+              const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 24, 24), skin);
+              head.position.set(0, 1.55, 0);
+              group.add(head);
+              // 몸통
+              const body = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.20, 0.55, 16), cloth);
+              body.position.set(0, 1.13, 0);
+              group.add(body);
+              // 팔
+              for (const x of [-0.22, 0.22]) {
+                const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.045, 0.50, 12), cloth);
+                arm.position.set(x, 1.13, 0);
+                group.add(arm);
               }
-              loaded = false;
+              // 다리
+              for (const x of [-0.08, 0.08]) {
+                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.05, 0.55, 12), new THREE.MeshLambertMaterial({ color: 0x111827 }));
+                leg.position.set(x, 0.55, 0);
+                group.add(leg);
+              }
+              scene.add(group);
+              // primitive 용 가짜 vrm-shape — 표정/lookAt 안 됨, head 만 sway 가능
+              vrm = {
+                scene: group,
+                update: () => {},
+                expressionManager: null,
+                lookAt: null,
+                humanoid: {
+                  getNormalizedBoneNode(name) { return name === "head" ? head : null; }
+                },
+                _isPrimitive: true,
+              };
+              loaded = true;
+              const ph = document.getElementById("vrmPlaceholder");
+              if (ph) ph.style.display = "none";
+              document.getElementById("vrmWrap")?.classList.add("vrm-loaded");
+              console.log("[VRM] primitive fallback ready");
               resolve();
             }
           );
