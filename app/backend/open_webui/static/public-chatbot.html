@@ -827,11 +827,15 @@
     async function ensureLoaded() {
       if (loaded || loading) return loaded;
       loading = true;
+      console.log("[VRM] ensureLoaded() 시작 — Three.js CDN import 시도");
       try {
         // 1) Three.js + three-vrm CDN import (ES module)
         const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js");
+        console.log("[VRM] ✓ three.module.js 로드 완료");
         const { GLTFLoader } = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js");
+        console.log("[VRM] ✓ GLTFLoader 로드 완료");
         const VRMLib = await import("https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.0.7/lib/three-vrm.module.js");
+        console.log("[VRM] ✓ three-vrm 로드 완료");
 
         const canvas = document.getElementById("vrmCanvas");
         if (!canvas) { loading = false; return false; }
@@ -981,9 +985,70 @@
         loading = false;
         return true;
       } catch (err) {
-        console.error("[VRM] init failed:", err);
+        console.warn("[VRM] Three.js CDN import 실패 — SVG 캐릭터 fallback 으로 전환:", err);
+        // 외부 CDN 차단 (도청망 SSL inspection 등) 시에도 무조건 캐릭터 보이게.
+        // SVG 사람 형상 + CSS blink/sway 애니메이션. 진짜 3D 아님 = 시각 PoC.
+        const ph = document.getElementById("vrmPlaceholder");
+        const wrap = document.getElementById("vrmWrap");
+        if (ph) {
+          ph.style.display = "block";
+          ph.innerHTML = `
+            <svg id="svgCharacter" viewBox="0 0 200 360" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <linearGradient id="suit" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#2d4a8a"/>
+                  <stop offset="100%" stop-color="#1f3a8a"/>
+                </linearGradient>
+              </defs>
+              <g id="svgHead" style="transform-origin: 100px 80px;">
+                <ellipse cx="100" cy="80" rx="32" ry="38" fill="#f2c9a0"/>
+                <path d="M68 60 Q100 35 132 60 Q132 75 100 70 Q68 75 68 60 Z" fill="#3a2418"/>
+                <ellipse id="eyeL" cx="88" cy="82" rx="3" ry="4" fill="#1a1a1a"/>
+                <ellipse id="eyeR" cx="112" cy="82" rx="3" ry="4" fill="#1a1a1a"/>
+                <path d="M93 100 Q100 103 107 100" stroke="#a0664a" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+              </g>
+              <ellipse cx="100" cy="125" rx="20" ry="12" fill="#f2c9a0"/>
+              <path d="M55 145 Q100 135 145 145 L155 230 Q100 245 45 230 Z" fill="url(#suit)"/>
+              <rect x="92" y="148" width="16" height="40" fill="#ffffff"/>
+              <path d="M93 150 L100 165 L107 150 L100 175 Z" fill="#dc2626"/>
+              <ellipse cx="38" cy="190" rx="10" ry="48" fill="url(#suit)"/>
+              <ellipse cx="162" cy="190" rx="10" ry="48" fill="url(#suit)"/>
+              <ellipse cx="38" cy="240" rx="9" ry="8" fill="#f2c9a0"/>
+              <ellipse cx="162" cy="240" rx="9" ry="8" fill="#f2c9a0"/>
+              <rect x="78" y="245" width="18" height="80" fill="#111827"/>
+              <rect x="104" y="245" width="18" height="80" fill="#111827"/>
+            </svg>
+            <style>
+              @keyframes svgBlink {
+                0%, 92%, 100% { transform: scaleY(1); }
+                95%, 97% { transform: scaleY(0.1); }
+              }
+              @keyframes svgHeadSway {
+                0%, 100% { transform: rotate(0deg) translateY(0); }
+                50% { transform: rotate(1deg) translateY(-1px); }
+              }
+              #eyeL, #eyeR { transform-origin: center; animation: svgBlink 4.5s ease-in-out infinite; transform-box: fill-box; }
+              #svgHead { animation: svgHeadSway 8s ease-in-out infinite; transform-box: fill-box; transform-origin: 100px 80px; }
+              .svg-listening #svgHead { animation-duration: 4s; }
+              .svg-thinking #eyeL, .svg-thinking #eyeR { transform: translateX(2px); }
+              .svg-speaking #svgMouth { animation: svgMouth 0.3s ease-in-out infinite; }
+            </style>
+          `;
+        }
+        if (wrap) wrap.classList.add("vrm-svg-loaded");
+        // SVG 어댑터 — VRM 어댑터의 interface 호환 (onMode/onPhase/onBotStart/Stop)
+        vrm = {
+          _isSvg: true,
+          scene: null,
+          update: () => {},
+          expressionManager: { setValue: () => {} },
+          lookAt: null,
+          humanoid: { getNormalizedBoneNode: () => null },
+        };
+        loaded = true;
         loading = false;
-        return false;
+        console.log("[VRM] SVG fallback ready");
+        return true;
       }
     }
 
@@ -996,11 +1061,19 @@
       vrm.expressionManager.setValue(name, value);
     }
 
+    function applySvgMode(next) {
+      const w = document.getElementById("vrmWrap");
+      if (!w) return;
+      ["svg-listening", "svg-thinking", "svg-speaking", "svg-idle"].forEach(c => w.classList.remove(c));
+      w.classList.add("svg-" + (next || "idle"));
+    }
+
     return {
       ensureLoaded,
       isLoaded() { return loaded; },
       onMode(next) {
         currentMode = next;
+        if (vrm?._isSvg) { applySvgMode(next); return; }
         if (next === "listening") {
           // 끄덕 + 시선 사용자
           eyeTarget.x = 0;
