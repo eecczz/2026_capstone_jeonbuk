@@ -791,11 +791,13 @@
   let visualMode = localStorage.getItem(VISUAL_KEY) || "orb"; // "orb" | "character"
   const vrmWrap = document.getElementById("vrmWrap");
 
-  function applyVisualMode() {
+  function applyVisualMode(triggeredByUserClick) {
     document.body.classList.toggle("visual-character", visualMode === "character");
     const btns = document.querySelectorAll(".visual-toggle .vt-btn");
     btns.forEach(b => b.classList.toggle("vt-active", b.dataset.mode === visualMode));
-    if (visualMode === "character" && typeof window.vrmLoadIfNeeded === "function") {
+    // ⚠️ vrmLoadIfNeeded 는 페이지 로드 자동 호출 X — 사용자의 명시적 토글 클릭에서만.
+    // 새로고침 시 자동 import 가 mic 권한 prompt 흐름과 충돌하는 보고가 있어 가드.
+    if (triggeredByUserClick && visualMode === "character" && typeof window.vrmLoadIfNeeded === "function") {
       window.vrmLoadIfNeeded();
     }
   }
@@ -803,10 +805,10 @@
     b.addEventListener("click", () => {
       visualMode = b.dataset.mode;
       localStorage.setItem(VISUAL_KEY, visualMode);
-      applyVisualMode();
+      applyVisualMode(true);  // 사용자 클릭 → vrm 로드 허용
     });
   });
-  applyVisualMode();
+  applyVisualMode(false);  // 페이지 로드 — UI 만 적용, vrm 자동 로드 X
 
   // VRM Adapter — Three.js + three-vrm 으로 character.vrm 로드 + 모션 제어.
   // Phase B: lazy-load Three.js / three-vrm (CDN) + idle 모션
