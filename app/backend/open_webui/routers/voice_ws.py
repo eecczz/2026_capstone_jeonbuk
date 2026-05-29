@@ -90,6 +90,73 @@ from open_webui.utils.public_chatbot_rate_limit import (
     get_client_ip as _get_client_ip,
 )
 
+
+async def _prewarm_endpoints(app: Any) -> None:
+    """voice_ws/sim_ws 연결 직후 background 로 endpoint warm-up.
+
+    사용자가 마이크 페이지를 연 시점부터 첫 발화까지 5~30초 갭. 그 동안 LLM /
+    Mini-LLM / TTS / RAG endpoint 들을 짧게 한 번씩 호출해 connection / 모델 /
+    vllm batch queue 를 warm. 첫 답변의 cold start latency (~3~5초) 해소.
+
+    실패는 silent (사용자 흐름 막지 않음).
+    """
+    import asyncio as _asyncio
+    import time as _t
+    t0 = _t.time()
+
+    async def _tts_warm():
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=2.0) as c:
+                await c.get("http://localhost:8765/health")
+        except Exception:
+            pass
+
+    async def _llm_warm():
+        """Qwen 397B 짧은 호출 — TTFB warm. 사내 vllm queue 가 우리 worker 의
+        endpoint 연결을 prepare 하게 함."""
+        try:
+            from types import SimpleNamespace as _NS
+            from open_webui.utils.chat import generate_chat_completion as _gen
+            from open_webui.routers.public_chatbot import _get_public_user as _pu
+
+            proxy = type("_Proxy", (), {
+                "app": app, "state": _NS(), "headers": {}, "cookies": {}
+            })()
+            user_obj = _pu(proxy)
+            cfg = app.state.config
+            model_id = getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot")
+
+            # metadata 최소화 — 일반 chat 처리 hop 다 거치되 짧은 입력으로 빠르게
+            try:
+                proxy.state.metadata = {
+                    "user_id": user_obj.id, "chat_id": "", "message_id": "prewarm",
+                    "session_id": "prewarm", "params": {}, "features": {},
+                    "variables": {}, "filter_ids": [], "tool_ids": None,
+                    "tool_servers": None, "files": None,
+                    "model": app.state.MODELS.get(model_id) if getattr(app.state, "MODELS", None) else None,
+                    "direct": False, "public_chatbot": True,
+                }
+            except Exception:
+                pass
+
+            form_data = {
+                "model": model_id,
+                "messages": [{"role": "user", "content": "안녕"}],
+                "stream": False,
+            }
+            await _asyncio.wait_for(
+                _gen(proxy, form_data, user=user_obj, bypass_filter=True),
+                timeout=10.0,
+            )
+        except Exception as e:
+            log.debug(f"[voice_ws] prewarm LLM skipped: {e}")
+
+    log.info("[voice_ws] prewarm starting")
+    await _asyncio.gather(_tts_warm(), _llm_warm(), return_exceptions=True)
+    log.info(f"[voice_ws] prewarm done in {(_t.time() - t0):.2f}s")
+
+
 @router.websocket("/voice-ws")
 async def voice_ws(websocket: WebSocket):
     """음성 챗봇 WebSocket 엔드포인트.
@@ -118,6 +185,12 @@ async def voice_ws(websocket: WebSocket):
         return
 
     await websocket.accept()
+
+    # Cold start 해소 — 사용자가 첫 발화하기까지 5~30초 갭 동안 background 로
+    # LLM (Qwen 397B) + TTS adapter 한 번씩 짧게 호출해 connection/모델 warm.
+    # 첫 답변의 LLM TTFB 1~3초 + adapter 첫 연결 200ms cold start 해소.
+    asyncio.create_task(_prewarm_endpoints(websocket.app))
+
     # Pipecat 의 FastAPIWebsocketTransport 가 websocket 만 받으므로 우리는 app 컨텍스트
     # 를 별도 변수로 보관해 RAG processor 에 Request-like 프록시로 전달.
     # Request 객체는 fastapi/starlette 에서 다음 attribute 들이 routinely 접근됨:
@@ -412,6 +485,8 @@ async def voice_sim_ws(websocket: WebSocket):
 
     await websocket.accept()
     log.info("[voice_sim] connected")
+    # Cold start 해소 — voice_ws 와 동일.
+    asyncio.create_task(_prewarm_endpoints(websocket.app))
 
     app = websocket.app
     from types import SimpleNamespace as _NS
