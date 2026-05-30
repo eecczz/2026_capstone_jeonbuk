@@ -833,6 +833,7 @@
     let vrm = null;
     let scene = null, camera = null, renderer = null;
     let lipSyncAnalyser = null, lipSyncData = null, lipSyncRAF = null, lipSyncFakeOn = false;
+    let isNodding = false;   // speaking 중 고개 끄덕 cycle 활성화
     let lastBlink = 0, lastEyeMove = 0, lastHead = 0;
     const eyeTarget = { x: 0, y: 0 };
     const headSway = { x: 0, y: 0 };
@@ -987,10 +988,18 @@
               headSway.y = (Math.random() - 0.5) * 0.06;
               lastHead = t;
             }
+            // Speaking nodding — 말하는 동안 상하 끄덕 cycle (1.5Hz 사인)
+            // headSway.x 베이스에 더해서 자연스럽게 보간.
+            let nodAdd = 0;
+            if (isNodding) {
+              const phaseSec = t / 1000;
+              nodAdd = Math.sin(phaseSec * 2 * Math.PI * 0.6) * 0.05;   // ±0.05 rad
+            }
             // head bone 살짝 적용 (humanoid bone 보간)
             const head = vrm.humanoid?.getNormalizedBoneNode("head");
             if (head) {
-              head.rotation.x += (headSway.x - head.rotation.x) * 0.03;
+              const targetX = headSway.x + nodAdd;
+              head.rotation.x += (targetX - head.rotation.x) * 0.08;
               head.rotation.y += (headSway.y - head.rotation.y) * 0.03;
             }
             // lookAt 적용
@@ -1096,6 +1105,45 @@
       vrm.expressionManager.setValue(name, value);
     }
 
+    // 말하는 동안 입모양 cycle — vowel (aa/ih/ou/ee/oh) 가 시간 따라 자연 전환.
+    // 단순 aa 사인파 보다 입 모양이 다양하게 변해서 "말하는 느낌" 살아남.
+    function startSpeakingLipSync() {
+      if (!vrm) return;
+      if (lipSyncFakeOn) return;   // 이미 진행 중
+      const VOWELS = ["aa", "ih", "ou", "ee", "oh"];
+      let phase = 0;
+      let curVowelIdx = 0;
+      let lastVowelSwitch = performance.now();
+      function tick() {
+        if (!lipSyncFakeOn) return;
+        const now = performance.now();
+        phase += 0.22;
+        // 입 벌림 양 = 사인파 (0~0.85 변동, 1.8Hz)
+        const open = 0.15 + 0.5 * (0.5 + 0.5 * Math.sin(phase * 1.5));
+        // 0.18~0.35초마다 다른 vowel 로 전환 (자연 말 리듬)
+        if (now - lastVowelSwitch > 180 + Math.random() * 170) {
+          let nextIdx;
+          do { nextIdx = Math.floor(Math.random() * VOWELS.length); } while (nextIdx === curVowelIdx);
+          // 옛 vowel 0 으로 (suddent shift 방지)
+          if (vrm.expressionManager?.setValue) vrm.expressionManager.setValue(VOWELS[curVowelIdx], 0);
+          curVowelIdx = nextIdx;
+          lastVowelSwitch = now;
+        }
+        if (vrm.expressionManager?.setValue) vrm.expressionManager.setValue(VOWELS[curVowelIdx], open);
+        lipSyncRAF = requestAnimationFrame(tick);
+      }
+      lipSyncFakeOn = true;
+      tick();
+    }
+
+    function stopSpeakingLipSync() {
+      lipSyncFakeOn = false;
+      if (lipSyncRAF) { cancelAnimationFrame(lipSyncRAF); lipSyncRAF = null; }
+      if (vrm?.expressionManager?.setValue) {
+        ["aa", "ih", "ou", "ee", "oh"].forEach(v => vrm.expressionManager.setValue(v, 0));
+      }
+    }
+
     function applySvgMode(next) {
       const w = document.getElementById("vrmWrap");
       if (!w) return;
@@ -1114,18 +1162,26 @@
           eyeTarget.x = 0;
           eyeTarget.y = -0.05;
           setExpression("relaxed", 0.3);
+          stopSpeakingLipSync();
+          isNodding = false;
         } else if (next === "thinking") {
           // 살짝 옆 시선, 생각하는 표정
           eyeTarget.x = 0.18;
           eyeTarget.y = 0.05;
           setExpression("relaxed", 0.0);
+          stopSpeakingLipSync();
+          isNodding = false;
         } else if (next === "speaking") {
-          // 정면 시선, 밝은 표정
+          // 정면 시선, 밝은 표정 + 입 모양 cycle + 끄덕임 시작
           eyeTarget.x = 0;
           eyeTarget.y = 0;
           setExpression("happy", 0.4);
+          startSpeakingLipSync();
+          isNodding = true;
         } else {
           setExpression("relaxed", 0.2);
+          stopSpeakingLipSync();
+          isNodding = false;
         }
       },
       onPhaseLabel(text) {
@@ -1134,27 +1190,13 @@
         setTimeout(() => { headSway.x = 0; }, 400);
       },
       onBotStartSpeaking(audioEl) {
-        // ⚠️ 이전 createMediaElementSource 방식 제거 — 봇 audio element 의 routing 을
-        // 가로채면 mic stream 흐름까지 깨지는 부작용 관찰됨.
-        // Phase D 의 안전한 lip sync 는 fake amplitude (시간 기반 사인파) + 본격
-        // 분석은 server-side TTS phoneme 으로 별도 구현.
-        if (!vrm) return;
-        // 가짜 입 움직임 (3Hz 사인) — 봇 audio 와 무관, 부작용 0
-        let phase = 0;
-        function tick() {
-          if (!lipSyncFakeOn) return;
-          phase += 0.18;
-          const amp = 0.3 + 0.35 * Math.max(0, Math.sin(phase * 3.0));
-          vrm.expressionManager?.setValue("aa", amp);
-          lipSyncRAF = requestAnimationFrame(tick);
-        }
-        lipSyncFakeOn = true;
-        tick();
+        // 봇 audio element 의 routing 가로채기 X — startSpeakingLipSync 가 vowel cycle.
+        startSpeakingLipSync();
+        isNodding = true;
       },
       onBotStopSpeaking() {
-        lipSyncFakeOn = false;
-        if (lipSyncRAF) cancelAnimationFrame(lipSyncRAF);
-        if (vrm) vrm.expressionManager?.setValue("aa", 0);
+        stopSpeakingLipSync();
+        isNodding = false;
       },
     };
   })();
