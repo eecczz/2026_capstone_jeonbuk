@@ -764,6 +764,12 @@ def build_rag_processor(request: Request, websocket=None):
                     elif kind == "error":
                         log.warning(f"[voice_ws] stream error: {payload}")
                         stream_failed = True
+                        # Heartbeat 종료 — 에러 후 무한 filler push 방지
+                        try:
+                            _heartbeat_state["first_delta"] = True
+                            _heartbeat_state["on"] = False
+                        except Exception:
+                            pass
 
                 if stream_failed and not full_reply:
                     raise RuntimeError("LLM stream produced no output")
@@ -771,6 +777,12 @@ def build_rag_processor(request: Request, websocket=None):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                # Heartbeat 종료 — 어떤 에러든 무한 filler push 차단
+                try:
+                    _heartbeat_state["first_delta"] = True
+                    _heartbeat_state["on"] = False
+                except Exception:
+                    pass
                 if not self._is_current_generation(generation_id):
                     return
                 log.exception(f"voice_ws streaming failed, falling back to non-stream: {e}")
