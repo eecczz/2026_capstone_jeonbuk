@@ -84,8 +84,6 @@ from open_webui.utils.voice_tts_text import (
 # PipeCat FrameProcessor 3종 + RAG 파이프라인 빌더는 utils/voice_rag_pipeline.py 로 분리.
 from open_webui.utils.voice_rag_pipeline import build_rag_processor as _build_rag_processor
 from open_webui.utils.public_chatbot_rate_limit import (
-    acquire_ws_slot as _acquire_ws_slot,
-    release_ws_slot as _release_ws_slot,
     check_rate_limit as _check_ws_rate_limit,
     get_client_ip as _get_client_ip,
 )
@@ -194,21 +192,11 @@ async def voice_ws(websocket: WebSocket):
     - IP 당 동시 WS 연결 1개 (Redis SETNX, TTL 30분)
     - 연결 시점 분당/일당/전체 cap 체크 (rate limit util)
     """
-    # 1) Rate limit (분당/일당/전체 cap)
+    # IP rate limit (분당/일당/전체 cap) — 다른 방지책 제거됨
     rl = _check_ws_rate_limit(websocket)
     if not rl["allowed"]:
         log.warning(f"voice_ws rate_limit denied ip={rl.get('ip')} reason={rl['reason']}")
         await websocket.close(code=1008, reason=rl["reason"][:120])
-        return
-
-    # 2) 동시 연결 1개 (Redis SETNX)
-    if not _acquire_ws_slot(websocket):
-        ip = _get_client_ip(websocket)
-        log.warning(f"voice_ws slot busy ip={ip}")
-        await websocket.close(
-            code=1008,
-            reason="이미 다른 음성 세션이 열려 있어요. 잠시 후 다시 시도해 주세요.",
-        )
         return
 
     await websocket.accept()
@@ -459,8 +447,6 @@ async def voice_ws(websocket: WebSocket):
     except Exception as e:
         log.exception(f"voice_ws pipeline error: {e}")
     finally:
-        # WS 슬롯 해제 — 다음 사용자가 새 세션 열 수 있게.
-        _release_ws_slot(websocket)
         try:
             await websocket.close()
         except Exception:
@@ -499,15 +485,6 @@ async def voice_sim_ws(websocket: WebSocket):
     if not rl["allowed"]:
         log.warning(f"voice_sim_ws rate_limit denied ip={rl.get('ip')} reason={rl['reason']}")
         await websocket.close(code=1008, reason=rl["reason"][:120])
-        return
-
-    # 2) 동시 연결 1개
-    if not _acquire_ws_slot(websocket):
-        log.warning(f"voice_sim_ws slot busy ip={_get_client_ip(websocket)}")
-        await websocket.close(
-            code=1008,
-            reason="이미 다른 세션이 열려 있어요. 잠시 후 다시 시도해 주세요.",
-        )
         return
 
     await websocket.accept()
@@ -720,8 +697,6 @@ async def voice_sim_ws(websocket: WebSocket):
     finally:
         if state["task"] and not state["task"].done():
             state["task"].cancel()
-        # WS 슬롯 해제 — 다음 사용자가 새 세션 열 수 있게.
-        _release_ws_slot(websocket)
         try:
             await websocket.close()
         except Exception:
