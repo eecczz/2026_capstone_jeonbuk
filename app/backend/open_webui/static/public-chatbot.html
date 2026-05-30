@@ -951,8 +951,8 @@
               mouth.position.set(0, 1.50, 0.122);
               group.add(mouth);
 
-              // 어깨 (정장) — 약간 넓게
-              const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.20, 0.10, 16), suit);
+              // 어깨 (정장) — 자연 어깨 폭
+              const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.20, 0.10, 16), suit);
               shoulder.position.set(0, 1.34, 0);
               group.add(shoulder);
 
@@ -988,15 +988,15 @@
                 group.add(btn);
               }
 
-              // 팔 (정장 소매)
-              for (const x of [-0.27, 0.27]) {
-                const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.048, 0.55, 12), suit);
-                arm.position.set(x, 1.08, 0);
+              // 팔 (정장 소매) — 옆구리 가까이 차렷 자세
+              for (const x of [-0.19, 0.19]) {
+                const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.048, 0.60, 12), suit);
+                arm.position.set(x, 1.02, 0);
                 group.add(arm);
-                // 손
+                // 손 — 팔 끝 부근
                 const hand = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 16), skin);
-                hand.position.set(x, 0.78, 0);
-                hand.scale.set(1, 0.8, 1);
+                hand.position.set(x, 0.72, 0);
+                hand.scale.set(1, 0.85, 1);
                 group.add(hand);
               }
 
@@ -1025,6 +1025,8 @@
               rim.position.set(-1, 1.5, -1);
               scene.add(rim);
 
+              // 카메라 쪽 정면 — 사용자 보고할 때 뒤돌아 있다 → 180도 회전 보정
+              group.rotation.y = Math.PI;
               scene.add(group);
               // primitive 용 가짜 vrm-shape — 표정/lookAt 안 됨, head 만 sway 가능
               vrm = {
