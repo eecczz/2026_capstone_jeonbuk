@@ -887,33 +887,24 @@
                 try { VRMLib.VRMUtils.rotateVRM0(vrm); } catch (e) { console.warn("[VRM] rotateVRM0 skip:", e.message); }
                 scene.add(vrm.scene);
                 console.log("[VRM] vrm.scene 추가 — child count:", vrm.scene.children.length);
-              // 차렷 자세 — speech-coach retarget.ts 의 A_POSE_UPPER_TARGETS 적용.
-              // VRM 모델은 기본 T-pose 라 양 상완을 (±0.05, -0.999, 0) 방향으로
-              // 회전해서 자연 차렷 자세로 만듦.
+              // T-pose → 차렷 자세 (완전 수직). VRM normalized bone 의 local Z 축 90도.
+              // VRM 표준 T-pose: LeftUpperArm child 가 local +X 방향. Z축 -90도 회전 →
+              // +X → -Y 가 되어 팔이 정확히 -Y (아래) 향함. 사용자 요청: A-pose 보다
+              // 더 내려서 완전 수직.
               try {
                 const VRMBone = VRMLib.VRMHumanBoneName;
-                const upper = [
-                  [VRMBone.LeftUpperArm, new THREE.Vector3(0.05, -0.999, 0).normalize()],
-                  [VRMBone.RightUpperArm, new THREE.Vector3(-0.05, -0.999, 0).normalize()],
-                ];
-                for (const [name, targetDir] of upper) {
-                  const bone = vrm.humanoid?.getNormalizedBoneNode(name);
-                  if (!bone || !bone.parent) continue;
-                  const restWorldDir = new THREE.Vector3(0, 1, 0).applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion())).normalize();
-                  const deltaWorldQ = new THREE.Quaternion().setFromUnitVectors(restWorldDir, targetDir);
-                  const newWorldQ = deltaWorldQ.multiply(bone.getWorldQuaternion(new THREE.Quaternion()));
-                  const parentInvWorldQ = bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
-                  bone.quaternion.copy(parentInvWorldQ.multiply(newWorldQ));
-                }
-                // Lower arm 도 identity 로 — 자연스러운 일자 늘어짐
-                const IDENT = new THREE.Quaternion();
+                const ANGLE = Math.PI / 2;   // 90도 완전 수직
+                const lU = vrm.humanoid?.getNormalizedBoneNode(VRMBone.LeftUpperArm);
+                const rU = vrm.humanoid?.getNormalizedBoneNode(VRMBone.RightUpperArm);
+                if (lU) lU.rotation.set(0, 0, -ANGLE);
+                if (rU) rU.rotation.set(0, 0, ANGLE);
                 for (const name of [VRMBone.LeftLowerArm, VRMBone.RightLowerArm, VRMBone.LeftHand, VRMBone.RightHand]) {
                   const bone = vrm.humanoid?.getNormalizedBoneNode(name);
-                  if (bone) bone.quaternion.copy(IDENT);
+                  if (bone) bone.rotation.set(0, 0, 0);
                 }
-                console.log("[VRM] A-pose 적용 완료");
+                console.log("[VRM] 차렷 자세 적용 완료 (팔 완전 수직)");
               } catch (e) {
-                console.warn("[VRM] A-pose 적용 실패 (T-pose 그대로):", e);
+                console.warn("[VRM] 차렷 자세 적용 실패 (T-pose 그대로):", e);
               }
               loaded = true;
               const ph = document.getElementById("vrmPlaceholder");
