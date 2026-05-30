@@ -112,9 +112,8 @@ async def _prewarm_endpoints(app: Any) -> None:
         except Exception:
             pass
 
-    async def _llm_warm():
-        """Qwen 397B 짧은 호출 — TTFB warm. 사내 vllm queue 가 우리 worker 의
-        endpoint 연결을 prepare 하게 함."""
+    async def _warm_model(model_attr: str, default_id: str, label: str, timeout_sec: float):
+        """단일 모델 warm-up — 짧은 "ok" 요청 후 timeout / 실패 시 명확한 로그."""
         try:
             from types import SimpleNamespace as _NS
             from open_webui.utils.chat import generate_chat_completion as _gen
@@ -125,72 +124,41 @@ async def _prewarm_endpoints(app: Any) -> None:
             })()
             user_obj = _pu(proxy)
             cfg = app.state.config
-            model_id = getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot")
-
-            # metadata 최소화 — 일반 chat 처리 hop 다 거치되 짧은 입력으로 빠르게
+            model_id = getattr(cfg, model_attr, default_id)
+            models = getattr(app.state, "MODELS", None) or {}
+            model_obj = models.get(model_id)
             try:
                 proxy.state.metadata = {
-                    "user_id": user_obj.id, "chat_id": "", "message_id": "prewarm",
-                    "session_id": "prewarm", "params": {}, "features": {},
+                    "user_id": user_obj.id, "chat_id": "", "message_id": f"prewarm-{label}",
+                    "session_id": f"prewarm-{label}", "params": {}, "features": {},
                     "variables": {}, "filter_ids": [], "tool_ids": None,
                     "tool_servers": None, "files": None,
-                    "model": app.state.MODELS.get(model_id) if getattr(app.state, "MODELS", None) else None,
-                    "direct": False, "public_chatbot": True,
+                    "model": model_obj, "direct": False, "public_chatbot": True,
                 }
             except Exception:
                 pass
-
             form_data = {
                 "model": model_id,
-                "messages": [{"role": "user", "content": "안녕"}],
-                "stream": False,
-            }
-            await _asyncio.wait_for(
-                _gen(proxy, form_data, user=user_obj, bypass_filter=True),
-                timeout=10.0,
-            )
-        except Exception as e:
-            log.debug(f"[voice_ws] prewarm LLM skipped: {e}")
-
-    async def _mini_llm_warm():
-        """Mini-LLM (PUBLIC_CHATBOT_BASE_MODEL) warm — cleaning prompt 호출이
-        매 turn 마다 mini-LLM 한 번이라 그 model 의 cold start (1~3초) 도 해소."""
-        try:
-            from types import SimpleNamespace as _NS
-            from open_webui.utils.chat import generate_chat_completion as _gen
-            from open_webui.routers.public_chatbot import _get_public_user as _pu
-
-            proxy = type("_Proxy", (), {
-                "app": app, "state": _NS(), "headers": {}, "cookies": {}
-            })()
-            user_obj = _pu(proxy)
-            cfg = app.state.config
-            mini_id = getattr(cfg, "PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini")
-            try:
-                proxy.state.metadata = {
-                    "user_id": user_obj.id, "chat_id": "", "message_id": "prewarm-mini",
-                    "session_id": "prewarm-mini", "params": {}, "features": {},
-                    "variables": {}, "filter_ids": [], "tool_ids": None,
-                    "tool_servers": None, "files": None,
-                    "model": app.state.MODELS.get(mini_id) if getattr(app.state, "MODELS", None) else None,
-                    "direct": False, "public_chatbot": True,
-                }
-            except Exception:
-                pass
-            form_data = {
-                "model": mini_id,
                 "messages": [{"role": "user", "content": "ok"}],
                 "stream": False,
             }
+            t0w = _t.time()
             await _asyncio.wait_for(
                 _gen(proxy, form_data, user=user_obj, bypass_filter=True),
-                timeout=8.0,
+                timeout=timeout_sec,
             )
+            log.info(f"[voice_ws] prewarm {label} ({model_id}) ok in {_t.time()-t0w:.2f}s")
+        except _asyncio.TimeoutError:
+            log.warning(f"[voice_ws] prewarm {label} ({model_attr}) timeout {timeout_sec}s")
         except Exception as e:
-            log.debug(f"[voice_ws] prewarm mini-LLM skipped: {e}")
+            log.warning(f"[voice_ws] prewarm {label} ({model_attr}) error: {type(e).__name__}: {e}")
 
-    log.info("[voice_ws] prewarm starting (LLM + mini-LLM + TTS)")
-    await _asyncio.gather(_tts_warm(), _llm_warm(), _mini_llm_warm(), return_exceptions=True)
+    log.info("[voice_ws] prewarm starting")
+    # 직렬: 사내 vllm 이 single queue 라 동시 호출 충돌. mini → main 순서.
+    await _warm_model("PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini", "mini-LLM", 5.0)
+    await _warm_model("PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot", "LLM", 5.0)
+    # TTS 는 별개 endpoint 라 병렬 가능
+    await _tts_warm()
     log.info(f"[voice_ws] prewarm done in {(_t.time() - t0):.2f}s")
 
 
