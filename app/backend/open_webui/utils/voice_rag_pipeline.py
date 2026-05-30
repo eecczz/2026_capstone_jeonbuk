@@ -171,7 +171,8 @@ def build_rag_processor(request: Request, websocket=None):
                 and self._pending_reply
                 and isinstance(frame, _TTSAudioRawFrame)
             ):
-                await _send_caption("reply", self._pending_reply)
+                # reply 자막 비표시 — phase_overlay (cleaning 결과) 만 화면에 표시.
+                # 캐릭터가 직접 말하는 형식이라 자막이 산만함.
                 self._sent_for_current = True
                 self._pending_reply = None
 
@@ -235,6 +236,117 @@ def build_rag_processor(request: Request, websocket=None):
             if self._stt_timeout_task and not self._stt_timeout_task.done():
                 self._stt_timeout_task.cancel()
             self._stt_timeout_task = None
+
+        async def _polish_summary_with_llm(
+            self, raw_user_text: str, rule_summary: str, history: list[dict]
+        ) -> str | None:
+            """phase_overlay 자막을 mini-LLM 으로 자연스럽게 다듬기.
+
+            룰 기반 summary 를 보강 — 추임새/오인식/멀티턴 통합 + 자연 한국어 문장.
+            timeout 3초, 실패 시 None 반환 (caller 가 룰 fallback).
+
+            끼워맞춤 회피:
+            - prompt 에 도청 어휘 list 안 박음
+            - "원문 의미 보존" 원칙 강조
+            - 단답이면 "질문이 잠시 명확하지 않아요" 그대로
+            """
+            try:
+                from open_webui.utils.chat import (
+                    generate_chat_completion as _gen_chat,
+                )
+                from open_webui.routers.public_chatbot import (
+                    _get_public_user as _get_pu,
+                )
+
+                cfg = self._owi_request.app.state.config
+                # mini-LLM 모델 선정 — 이미 활성화된 작은 모델 우선
+                models = getattr(self._owi_request.app.state, "MODELS", None) or {}
+                candidates = [
+                    getattr(cfg, "PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini"),
+                    "gpt-4o-mini",
+                    "gpt-5.4-mini",
+                ]
+                model_id = next((m for m in candidates if m in models), None)
+                if not model_id:
+                    return None  # 가용 mini-LLM 없음
+
+                # history context 압축 (최근 3 turn)
+                ctx_lines = []
+                if history:
+                    for turn in history[-3:]:
+                        role = turn.get("role")
+                        content = (turn.get("content") or "").strip()
+                        if content:
+                            short = content[:60] + ("…" if len(content) > 60 else "")
+                            ctx_lines.append(f"  {role}: {short}")
+                ctx_block = "\n이전 대화:\n" + "\n".join(ctx_lines) + "\n" if ctx_lines else ""
+
+                prompt = (
+                    "전북도청 안내 챗봇입니다. 사용자의 음성 발화를 자연스러운 한 문장으로 "
+                    "정리해 화면에 표시하려 합니다. STT 오인식·추임새·반복이 섞일 수 있어요.\n\n"
+                    "원칙:\n"
+                    "1) 추임새 ('어/음/네/아/잠깐/그게' 등) 제거.\n"
+                    "2) 같은 의도의 멀티턴 발화는 한 문장으로 통합.\n"
+                    "3) 이전 대화 컨텍스트가 있으면 지시대명사 ('거기서/그건/저거') 를 직전 주제로 치환.\n"
+                    "4) **원문 의미 보존이 우선** — 확신 없으면 원문 그대로. 임의로 도청 어휘를 끼워 넣지 마세요.\n"
+                    "5) STT 오인식 — 명백한 음운 유사 ('외향사랑→고향사랑', '담배품→답례품') 만 정정. 확신 없으면 원문.\n"
+                    "6) 단답·추임새만 들어왔으면 '질문이 잠시 명확하지 않아요' 그대로 출력.\n\n"
+                    "출력 형식: '질문은 …입니다.' 한 문장. 60자 이내. JSON 으로:\n"
+                    '  {"summary": "질문은 …입니다."}\n\n'
+                    f"{ctx_block}\n"
+                    f"룰 기반 1차 결과 (참고): {rule_summary}\n"
+                    f"원본 발화 (정정 대상): {raw_user_text}\n"
+                )
+
+                user_obj = _get_pu(self._owi_request)
+                try:
+                    self._owi_request.state.metadata = {
+                        "user_id": user_obj.id, "chat_id": "",
+                        "message_id": "polish-summary", "session_id": "polish-summary",
+                        "params": {}, "features": {}, "variables": {},
+                        "filter_ids": [], "tool_ids": None, "tool_servers": None,
+                        "files": None, "model": models.get(model_id),
+                        "direct": False, "public_chatbot": True,
+                    }
+                except Exception:
+                    pass
+
+                form_data = {
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                }
+                resp = await asyncio.wait_for(
+                    _gen_chat(self._owi_request, form_data, user=user_obj, bypass_filter=True),
+                    timeout=3.0,
+                )
+                if isinstance(resp, dict):
+                    choices = resp.get("choices") or []
+                    if choices:
+                        text = (choices[0].get("message") or {}).get("content", "").strip()
+                        # ```json ... ``` 감싸진 거 풀기
+                        text = text.strip("`").strip()
+                        if text.startswith("json"):
+                            text = text[4:].strip()
+                        import json as _json
+                        try:
+                            i = text.index("{"); j = text.rindex("}")
+                            data = _json.loads(text[i:j+1])
+                            summary = (data.get("summary") or "").strip().strip("\"'`“”")
+                            if 5 <= len(summary) <= 100 and "질문" in summary:
+                                return summary
+                        except Exception:
+                            # JSON 실패 — 한 줄 raw 그대로 사용 가능 여부
+                            line = text.split("\n")[0].strip().strip("\"'`“”.,!?")
+                            if 5 <= len(line) <= 100 and "질문" in line:
+                                return line
+                return None
+            except asyncio.TimeoutError:
+                log.info("[voice_ws] mini-LLM polish timeout (3s)")
+                return None
+            except Exception as e:
+                log.warning(f"[voice_ws] mini-LLM polish error: {e}")
+                return None
 
         async def _compose_summary_overlay(self, user_text: str) -> tuple[str, str] | None:
             """mini-LLM 한 호출로 두 결과 동시 추출 — STT noise 제거된 의미 일관.
@@ -543,12 +655,23 @@ def build_rag_processor(request: Request, websocket=None):
                     self._active_user_segments = []
                     return
 
-                # 룰 기반 cleaning — mini-LLM 제거 후 <10ms 에 같은 효과.
-                # 필러 제거 + 멀티턴 dedup + 직전 user 발화 명사구 기반 대명사 치환 +
-                # "질문은 …입니다" 자막 wrapping. LLM 호출 0, 비용 0, 끼워맞춤 0.
+                # 1차: 룰 기반 cleaning — 항상 fallback 으로 빠르게 결과 확보
                 from open_webui.utils.voice_cleaning_rules import clean_user_text
                 cleaned_keyword, cleaned_summary = clean_user_text(user_text, self._history)
                 log.info(f"[voice_ws] rule-cleaned keyword={cleaned_keyword!r} summary={cleaned_summary!r}")
+
+                # 2차: mini-LLM 으로 summary 매끄럽게 다듬기 (gpt-4o-mini, timeout 3s)
+                # 실패 시 룰 기반 결과 그대로 사용 — 안전 마진.
+                try:
+                    polished_summary = await self._polish_summary_with_llm(
+                        user_text, cleaned_summary, self._history
+                    )
+                    if polished_summary:
+                        cleaned_summary = polished_summary
+                        log.info(f"[voice_ws] mini-LLM polished: {cleaned_summary!r}")
+                except Exception as e:
+                    log.warning(f"[voice_ws] mini-LLM polish failed (룰 fallback): {e}")
+
                 await _send_caption("phase_overlay", cleaned_summary)
 
                 if not cleaned_keyword:
@@ -806,8 +929,8 @@ def build_rag_processor(request: Request, websocket=None):
                     await _send_caption("clear", "")
                     return
 
-                # 사용자 발화 자막 즉시 push
-                await _send_caption("transcription", user_text)
+                # 사용자 transcription 자막 비표시 — phase_overlay (cleaning 결과) 만
+                # 화면에 표시해 정리된 1 문장만 깔끔히 보이게 함.
                 await self._restart_generation(user_text)
                 return
 

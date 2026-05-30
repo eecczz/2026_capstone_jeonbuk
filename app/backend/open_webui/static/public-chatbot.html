@@ -464,8 +464,9 @@
     <div class="voice-state" id="voiceState"></div>
     <div class="voice-hint" id="voiceHint"></div>
     <div class="voice-caption" id="voiceCaption">
-      <div class="vc-bubble vc-user" id="vcUser"></div>
-      <div class="vc-bubble vc-bot" id="vcBot"></div>
+      <!-- user / bot 자막 bubble 비표시. phase_overlay (cleaning 결과) 만 화면에 표시 -->
+      <div class="vc-bubble vc-user" id="vcUser" style="display:none"></div>
+      <div class="vc-bubble vc-bot" id="vcBot" style="display:none"></div>
     </div>
   </div>
 
@@ -513,14 +514,9 @@
   let uiMode = "text";
 
   function setVoiceCaption(userText, botText) {
-    if (typeof userText === "string") {
-      vcUserEl.textContent = userText;
-      vcUserEl.classList.toggle("visible", !!userText.trim());
-    }
-    if (typeof botText === "string") {
-      vcBotEl.textContent = botText;
-      vcBotEl.classList.toggle("visible", !!botText.trim());
-    }
+    // user / bot 자막 표시 비활성화 — phase_overlay (cleaning 결과) 만 화면에 노출.
+    // 파라미터는 받지만 DOM 갱신은 하지 않음 (호출 사이트 보존).
+    return;
   }
   function clearVoiceCaption() {
     vcUserEl.textContent = "";
@@ -839,6 +835,7 @@
     const headSway = { x: 0, y: 0 };
     let currentMode = "idle";
     let loaded = false, loading = false, loadAttempted = false;
+    let measuredHeadY = 1.35;   // VRM 로드 시 측정 — eye/lookAt target 의 Y baseline
 
     async function ensureLoaded() {
       if (loaded || loading) return loaded;
@@ -907,6 +904,50 @@
               } catch (e) {
                 console.warn("[VRM] 차렷 자세 적용 실패 (T-pose 그대로):", e);
               }
+
+              // ── 카메라/위치 자동 보정 ──
+              // 새 캐릭터로 교체 시 origin/scale/키가 달라도 화면 구도(머리 상단 ~ 가슴)가
+              // 유지되도록 자동 보정. humanoid head/hips 의 worldPosition 을 측정한 뒤
+              // camera position·lookAt 을 헤드 기준으로 재설정.
+              //
+              // 기존 (히마와리 류 ~1.5m 모델): camera.position=(0, 1.5, 2.4), lookAt(0, 1.4, 0)
+              // 즉 카메라 Y ≈ headY × 1.0, target Y ≈ headY × 0.93, Z = headY × 1.6.
+              // 이 비율을 그대로 새 모델에 적용한다.
+              try {
+                vrm.scene.updateMatrixWorld(true);
+                const headNode = vrm.humanoid?.getNormalizedBoneNode(VRMLib.VRMHumanBoneName.Head);
+                const hipsNode = vrm.humanoid?.getNormalizedBoneNode(VRMLib.VRMHumanBoneName.Hips);
+                if (headNode && hipsNode) {
+                  const headWP = new THREE.Vector3();
+                  const hipsWP = new THREE.Vector3();
+                  headNode.getWorldPosition(headWP);
+                  hipsNode.getWorldPosition(hipsWP);
+                  const headY = headWP.y;
+                  const hipsY = hipsWP.y;
+                  const torsoLen = Math.max(0.2, headY - hipsY);   // 상체 길이 (안전 하한)
+                  // target = 머리 약간 아래 (목~가슴), camera = 머리 높이, Z = 상체 길이 × 1.7
+                  const targetY = headY - torsoLen * 0.18;
+                  const camY = headY * 1.0;
+                  const camZ = Math.max(1.6, torsoLen * 5.8);    // 너무 가까우면 얼굴만 → 하한
+                  camera.position.set(0, camY, camZ);
+                  camera.lookAt(0, targetY, 0);
+                  // 캐릭터 XZ 위치도 화면 중심에 — 일부 모델은 origin 이 발이 아니라 hip 일 수 있음
+                  vrm.scene.position.x -= headWP.x;
+                  vrm.scene.position.z -= headWP.z;
+                  // animation loop 의 eye/lookAt target Y baseline 갱신
+                  measuredHeadY = headY;
+                  console.log("[VRM] auto-fit: headY=", headY.toFixed(3),
+                              "hipsY=", hipsY.toFixed(3),
+                              "torsoLen=", torsoLen.toFixed(3),
+                              "→ cam(0,", camY.toFixed(3), ",", camZ.toFixed(3), ")",
+                              "lookAt(0,", targetY.toFixed(3), ",0)");
+                } else {
+                  console.warn("[VRM] auto-fit skip: head/hips bone 없음 — 디폴트 카메라 유지");
+                }
+              } catch (autoFitErr) {
+                console.warn("[VRM] auto-fit 실패 — 디폴트 카메라 유지:", autoFitErr);
+              }
+
               loaded = true;
               const ph = document.getElementById("vrmPlaceholder");
               if (ph) ph.remove();   // 단순 display:none 으론 CSS 충돌 가능 — DOM 통째 제거
@@ -1002,9 +1043,9 @@
               head.rotation.x += (targetX - head.rotation.x) * 0.08;
               head.rotation.y += (headSway.y - head.rotation.y) * 0.03;
             }
-            // lookAt 적용
+            // lookAt 적용 — 측정된 head Y 기준 (모델 키 차이 흡수)
             if (vrm.lookAt?.target) {
-              vrm.lookAt.target.position.set(eyeTarget.x, 1.35 + eyeTarget.y, 1);
+              vrm.lookAt.target.position.set(eyeTarget.x, measuredHeadY + eyeTarget.y, 1);
             } else if (vrm.humanoid?.getNormalizedBoneNode) {
               // VRM 1.0 lookAt target 없으면 raw bone rotation
               const lEye = vrm.humanoid.getNormalizedBoneNode("leftEye");
