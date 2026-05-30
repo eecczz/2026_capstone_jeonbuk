@@ -171,17 +171,122 @@ def substitute_pronouns(text: str, topic: Optional[str]) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 6. "질문은 …입니다" wrapping
+# 6. "질문은 …입니다" wrapping — 의문 종결 어미를 명사형 연결로 변환.
+# 옛 출력 "질문은 ~가 뭐야?입니다" 같은 어색함 → "질문은 ~가 무엇인지입니다" 로
+# 매끄럽게. 한국어 종결 어미 + 의문사 패턴 우선순위로 매칭 (longest match).
 # ─────────────────────────────────────────────────────────────────────
+_ENDING_REWRITES: list[tuple[re.Pattern, str]] = [
+    # 가장 긴 / 구체적 패턴 먼저
+    (re.compile(r"(무엇이?\s*있)\s*[나는습]?\w*\??$"), "무엇이 있는지"),
+    (re.compile(r"뭐가?\s*있\w*\??$"), "무엇이 있는지"),
+    (re.compile(r"뭐\s+있\w*\??$"), "무엇이 있는지"),
+    (re.compile(r"(뭐|무엇)예요\??$"), "무엇인지"),
+    (re.compile(r"(뭐|무엇)\s*야\??$"), "무엇인지"),
+    (re.compile(r"무엇인(가요|가|지)\??$"), "무엇인지"),
+    (re.compile(r"무엇입니까\??$"), "무엇인지"),
+
+    # 어떻게
+    (re.compile(r"어떻게\s*해야?\s*(하나요?|되나요?|돼요?)\??$"), "어떻게 해야 하는지"),
+    (re.compile(r"어떻게\s*되나요?\??$"), "어떻게 되는지"),
+    (re.compile(r"어떻게\s*해야?\??$"), "어떻게 해야 하는지"),
+    (re.compile(r"어떻게\s*해요?\??$"), "어떻게 하는지"),
+    (re.compile(r"어떡해\??$"), "어떻게 해야 하는지"),
+    (re.compile(r"어떻게\??$"), "어떻게 되는지"),
+
+    # 어디
+    (re.compile(r"어디(서|에서)요?\??$"), "어디서인지"),
+    (re.compile(r"어디예요?\??$"), "어디인지"),
+    (re.compile(r"어디야\??$"), "어디인지"),
+    (re.compile(r"어디\??$"), "어디인지"),
+
+    # 언제 / 얼마 / 누구 / 왜
+    (re.compile(r"언제예요?\??$"), "언제인지"),
+    (re.compile(r"언제야\??$"), "언제인지"),
+    (re.compile(r"언제\??$"), "언제인지"),
+    (re.compile(r"얼마예요?\??$"), "얼마인지"),
+    (re.compile(r"얼마야\??$"), "얼마인지"),
+    (re.compile(r"얼마\??$"), "얼마인지"),
+    (re.compile(r"누구예요?\??$"), "누구인지"),
+    (re.compile(r"누구야\??$"), "누구인지"),
+    (re.compile(r"누구\??$"), "누구인지"),
+    (re.compile(r"왜예요?\??$"), "왜인지"),
+    (re.compile(r"왜야\??$"), "왜인지"),
+    (re.compile(r"왜\??$"), "왜인지"),
+
+    # 동사 종결 → 명사형 ("~인지", "~는지")
+    (re.compile(r"맞나요?\??$"), "맞는지"),
+    (re.compile(r"맞아요?\??$"), "맞는지"),
+    (re.compile(r"맞지요?\??$"), "맞는지"),
+    (re.compile(r"있나요?\??$"), "있는지"),
+    (re.compile(r"있어요?\??$"), "있는지"),
+    (re.compile(r"있을까요?\??$"), "있을지"),
+    (re.compile(r"되나요?\??$"), "되는지"),
+    (re.compile(r"돼요?\??$"), "되는지"),
+    (re.compile(r"되는지요?\??$"), "되는지"),
+    (re.compile(r"하나요?\??$"), "하는지"),
+    (re.compile(r"해요?\??$"), "하는지"),
+    (re.compile(r"인가요?\??$"), "인지"),
+    (re.compile(r"이에요?\??$"), "인지"),
+    (re.compile(r"이야\??$"), "인지"),
+
+    # 명령형 / 청유형 → 명사절
+    (re.compile(r"알려\s*주세요\.?$"), "알려달라는 것"),
+    (re.compile(r"알려줘\.?$"), "알려달라는 것"),
+    (re.compile(r"알려주실?\w*\??$"), "알려달라는 것"),
+    (re.compile(r"보여\s*주세요\.?$"), "보여달라는 것"),
+    (re.compile(r"보여줘\.?$"), "보여달라는 것"),
+    (re.compile(r"안내해\s*주세요\.?$"), "안내해 달라는 것"),
+    (re.compile(r"문의하고\s*싶어요?\.?$"), "문의하고 싶다는 것"),
+    (re.compile(r"신청하고\s*싶어요?\.?$"), "신청하고 싶다는 것"),
+
+    # 가능성 표현
+    (re.compile(r"가능\w*\??$"), "가능한지"),
+    (re.compile(r"신청\s*할\s*수\s*있\w*\??$"), "신청 가능한지"),
+]
+
+
+def rewrite_question_ending(text: str) -> str:
+    """발화의 의문 / 종결 어미를 명사형 연결로 변환.
+
+    예:
+      "고향사랑기부제 뭐야?"   → "고향사랑기부제 무엇인지"
+      "답례품 뭐 있어?"        → "답례품 무엇이 있는지"
+      "신청 어떻게?"           → "신청 어떻게 되는지"
+      "이번 달 보도자료 알려줘" → "이번 달 보도자료 알려달라는 것"
+
+    매칭 안 되면 원문 그대로.
+    """
+    s = (text or "").strip()
+    for pat, repl in _ENDING_REWRITES:
+        m = pat.search(s)
+        if m:
+            return s[: m.start()] + repl
+    return s
+
+
 def wrap_as_question(text: str) -> str:
-    """phase_overlay 자막용 — "질문은 [text] 에 대한 것입니다" 형식."""
-    text = (text or "").strip().strip(".,!?~")
+    """phase_overlay 자막용 — "질문은 [text] 입니다" 형식.
+
+    의문 / 종결 어미를 자연 한국어 명사형으로 변환 후 wrap.
+    옛 "질문은 ~가 뭐야?입니다" → 새 "질문은 ~가 무엇인지입니다" 매끄러움.
+    """
+    text = (text or "").strip()
     if not text:
         return "질문이 잠시 명확하지 않아요."
-    # 이미 의문문 (~?, ~까, ~요 등) 으로 끝나면 그대로
-    if re.search(r"[가-힣](요|까|니|어|아|지)\?$", text + "?"):
-        return f"질문은 {text} 입니다."
-    return f"질문은 {text}에 대한 것입니다."
+
+    # 종결 어미 명사형 변환
+    rewritten = rewrite_question_ending(text)
+    # 끝 문장부호 정리
+    rewritten = rewritten.rstrip(".,!?~ \t")
+    if not rewritten:
+        return "질문이 잠시 명확하지 않아요."
+
+    # 변환 결과가 명사형으로 끝나면 (인지/는지/것/은지) 그대로 wrap
+    if re.search(r"(인지|는지|을지|것|걸|디인지|마인지)$", rewritten):
+        return f"질문은 {rewritten}입니다."
+
+    # 그 외 — "에 대한 것입니다" 로 안전한 wrap
+    return f"질문은 {rewritten}에 대한 것입니다."
 
 
 # ─────────────────────────────────────────────────────────────────────
