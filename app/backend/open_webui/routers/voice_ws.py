@@ -174,7 +174,7 @@ async def _prewarm_endpoints(app: Any) -> None:
     )
     await _warm_model(
         "PUBLIC_CHATBOT_MODEL_ID",
-        "Qwen/Qwen3-30B-A3B",
+        "Qwen3.5-397B-A17B-FP8",
         "LLM",
         12.0,
         warm_prompt=WARM_PROMPT,
