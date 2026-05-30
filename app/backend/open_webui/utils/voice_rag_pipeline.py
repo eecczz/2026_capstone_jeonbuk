@@ -549,8 +549,6 @@ def build_rag_processor(request: Request, websocket=None):
                 from open_webui.utils.voice_cleaning_rules import clean_user_text
                 cleaned_keyword, cleaned_summary = clean_user_text(user_text, self._history)
                 log.info(f"[voice_ws] rule-cleaned keyword={cleaned_keyword!r} summary={cleaned_summary!r}")
-                # _generate_reply 의 filler 흐름에서 self._last_cleaned_summary 활용
-                self._last_cleaned_summary = cleaned_summary
                 await _send_caption("phase_overlay", cleaned_summary)
 
                 if not cleaned_keyword:
@@ -589,58 +587,7 @@ def build_rag_processor(request: Request, websocket=None):
             full_reply = ""
             sentence_count = 0
             _stream_t0 = None
-            # 30자 이상에서 sentence 분리 push (latency hiding — 60자 → 30자).
-            # Edge TTS 가 빠르므로 짧은 sentence 도 부담 X. 사용자 첫 음성 빠름.
-            MIN_SENT_LEN = 30
-
-            # Pre-LLM Filler 음성 (latency hiding) — Realtime API 패턴.
-            # 1) 첫 filler 즉시 push (~0.5s 안 사용자에게 들림)
-            # 2) cleaning summary 도 짧게 push (의도 확인 + 자연스러움)
-            # 3) Background heartbeat task — LLM 응답 늦으면 7s 마다 추가 filler push
-            #    Qwen3.5-397B 의 TTFB ~80s+ 같은 케이스 cover.
-            import random as _random
-            _FILLERS_PRE = [
-                "네, 잠시만요.",
-                "확인해 드릴게요.",
-                "네, 답변 드리겠습니다.",
-                "잠깐만 기다려 주세요.",
-            ]
-            _FILLERS_WAIT = [
-                "자료 확인하고 있어요.",
-                "조금만 더 기다려 주세요.",
-                "거의 다 됐어요.",
-                "답변 정리 중이에요.",
-            ]
-            try:
-                _filler = _random.choice(_FILLERS_PRE)
-                log.info(f"[voice_ws] pre-LLM filler push: {_filler!r}")
-                await self._push_tts_if_current(generation_id, _filler)
-                # cleaning summary 가 의미 있으면 (단답 아님) 자연 의도 확인 음성
-                _summary_for_speech = getattr(self, "_last_cleaned_summary", None)
-                if _summary_for_speech and len(_summary_for_speech) > 8:
-                    # "질문은 …입니다" 끝부분만 자연스럽게
-                    log.info(f"[voice_ws] cleaning summary 음성 push: {_summary_for_speech!r}")
-                    await self._push_tts_if_current(generation_id, _summary_for_speech)
-            except Exception as _fe:
-                log.debug(f"[voice_ws] filler skip: {_fe}")
-
-            # Heartbeat — LLM 첫 delta 도착 전 7s 마다 추가 filler push.
-            # _first_delta_arrived 가 True 면 종료.
-            _heartbeat_state = {"on": True, "first_delta": False}
-            async def _heartbeat():
-                """LLM 응답 늦을 때 사용자 답답함 ↓ — 7s 마다 짧은 안내 음성."""
-                await asyncio.sleep(7.0)
-                while _heartbeat_state["on"] and not _heartbeat_state["first_delta"]:
-                    if not self._is_current_generation(generation_id):
-                        return
-                    try:
-                        msg = _random.choice(_FILLERS_WAIT)
-                        log.info(f"[voice_ws] heartbeat filler: {msg!r}")
-                        await self._push_tts_if_current(generation_id, msg)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(7.0)
-            _heartbeat_task = asyncio.create_task(_heartbeat())
+            MIN_SENT_LEN = 60
 
             try:
                 from open_webui.routers.public_chatbot import (
@@ -707,12 +654,6 @@ def build_rag_processor(request: Request, websocket=None):
                         if _stream_t0 is None:
                             _stream_t0 = now
                             log.info("[voice_ws] FIRST delta arrived id=%s", generation_id)
-                            # Heartbeat 종료 — 본 답변 시작했으니 추가 filler 막음
-                            try:
-                                _heartbeat_state["first_delta"] = True
-                                _heartbeat_state["on"] = False
-                            except Exception:
-                                pass
                             # LLM 이 답변을 만들기 시작 — orb 는 여전히 thinking
                             await _send_caption("phase_label", "답변 작성 중")
                         delta_count += 1
@@ -764,12 +705,6 @@ def build_rag_processor(request: Request, websocket=None):
                     elif kind == "error":
                         log.warning(f"[voice_ws] stream error: {payload}")
                         stream_failed = True
-                        # Heartbeat 종료 — 에러 후 무한 filler push 방지
-                        try:
-                            _heartbeat_state["first_delta"] = True
-                            _heartbeat_state["on"] = False
-                        except Exception:
-                            pass
 
                 if stream_failed and not full_reply:
                     raise RuntimeError("LLM stream produced no output")
@@ -777,12 +712,6 @@ def build_rag_processor(request: Request, websocket=None):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # Heartbeat 종료 — 어떤 에러든 무한 filler push 차단
-                try:
-                    _heartbeat_state["first_delta"] = True
-                    _heartbeat_state["on"] = False
-                except Exception:
-                    pass
                 if not self._is_current_generation(generation_id):
                     return
                 log.exception(f"voice_ws streaming failed, falling back to non-stream: {e}")
