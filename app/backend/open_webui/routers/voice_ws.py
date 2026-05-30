@@ -112,8 +112,11 @@ async def _prewarm_endpoints(app: Any) -> None:
         except Exception:
             pass
 
-    async def _warm_model(model_attr: str, default_id: str, label: str, timeout_sec: float):
-        """단일 모델 warm-up — 짧은 "ok" 요청 후 timeout / 실패 시 명확한 로그."""
+    async def _warm_model(model_attr: str, default_id: str, label: str, timeout_sec: float, warm_prompt: str | None = None):
+        """단일 모델 warm-up — 사용자 첫 발화 처리 시 cold start 해소.
+
+        warm_prompt 가 있으면 그걸로 warm (RAG 와 비슷한 prompt 크기 → vllm 의
+        KV cache + paged attention 까지 warm). 없으면 "ok" 짧은 호출."""
         try:
             from types import SimpleNamespace as _NS
             from open_webui.utils.chat import generate_chat_completion as _gen
@@ -137,9 +140,17 @@ async def _prewarm_endpoints(app: Any) -> None:
                 }
             except Exception:
                 pass
+            # warm_prompt — vllm 의 KV cache + paged attention 까지 warm. system + user
+            # 역할로 RAG 호출과 비슷한 모양. timeout 안 끝나면 silent skip.
+            messages = [{"role": "user", "content": warm_prompt or "ok"}]
+            if warm_prompt:
+                messages = [
+                    {"role": "system", "content": "당신은 전북도청 안내 AI입니다. 짧게 답하세요."},
+                    {"role": "user", "content": warm_prompt},
+                ]
             form_data = {
                 "model": model_id,
-                "messages": [{"role": "user", "content": "ok"}],
+                "messages": messages,
                 "stream": False,
             }
             t0w = _t.time()
@@ -154,10 +165,21 @@ async def _prewarm_endpoints(app: Any) -> None:
             log.warning(f"[voice_ws] prewarm {label} ({model_attr}) error: {type(e).__name__}: {e}")
 
     log.info("[voice_ws] prewarm starting")
-    # 직렬: 사내 vllm 이 single queue 라 동시 호출 충돌. mini → main 순서.
-    await _warm_model("PUBLIC_CHATBOT_BASE_MODEL", "Qwen3.5-4B", "mini-LLM", 5.0)
-    await _warm_model("PUBLIC_CHATBOT_MODEL_ID", "Qwen/Qwen3-30B-A3B", "LLM", 5.0)
-    # TTS 는 별개 endpoint 라 병렬 가능
+    # mini-LLM 제거됨 (cleaning 룰 기반으로 전환). main LLM 만 warm.
+    # warm_prompt 로 RAG 와 비슷한 system+user 호출 → vllm KV cache 까지 warm.
+    # timeout 12s — 첫 cold start 가 ~10s 라 적당히 여유.
+    WARM_PROMPT = (
+        "전북도청 안내해 주세요. 주요 사업은 무엇인가요? "
+        "간단히 한두 문장으로 답해 주세요."
+    )
+    await _warm_model(
+        "PUBLIC_CHATBOT_MODEL_ID",
+        "Qwen/Qwen3-30B-A3B",
+        "LLM",
+        12.0,
+        warm_prompt=WARM_PROMPT,
+    )
+    # TTS endpoint 도 warm (병렬 안 해도 짧음)
     await _tts_warm()
     log.info(f"[voice_ws] prewarm done in {(_t.time() - t0):.2f}s")
 
