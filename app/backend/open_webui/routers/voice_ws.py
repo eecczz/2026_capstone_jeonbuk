@@ -155,8 +155,8 @@ async def _prewarm_endpoints(app: Any) -> None:
 
     log.info("[voice_ws] prewarm starting")
     # 직렬: 사내 vllm 이 single queue 라 동시 호출 충돌. mini → main 순서.
-    await _warm_model("PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini", "mini-LLM", 5.0)
-    await _warm_model("PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot", "LLM", 5.0)
+    await _warm_model("PUBLIC_CHATBOT_BASE_MODEL", "Qwen3.5-4B", "mini-LLM", 5.0)
+    await _warm_model("PUBLIC_CHATBOT_MODEL_ID", "Qwen/Qwen3-30B-A3B", "LLM", 5.0)
     # TTS 는 별개 endpoint 라 병렬 가능
     await _tts_warm()
     log.info(f"[voice_ws] prewarm done in {(_t.time() - t0):.2f}s")

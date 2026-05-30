@@ -261,7 +261,7 @@ def build_rag_processor(request: Request, websocket=None):
                 # cleaning 은 짧은 JSON 출력만 필요하므로 fallback (mini 모델) 우선.
                 # public_chatbot_model 은 RAG 답변용 큰 모델이라 응답 시간 4~11s 걸려
                 # timeout 1.5~5s 안에 못 들어옴 → cleaning fail → noise query → 못 찾음.
-                fallback_model = getattr(cfg, "PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini")
+                fallback_model = getattr(cfg, "PUBLIC_CHATBOT_BASE_MODEL", "Qwen3.5-4B")
                 main_model = getattr(cfg, "PUBLIC_CHATBOT_MODEL_ID", "jeonbuk-public-chatbot")
                 models = getattr(self._owi_request.app.state, "MODELS", None) or {}
                 model_id = fallback_model if fallback_model in models else (
