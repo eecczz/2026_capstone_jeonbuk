@@ -798,7 +798,10 @@ async def _stream_public_llm_reply(
     # GraphRAG (Neo4j) 결과를 system_prompt 에 inject — 카테고리별 세부 항목
     # 같은 fan-out 정보가 vector chunk 만으로는 누락되기 쉬워서 graph 보조 검색.
     # voice ↔ text 일관성을 위해 _run_chat_internal (텍스트) 에도 동일 graph 호출.
-    system_prompt = _augment_with_graph_context(system_prompt, effective_retrieval_query)
+    # voice_mode 에선 input token 절약 위해 skip (vllm prefill 시간 ↓ → TTFB ↑).
+    # GraphRAG 의 fan-out 정보는 vector top_k=3 결과 + LLM 자체 지식으로 cover 가능.
+    if not voice_mode:
+        system_prompt = _augment_with_graph_context(system_prompt, effective_retrieval_query)
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for turn in history or []:
