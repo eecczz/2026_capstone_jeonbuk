@@ -86,21 +86,29 @@ def dedup_tokens(text: str) -> str:
 # ─────────────────────────────────────────────────────────────────────
 # 4. 직전 user 발화에서 "주제 명사구" 추출 (대명사 치환용)
 # ─────────────────────────────────────────────────────────────────────
-# 직전 user 발화의 종결 어미·조사·물음표 앞 명사구를 주제로.
-# 예: "답례품 뭐 있어?" → "답례품"
-#     "고향사랑기부제 신청 알려줘" → "고향사랑기부제 신청"
-#     "청년 정책 뭐 있나" → "청년 정책"
-_TOPIC_TAIL_PAT = re.compile(
-    r"^\s*(?:.+?\s+)?"
-    r"([가-힣A-Za-z][가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z][가-힣A-Za-z0-9]+){0,2})"
-    r"(?:\s+(?:뭐|어떻게|어디|언제|왜|무엇|얼마|몇)\w*)?"
-    r"\s*[은는이가을를]?\s*[?!.~]?\s*$"
-)
+# 한국어 의문사 + 동사 종결 어미 set — topic 에서 제외.
+_INTERROGATIVES: set[str] = {
+    "뭐", "뭐야", "무엇", "어떻게", "어디", "언제", "왜",
+    "얼마", "몇", "어떤", "어느", "어떡해", "어쩌지",
+}
+_VERB_ENDINGS: set[str] = {
+    "있어", "있나", "있어요", "있을까", "있죠",
+    "알려줘", "알려줄래", "알려주세요", "알려주실래요",
+    "해줘", "해주세요", "해도", "할까", "할게",
+    "맞나", "맞아요", "맞죠", "맞지",
+    "이야", "이지", "이에요", "예요", "인가요", "인지", "인가",
+    "되나", "되나요", "돼요", "될까",
+    "있는지", "없는지",
+}
 
 
 def extract_topic_from_history(history: list[dict]) -> Optional[str]:
-    """가장 최근 user 발화의 끝 명사구를 주제로. assistant 답변은 일단 보지 않음
-    (assistant 답변은 RAG 결과라 너무 길고 노이즈 많음). 없으면 None."""
+    """가장 최근 user 발화에서 의문사·동사 제거 후 남은 명사구 = topic.
+
+    예: "답례품 뭐 있어?"            → "답례품"
+        "고향사랑기부제 신청 알려줘"  → "고향사랑기부제 신청"
+        "청년 정책 뭐 있나요"         → "청년 정책"
+    """
     if not history:
         return None
     for turn in reversed(history):
@@ -109,19 +117,22 @@ def extract_topic_from_history(history: list[dict]) -> Optional[str]:
         content = (turn.get("content") or "").strip()
         if not content:
             continue
-        # 필러 제거 후 topic 추출
-        cleaned = remove_fillers(content)
-        cleaned = re.sub(r"[?!.~]", "", cleaned).strip()
-        if not cleaned:
-            continue
-        m = _TOPIC_TAIL_PAT.match(cleaned)
-        if m:
-            return m.group(1).strip()
-        # fallback — 마지막 명사구 (대충 2~3 토큰)
-        toks = cleaned.split()
-        if toks:
-            return " ".join(toks[: min(3, len(toks))])
-        return None
+        # 필러 + 의문사 + 동사 종결 토큰 모두 제거 → 남은 게 topic
+        tokens = content.split()
+        topic_toks: list[str] = []
+        for tok in tokens:
+            bare = tok.strip(".,!?~ \t")
+            bare_norm = _norm_token(bare)
+            if bare in _FILLERS or bare_norm in _FILLERS:
+                continue
+            if bare in _INTERROGATIVES or bare_norm in _INTERROGATIVES:
+                continue
+            if bare in _VERB_ENDINGS or bare_norm in _VERB_ENDINGS:
+                continue
+            topic_toks.append(bare_norm if bare_norm else bare)
+        if topic_toks:
+            # 첫 2~3 토큰 = topic (보통 명사구 앞 = 핵심 주제)
+            return " ".join(topic_toks[: min(3, len(topic_toks))])
     return None
 
 
