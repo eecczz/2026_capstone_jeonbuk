@@ -860,9 +860,10 @@
         renderer.setSize(canvas.width, canvas.height, false);
 
         scene = new THREE.Scene();
+        // speech-coach (eecczz/speech-coach) 의 stage.ts 와 동일한 카메라
         camera = new THREE.PerspectiveCamera(30, canvas.width / canvas.height, 0.1, 20);
-        camera.position.set(0, 1.4, 1.2);
-        camera.lookAt(0, 1.2, 0);
+        camera.position.set(0, 1.5, 2.4);
+        camera.lookAt(0, 1.4, 0);
 
         scene.add(new THREE.AmbientLight(0xffffff, 0.7));
         const dir = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -879,9 +880,40 @@
             (gltf) => {
               vrm = gltf.userData.vrm;
               VRMLib.VRMUtils.removeUnnecessaryVertices(gltf.scene);
-              VRMLib.VRMUtils.removeUnnecessaryJoints(gltf.scene);
-              vrm.scene.rotation.y = Math.PI;   // 카메라 쪽 정면 (VRM 0.x 보정)
+              VRMLib.VRMUtils.combineSkeletons(gltf.scene);
+              // VRM 1.0 = +Z 정면 / VRM 0.x = -Z 정면. rotateVRM0 가 버전 자동 감지.
+              // manual rotation.y=PI 는 VRM 1.0 모델 사용 시 오히려 잘못된 방향이라
+              // 사용자가 본 "뒤돌아 있다" 의 진짜 원인이었음.
+              VRMLib.VRMUtils.rotateVRM0(vrm);
               scene.add(vrm.scene);
+              // 차렷 자세 — speech-coach retarget.ts 의 A_POSE_UPPER_TARGETS 적용.
+              // VRM 모델은 기본 T-pose 라 양 상완을 (±0.05, -0.999, 0) 방향으로
+              // 회전해서 자연 차렷 자세로 만듦.
+              try {
+                const VRMBone = VRMLib.VRMHumanBoneName;
+                const upper = [
+                  [VRMBone.LeftUpperArm, new THREE.Vector3(0.05, -0.999, 0).normalize()],
+                  [VRMBone.RightUpperArm, new THREE.Vector3(-0.05, -0.999, 0).normalize()],
+                ];
+                for (const [name, targetDir] of upper) {
+                  const bone = vrm.humanoid?.getNormalizedBoneNode(name);
+                  if (!bone || !bone.parent) continue;
+                  const restWorldDir = new THREE.Vector3(0, 1, 0).applyQuaternion(bone.getWorldQuaternion(new THREE.Quaternion())).normalize();
+                  const deltaWorldQ = new THREE.Quaternion().setFromUnitVectors(restWorldDir, targetDir);
+                  const newWorldQ = deltaWorldQ.multiply(bone.getWorldQuaternion(new THREE.Quaternion()));
+                  const parentInvWorldQ = bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+                  bone.quaternion.copy(parentInvWorldQ.multiply(newWorldQ));
+                }
+                // Lower arm 도 identity 로 — 자연스러운 일자 늘어짐
+                const IDENT = new THREE.Quaternion();
+                for (const name of [VRMBone.LeftLowerArm, VRMBone.RightLowerArm, VRMBone.LeftHand, VRMBone.RightHand]) {
+                  const bone = vrm.humanoid?.getNormalizedBoneNode(name);
+                  if (bone) bone.quaternion.copy(IDENT);
+                }
+                console.log("[VRM] A-pose 적용 완료");
+              } catch (e) {
+                console.warn("[VRM] A-pose 적용 실패 (T-pose 그대로):", e);
+              }
               loaded = true;
               const ph = document.getElementById("vrmPlaceholder");
               if (ph) ph.remove();   // 단순 display:none 으론 CSS 충돌 가능 — DOM 통째 제거
@@ -892,142 +924,20 @@
             },
             undefined,
             (err) => {
-              console.warn("[VRM] character.vrm 없음 — Three.js primitive 사람 형상 fallback 으로 표시:", err);
-              // Fallback: VRM 없이도 시각화. 디테일 보강한 사람 형상.
+              console.warn("[VRM] character.vrm 없음 — primitive fallback (단순 head+body):", err);
+              // Fallback: speech-coach 의 stage.ts 와 동일한 단순 fallback.
+              // 진짜 VRM 모델이 정상 케이스. primitive 는 진단용 placeholder.
               const group = new THREE.Group();
-              const skin = new THREE.MeshPhongMaterial({ color: 0xf2c9a0, shininess: 8 });
-              const suit = new THREE.MeshPhongMaterial({ color: 0x1e3a6f, shininess: 18 });   // 정장 네이비
-              const shirt = new THREE.MeshPhongMaterial({ color: 0xfafafa, shininess: 25 });  // 흰 셔츠
-              const hair = new THREE.MeshPhongMaterial({ color: 0x1a1410, shininess: 30 });   // 검은 머리
-              const tie = new THREE.MeshPhongMaterial({ color: 0x9c1d2b, shininess: 35 });    // 와인 넥타이
-              const dark = new THREE.MeshPhongMaterial({ color: 0x111111, shininess: 40 });   // 신발/눈
-              const glass = new THREE.MeshPhongMaterial({ color: 0x222222, shininess: 80 });  // 안경테
+              const skin = new THREE.MeshStandardMaterial({ color: 0xffd8b8 });
+              const suit = new THREE.MeshStandardMaterial({ color: 0x3a6ea5 });
 
-              // 목
-              const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.06, 12), skin);
-              neck.position.set(0, 1.42, 0);
-              group.add(neck);
-
-              // 머리 — 약간 타원 (사람 비율)
-              const headG = new THREE.SphereGeometry(0.13, 32, 32);
-              headG.scale(1.0, 1.15, 1.05);
-              const head = new THREE.Mesh(headG, skin);
-              head.position.set(0, 1.55, 0);
+              // 머리 + 몸통 — speech-coach stage.ts 와 동일 단순 fallback
+              const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 32, 32), skin);
+              head.position.set(0, 1.5, 0);
               group.add(head);
-
-              // 머리카락 — 명확히 뒤쪽 중심 + 위쪽 (앞이마 덜 가림)
-              const hairTop = new THREE.Mesh(new THREE.SphereGeometry(0.145, 32, 16, 0, Math.PI*2, 0, Math.PI*0.48), hair);
-              hairTop.position.set(0, 1.60, -0.015);
-              hairTop.scale.set(1.05, 0.92, 1.08);
-              group.add(hairTop);
-
-              // 안경 — 키움 (radius 0.028 → 0.042)
-              const rimL = new THREE.Mesh(new THREE.TorusGeometry(0.042, 0.008, 10, 28), glass);
-              rimL.position.set(-0.05, 1.555, 0.118);
-              rimL.rotation.y = -0.05;
-              group.add(rimL);
-              const rimR = new THREE.Mesh(new THREE.TorusGeometry(0.042, 0.008, 10, 28), glass);
-              rimR.position.set(0.05, 1.555, 0.118);
-              rimR.rotation.y = 0.05;
-              group.add(rimR);
-              const bridge = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.022, 6), glass);
-              bridge.rotation.z = Math.PI/2;
-              bridge.position.set(0, 1.555, 0.122);
-              group.add(bridge);
-
-              // 눈 (키움 — 정면 명확)
-              for (const ex of [-0.05, 0.05]) {
-                const eye = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 12), dark);
-                eye.position.set(ex, 1.555, 0.122);
-                group.add(eye);
-              }
-
-              // 코 — 작은 piramid (정면 명확)
-              const nose = new THREE.Mesh(new THREE.ConeGeometry(0.012, 0.025, 4), skin);
-              nose.position.set(0, 1.525, 0.13);
-              nose.rotation.x = -Math.PI / 12;
-              group.add(nose);
-
-              // 입 — 키움 (radius 0.015 → 0.022)
-              const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.022, 0.005, 6, 16, Math.PI), new THREE.MeshPhongMaterial({color:0x6a2828}));
-              mouth.rotation.z = Math.PI;
-              mouth.position.set(0, 1.49, 0.122);
-              group.add(mouth);
-
-              // 어깨 (정장) — 자연 어깨 폭
-              const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.20, 0.10, 16), suit);
-              shoulder.position.set(0, 1.34, 0);
-              group.add(shoulder);
-
-              // 몸통 정장
-              const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.22, 0.50, 16), suit);
-              torso.position.set(0, 1.07, 0);
-              group.add(torso);
-
-              // 셔츠 V (안쪽)
-              const vShirt = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.20, 8), shirt);
-              vShirt.rotation.x = Math.PI;
-              vShirt.position.set(0, 1.27, 0.16);
-              group.add(vShirt);
-
-              // 셔츠 직사각 (몸통 위쪽)
-              const shirtBox = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.20, 0.02), shirt);
-              shirtBox.position.set(0, 1.18, 0.17);
-              group.add(shirtBox);
-
-              // 넥타이 — 위 매듭 + 아래 길게
-              const tieKnot = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.02), tie);
-              tieKnot.position.set(0, 1.30, 0.183);
-              group.add(tieKnot);
-              const tieLong = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.20, 0.012), tie);
-              tieLong.position.set(0, 1.17, 0.184);
-              group.add(tieLong);
-
-              // 정장 단추 — 2개
-              for (const by of [1.05, 0.95]) {
-                const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.005, 12), dark);
-                btn.rotation.x = Math.PI/2;
-                btn.position.set(0, by, 0.21);
-                group.add(btn);
-              }
-
-              // 팔 (정장 소매) — 옆구리 가까이 차렷 자세
-              for (const x of [-0.19, 0.19]) {
-                const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.048, 0.60, 12), suit);
-                arm.position.set(x, 1.02, 0);
-                group.add(arm);
-                // 손 — 팔 끝 부근
-                const hand = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 16), skin);
-                hand.position.set(x, 0.72, 0);
-                hand.scale.set(1, 0.85, 1);
-                group.add(hand);
-              }
-
-              // 다리 (정장 바지)
-              for (const x of [-0.075, 0.075]) {
-                const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.062, 0.055, 0.62, 12), new THREE.MeshPhongMaterial({color:0x141d2e, shininess:10}));
-                leg.position.set(x, 0.50, 0);
-                group.add(leg);
-                // 신발
-                const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.04, 0.18), dark);
-                shoe.position.set(x, 0.17, 0.03);
-                group.add(shoe);
-              }
-
-              // 약한 그라운드 그림자 (원형 disk)
-              const shadow = new THREE.Mesh(
-                new THREE.CircleGeometry(0.25, 32),
-                new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.15 })
-              );
-              shadow.rotation.x = -Math.PI/2;
-              shadow.position.set(0, 0.14, 0);
-              group.add(shadow);
-
-              // Light 추가 — 입체감 보강
-              const rim = new THREE.DirectionalLight(0xffffff, 0.4);
-              rim.position.set(-1, 1.5, -1);
-              scene.add(rim);
-
+              const body = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.6, 0.18), suit);
+              body.position.set(0, 1.05, 0);
+              group.add(body);
               scene.add(group);
               // primitive 용 가짜 vrm-shape — 표정/lookAt 안 됨, head 만 sway 가능
               vrm = {
