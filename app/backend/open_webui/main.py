@@ -2918,6 +2918,30 @@ async def healthcheck_with_db():
     return {"status": True}
 
 
+# Public chatbot 자산 ensure — entrypoint 가 매 startup 마다 STATIC_DIR 의
+# 정상 자산 ensure 하면서 우리 추가 파일 (character.vrm, public-chatbot.html) 까지
+# 같이 제거. 워커 import 시점에 /data/owi/public_chatbot/ 의 원본을 symlink 로
+# 다시 노출. ln -sf 와 동일한 idempotent 동작 (4 워커 race condition 안전).
+try:
+    import pathlib as _pl
+    _PCB_DIR = _pl.Path("/data/owi/public_chatbot")
+    if _PCB_DIR.is_dir():
+        for _src_name, _link_name in [
+            ("character.vrm", "character.vrm"),
+            ("index.html", "public-chatbot.html"),
+        ]:
+            _src = _PCB_DIR / _src_name
+            _dst = _pl.Path(STATIC_DIR) / _link_name
+            if _src.exists():
+                try:
+                    if _dst.is_symlink() or _dst.exists():
+                        _dst.unlink()
+                    _dst.symlink_to(_src)
+                except Exception as _e:
+                    log.warning(f"public_chatbot symlink ensure 실패 {_link_name}: {_e}")
+except Exception as _e:
+    log.warning(f"public_chatbot symlink ensure 블록 오류: {_e}")
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR, follow_symlink=True), name="static")
 
 
