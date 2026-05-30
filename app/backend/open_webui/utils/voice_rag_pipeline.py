@@ -543,49 +543,20 @@ def build_rag_processor(request: Request, websocket=None):
                     self._active_user_segments = []
                     return
 
-                # 멀티턴 합쳐진 최종 user_text — '질문은 …' 요약을 잠깐 띄움.
-                # frontend 가 3.5s 동안 stateEl 에 표시 후 마지막 정상 phase_label
-                # 로 자동 복귀. 끼어들기 형식이라 정상 순서를 안 깨뜨림.
-                #
-                # mini-LLM 요약 시도 (timeout 1.5s) — 실패 시 fallback (원문 자르기).
-                # 사용자 의도: 원문 누적 그대로가 아닌 정리된 한 문장.
-                _summary_src = user_text.strip().replace("\n", " ")
-                _summary_fallback = _summary_src if len(_summary_src) <= 40 else _summary_src[:38] + "…"
+                # 룰 기반 cleaning — mini-LLM 제거 후 <10ms 에 같은 효과.
+                # 필러 제거 + 멀티턴 dedup + 직전 user 발화 명사구 기반 대명사 치환 +
+                # "질문은 …입니다" 자막 wrapping. LLM 호출 0, 비용 0, 끼워맞춤 0.
+                from open_webui.utils.voice_cleaning_rules import clean_user_text
+                cleaned_keyword, cleaned_summary = clean_user_text(user_text, self._history)
+                log.info(f"[voice_ws] rule-cleaned keyword={cleaned_keyword!r} summary={cleaned_summary!r}")
+                await _send_caption("phase_overlay", cleaned_summary)
 
-                # 단답/추임새 가드 — "네", "음", "어" 같은 단답은 cleaning + retrieval
-                # 둘 다 skip 하고 history 컨텍스트만으로 LLM 이 답변하도록 raw 전달.
-                _FILLER_SET = {
-                    "네", "넵", "예", "음", "어", "아", "오", "응", "그", "그게",
-                    "잠깐", "아니", "맞아요", "맞아", "글쎄", "흠", "그러게",
-                    "어머", "와", "헐", "뭐"
-                }
-                _stripped = user_text.strip().strip(".,!?~")
-                is_short_or_filler = (
-                    len(_stripped) <= 3
-                    or _stripped in _FILLER_SET
-                    or all(tok in _FILLER_SET for tok in _stripped.split())
-                )
-
-                if is_short_or_filler:
-                    log.info(f"[voice_ws] short/filler user_text={_stripped!r} — skip cleaning + retrieval")
-                    cleaned_keyword = None
-                    await _send_caption("phase_overlay", f"질문은 “{_summary_fallback}”")
+                if not cleaned_keyword:
+                    # 단답·추임새 → cleaning + retrieval skip, history 만으로 LLM 답변
                     await _send_caption("phase_label", "응답 준비 중")
-                    # retrieval skip — public_chatbot 의 retrieval_query 를 빈 문자열로
-                    # 보내면 RAG 우회. LLM 이 history 컨텍스트만으로 답변.
                     await self._generate_reply(generation_id, user_text, retrieval_query="")
                     return
 
-                # mini-LLM 한 호출로 (keyword, summary) 두 결과 — 의미 일관 보장.
-                #   keyword  → RAG retrieval query (정확도 ↑)
-                #   summary  → phase_overlay 화면 자막 (자연 한국어, cleaning 효과 반영)
-                cleaned = await self._compose_summary_overlay(user_text)
-                if cleaned:
-                    cleaned_keyword, cleaned_summary = cleaned
-                    await _send_caption("phase_overlay", cleaned_summary)
-                else:
-                    cleaned_keyword = None
-                    await _send_caption("phase_overlay", f"질문은 “{_summary_fallback}”")
                 await _send_caption("phase_label", "관련 자료 찾는 중")
                 await self._generate_reply(generation_id, user_text, retrieval_query=cleaned_keyword)
             except asyncio.CancelledError:
