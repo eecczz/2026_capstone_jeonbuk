@@ -587,10 +587,26 @@ def build_rag_processor(request: Request, websocket=None):
             full_reply = ""
             sentence_count = 0
             _stream_t0 = None
-            # 60자 이상에서 sentence 분리 push. OpenAI gpt-4o-mini-tts 는 chunked
-            # streaming 지원 + 빠른 합성이라 sentence by sentence 가 첫 음성 latency
-            # 작아 더 유리. (단일 합성은 Qwen3 batch 한계 가정의 fix 였음 — 롤백)
-            MIN_SENT_LEN = 60
+            # 30자 이상에서 sentence 분리 push (latency hiding — 60자 → 30자).
+            # Edge TTS 가 빠르므로 짧은 sentence 도 부담 X. 사용자 첫 음성 빠름.
+            MIN_SENT_LEN = 30
+
+            # Pre-LLM Filler 음성 (latency hiding) — LLM 호출 시작 즉시 짧은 안내 음성
+            # 을 사용자에게 흘려 보내 응답 늦지 않게 느끼게 한다. Realtime API 패턴.
+            # filler 가 다 재생되기 전에 LLM 본 답변이 도착하면 자연 연결.
+            import random as _random
+            _FILLERS = [
+                "네, 잠시만요.",
+                "확인해 드릴게요.",
+                "네, 답변 드리겠습니다.",
+                "잠깐만 기다려 주세요.",
+            ]
+            try:
+                _filler = _random.choice(_FILLERS)
+                log.info(f"[voice_ws] pre-LLM filler push: {_filler!r}")
+                await self._push_tts_if_current(generation_id, _filler)
+            except Exception as _fe:
+                log.debug(f"[voice_ws] filler skip: {_fe}")
 
             try:
                 from open_webui.routers.public_chatbot import (
