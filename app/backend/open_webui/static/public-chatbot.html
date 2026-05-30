@@ -122,10 +122,7 @@
     user-select: none;
     border-radius: 12px;
     overflow: hidden;
-    background: linear-gradient(180deg, #f5f7fa 0%, #e8edf5 100%);
-  }
-  body.mode-dark .vrm-wrap {
-    background: linear-gradient(180deg, #1f2937 0%, #111827 100%);
+    background: transparent;   /* 챗봇 윈도우 배경이 그대로 비치도록 */
   }
   .vrm-wrap canvas { display: block; width: 100%; height: 100%; position: relative; z-index: 1; }
   .vrm-placeholder {
@@ -863,9 +860,9 @@
         renderer.setSize(canvas.width, canvas.height, false);
 
         scene = new THREE.Scene();
-        camera = new THREE.PerspectiveCamera(28, canvas.width / canvas.height, 0.1, 20);
-        camera.position.set(0, 1.35, 1.6);
-        camera.lookAt(0, 1.35, 0);
+        camera = new THREE.PerspectiveCamera(30, canvas.width / canvas.height, 0.1, 20);
+        camera.position.set(0, 1.4, 1.2);
+        camera.lookAt(0, 1.2, 0);
 
         scene.add(new THREE.AmbientLight(0xffffff, 0.7));
         const dir = new THREE.DirectionalLight(0xffffff, 0.8);
@@ -918,37 +915,43 @@
               head.position.set(0, 1.55, 0);
               group.add(head);
 
-              // 머리카락 — 머리 위 반구
-              const hairTop = new THREE.Mesh(new THREE.SphereGeometry(0.14, 32, 16, 0, Math.PI*2, 0, Math.PI*0.55), hair);
-              hairTop.position.set(0, 1.59, -0.005);
-              hairTop.scale.set(1.02, 0.95, 1.05);
+              // 머리카락 — 명확히 뒤쪽 중심 + 위쪽 (앞이마 덜 가림)
+              const hairTop = new THREE.Mesh(new THREE.SphereGeometry(0.145, 32, 16, 0, Math.PI*2, 0, Math.PI*0.48), hair);
+              hairTop.position.set(0, 1.60, -0.015);
+              hairTop.scale.set(1.05, 0.92, 1.08);
               group.add(hairTop);
 
-              // 안경 — 두 개 torus + bridge
-              const rimL = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.005, 8, 24), glass);
-              rimL.position.set(-0.04, 1.555, 0.118);
+              // 안경 — 키움 (radius 0.028 → 0.042)
+              const rimL = new THREE.Mesh(new THREE.TorusGeometry(0.042, 0.008, 10, 28), glass);
+              rimL.position.set(-0.05, 1.555, 0.118);
               rimL.rotation.y = -0.05;
               group.add(rimL);
-              const rimR = new THREE.Mesh(new THREE.TorusGeometry(0.028, 0.005, 8, 24), glass);
-              rimR.position.set(0.04, 1.555, 0.118);
+              const rimR = new THREE.Mesh(new THREE.TorusGeometry(0.042, 0.008, 10, 28), glass);
+              rimR.position.set(0.05, 1.555, 0.118);
               rimR.rotation.y = 0.05;
               group.add(rimR);
-              const bridge = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.025, 6), glass);
+              const bridge = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.022, 6), glass);
               bridge.rotation.z = Math.PI/2;
-              bridge.position.set(0, 1.555, 0.118);
+              bridge.position.set(0, 1.555, 0.122);
               group.add(bridge);
 
-              // 눈 (안경 안 작은 점)
-              for (const ex of [-0.04, 0.04]) {
-                const eye = new THREE.Mesh(new THREE.SphereGeometry(0.006, 8, 8), dark);
+              // 눈 (키움 — 정면 명확)
+              for (const ex of [-0.05, 0.05]) {
+                const eye = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 12), dark);
                 eye.position.set(ex, 1.555, 0.122);
                 group.add(eye);
               }
 
-              // 입 — 살짝 미소
-              const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.015, 0.0035, 4, 12, Math.PI), new THREE.MeshPhongMaterial({color:0x8a3a3a}));
+              // 코 — 작은 piramid (정면 명확)
+              const nose = new THREE.Mesh(new THREE.ConeGeometry(0.012, 0.025, 4), skin);
+              nose.position.set(0, 1.525, 0.13);
+              nose.rotation.x = -Math.PI / 12;
+              group.add(nose);
+
+              // 입 — 키움 (radius 0.015 → 0.022)
+              const mouth = new THREE.Mesh(new THREE.TorusGeometry(0.022, 0.005, 6, 16, Math.PI), new THREE.MeshPhongMaterial({color:0x6a2828}));
               mouth.rotation.z = Math.PI;
-              mouth.position.set(0, 1.50, 0.122);
+              mouth.position.set(0, 1.49, 0.122);
               group.add(mouth);
 
               // 어깨 (정장) — 자연 어깨 폭
@@ -1025,8 +1028,6 @@
               rim.position.set(-1, 1.5, -1);
               scene.add(rim);
 
-              // 카메라 쪽 정면 — 사용자 보고할 때 뒤돌아 있다 → 180도 회전 보정
-              group.rotation.y = Math.PI;
               scene.add(group);
               // primitive 용 가짜 vrm-shape — 표정/lookAt 안 됨, head 만 sway 가능
               vrm = {
