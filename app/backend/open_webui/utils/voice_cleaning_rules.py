@@ -16,12 +16,14 @@ from typing import Optional
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 1. 필러·추임새 set — 한국어 universal (도청 도메인 무관)
+# 1. 필러·추임새 set — 한국어 universal (도청 도메인 무관).
+# 단 지시대명사 ("그건/그게/그것/거기/이것 등) 는 substitute_pronouns 가
+# 처리하니 여기 넣지 않음 — 그래야 대명사 치환 우선 동작.
 # ─────────────────────────────────────────────────────────────────────
 _FILLERS: set[str] = {
     "어", "음", "아", "오", "응", "엥", "에",
     "네", "넵", "예", "맞", "맞아", "맞아요",
-    "그", "그게", "그건", "그래", "그러니까", "그러게",
+    "그", "그래", "그러니까", "그러게", "근데",
     "잠깐", "아니", "글쎄", "흠", "어머", "와", "헐", "뭐",
     "뭐야", "뭐였지",
 }
@@ -208,13 +210,15 @@ def clean_user_text(raw: str, history: list[dict]) -> tuple[str, str]:
     if is_short_or_filler(raw):
         return "", "질문이 잠시 명확하지 않아요."
 
-    # 1) 필러 제거
-    cleaned = remove_fillers(raw)
-    # 2) 중복 토큰 제거 (멀티턴 합쳐진 경우)
-    cleaned = dedup_tokens(cleaned)
-    # 3) 직전 user 발화에서 주제 추출 → 대명사 치환
+    # 순서 중요:
+    # 1) 직전 user 발화 명사구 → 대명사 치환 먼저 (필러 제거 전)
+    #    "그건/그게" 등이 _FILLERS 에 안 들어가 있어야 살아남음.
     topic = extract_topic_from_history(history)
-    cleaned = substitute_pronouns(cleaned, topic)
+    cleaned = substitute_pronouns(raw, topic)
+    # 2) 그 다음 필러 제거
+    cleaned = remove_fillers(cleaned)
+    # 3) 중복 토큰 정리 (멀티턴 합쳐진 경우)
+    cleaned = dedup_tokens(cleaned)
 
     keyword = cleaned.strip()
     summary = wrap_as_question(keyword)
