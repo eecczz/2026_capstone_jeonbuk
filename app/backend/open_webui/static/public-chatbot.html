@@ -878,14 +878,15 @@
           loader.load(
             "/static/character.vrm",
             (gltf) => {
-              vrm = gltf.userData.vrm;
-              VRMLib.VRMUtils.removeUnnecessaryVertices(gltf.scene);
-              VRMLib.VRMUtils.combineSkeletons(gltf.scene);
-              // VRM 1.0 = +Z 정면 / VRM 0.x = -Z 정면. rotateVRM0 가 버전 자동 감지.
-              // manual rotation.y=PI 는 VRM 1.0 모델 사용 시 오히려 잘못된 방향이라
-              // 사용자가 본 "뒤돌아 있다" 의 진짜 원인이었음.
-              VRMLib.VRMUtils.rotateVRM0(vrm);
-              scene.add(vrm.scene);
+              try {
+                vrm = gltf.userData.vrm;
+                console.log("[VRM] gltf.userData.vrm:", !!vrm, "meta:", vrm?.meta);
+                try { VRMLib.VRMUtils.removeUnnecessaryVertices(gltf.scene); } catch (e) { console.warn("[VRM] removeUnnecessaryVertices skip:", e.message); }
+                try { VRMLib.VRMUtils.combineSkeletons(gltf.scene); } catch (e) { console.warn("[VRM] combineSkeletons skip:", e.message); }
+                // VRM 1.0 = +Z 정면 / VRM 0.x = -Z 정면. rotateVRM0 가 버전 자동 감지.
+                try { VRMLib.VRMUtils.rotateVRM0(vrm); } catch (e) { console.warn("[VRM] rotateVRM0 skip:", e.message); }
+                scene.add(vrm.scene);
+                console.log("[VRM] vrm.scene 추가 — child count:", vrm.scene.children.length);
               // 차렷 자세 — speech-coach retarget.ts 의 A_POSE_UPPER_TARGETS 적용.
               // VRM 모델은 기본 T-pose 라 양 상완을 (±0.05, -0.999, 0) 방향으로
               // 회전해서 자연 차렷 자세로 만듦.
@@ -921,6 +922,11 @@
               if (wrap) wrap.classList.add("vrm-loaded");
               console.log("[VRM] loaded");
               resolve();
+              } catch (outerE) {
+                console.error("[VRM] success-callback 안 throw — primitive 분기로 폴백:", outerE);
+                loaded = false;
+                resolve();   // resolve 안 하면 ensureLoaded hang. fallback 분기는 if(!loaded) 후 처리.
+              }
             },
             undefined,
             (err) => {
