@@ -152,8 +152,45 @@ async def _prewarm_endpoints(app: Any) -> None:
         except Exception as e:
             log.debug(f"[voice_ws] prewarm LLM skipped: {e}")
 
-    log.info("[voice_ws] prewarm starting")
-    await _asyncio.gather(_tts_warm(), _llm_warm(), return_exceptions=True)
+    async def _mini_llm_warm():
+        """Mini-LLM (PUBLIC_CHATBOT_BASE_MODEL) warm — cleaning prompt 호출이
+        매 turn 마다 mini-LLM 한 번이라 그 model 의 cold start (1~3초) 도 해소."""
+        try:
+            from types import SimpleNamespace as _NS
+            from open_webui.utils.chat import generate_chat_completion as _gen
+            from open_webui.routers.public_chatbot import _get_public_user as _pu
+
+            proxy = type("_Proxy", (), {
+                "app": app, "state": _NS(), "headers": {}, "cookies": {}
+            })()
+            user_obj = _pu(proxy)
+            cfg = app.state.config
+            mini_id = getattr(cfg, "PUBLIC_CHATBOT_BASE_MODEL", "gpt-4o-mini")
+            try:
+                proxy.state.metadata = {
+                    "user_id": user_obj.id, "chat_id": "", "message_id": "prewarm-mini",
+                    "session_id": "prewarm-mini", "params": {}, "features": {},
+                    "variables": {}, "filter_ids": [], "tool_ids": None,
+                    "tool_servers": None, "files": None,
+                    "model": app.state.MODELS.get(mini_id) if getattr(app.state, "MODELS", None) else None,
+                    "direct": False, "public_chatbot": True,
+                }
+            except Exception:
+                pass
+            form_data = {
+                "model": mini_id,
+                "messages": [{"role": "user", "content": "ok"}],
+                "stream": False,
+            }
+            await _asyncio.wait_for(
+                _gen(proxy, form_data, user=user_obj, bypass_filter=True),
+                timeout=8.0,
+            )
+        except Exception as e:
+            log.debug(f"[voice_ws] prewarm mini-LLM skipped: {e}")
+
+    log.info("[voice_ws] prewarm starting (LLM + mini-LLM + TTS)")
+    await _asyncio.gather(_tts_warm(), _llm_warm(), _mini_llm_warm(), return_exceptions=True)
     log.info(f"[voice_ws] prewarm done in {(_t.time() - t0):.2f}s")
 
 

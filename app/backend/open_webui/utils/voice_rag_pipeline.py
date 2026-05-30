@@ -269,6 +269,24 @@ def build_rag_processor(request: Request, websocket=None):
                 )
 
                 user_obj = _get_pu(self._owi_request)
+
+                # 이전 대화 컨텍스트 — 지시대명사 ("거기서", "그것", "저거") 치환에 사용.
+                # 가장 최근 user/assistant turn 만 (전체 history 는 prompt 길이 부담).
+                _ctx_lines: list[str] = []
+                if self._history:
+                    # 최근 2~3 턴 (assistant ↔ user)
+                    for turn in self._history[-4:]:
+                        role = turn.get("role")
+                        content = (turn.get("content") or "").strip()
+                        if not content:
+                            continue
+                        # assistant 답변은 길 수 있으니 처음 80자만
+                        content_short = content if len(content) <= 80 else content[:78] + "…"
+                        _ctx_lines.append(f"  {role}: {content_short}")
+                context_block = (
+                    "\n이전 대화 (지시대명사 치환용 컨텍스트):\n" + "\n".join(_ctx_lines) + "\n"
+                ) if _ctx_lines else ""
+
                 prompt = (
                     "다음은 사용자가 음성으로 말한 **여러 발화가 누적되어 한 문자열로 합쳐진** "
                     "텍스트입니다. 한 사람이 같은 의도를 여러 번 다른 식으로 시도한 흐름이 "
@@ -286,9 +304,18 @@ def build_rag_processor(request: Request, websocket=None):
                     "4) 정정·구체화 흐름이면 마지막 정착된 의도를 우선.\n"
                     "5) keyword 와 summary 는 의미 일관.\n"
                     "6) 단답·추임새만 들어왔으면 keyword 를 빈 문자열 `\"\"` 로 출력. "
-                    "임의 키워드로 추측하지 말 것. 예: '네' / '음' → {\"keyword\":\"\", \"summary\":\"네\"}.\n\n"
+                    "임의 키워드로 추측하지 말 것. 예: '네' / '음' → {\"keyword\":\"\", \"summary\":\"네\"}.\n"
+                    "7) **지시대명사·생략 치환 — 이전 대화 컨텍스트가 있으면 활용**:\n"
+                    "   - '거기서', '그것', '저거', '그건' → 이전 답변/질문의 핵심 주제로 치환.\n"
+                    "   - 주어 생략 ('알려줘', '뭐 있어?') → 이전 turn 의 주제 보충.\n"
+                    "   - 예: 이전 user='답례품 뭐 있어?' → 현재 '거기서 농산물' → "
+                    "     summary='질문은 답례품 중 농산물이 무엇인지에 대한 것입니다.'\n"
+                    "   - 예: 이전 assistant='고향사랑기부제는…' → 현재 '신청 어떻게' → "
+                    "     summary='질문은 고향사랑기부제 신청 방법입니다.'\n"
+                    "   - 컨텍스트 무관해 보이면 치환하지 말고 현재 발화 그대로.\n\n"
                     "출력 형식 (정확히 이 JSON, 추가 설명 금지):\n"
-                    '{"keyword": "<원문 정리된 명사구>", "summary": "질문은 …입니다."}\n\n'
+                    '{"keyword": "<치환·정리된 명사구>", "summary": "질문은 …입니다."}\n'
+                    f"{context_block}\n"
                     f"누적 발화 (공백 구분): {user_text}"
                 )
                 form_data = {
