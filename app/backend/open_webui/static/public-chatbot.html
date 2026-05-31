@@ -39,13 +39,27 @@
     background: var(--bg);
     color: var(--text);
   }
+  /* airi cross-pattern 배경 — pure CSS (이미지 자산 0). magicpattern 기반.
+     출처: moeru-ai/airi packages/stage-layouts/.../pattern-cross.vue */
+  body {
+    --cross-color: rgba(160, 160, 160, 0.35);
+    background-color: #ffffff;
+    background-image:
+      radial-gradient(circle, transparent 20%, #ffffff 20%, #ffffff 80%, transparent 80%, transparent),
+      radial-gradient(circle, transparent 20%, #ffffff 20%, #ffffff 80%, transparent 80%, transparent),
+      linear-gradient(var(--cross-color) 2px, transparent 2px),
+      linear-gradient(90deg, var(--cross-color) 2px, #ffffff 2px);
+    background-position: 0 0, 25px 25px, 0 -1px, -1px 0;
+    background-size: 50px 50px, 50px 50px, 25px 25px, 25px 25px;
+    background-attachment: fixed;
+  }
   .app {
     display: flex;
     flex-direction: column;
     height: 100vh;
     max-width: 720px;
     margin: 0 auto;
-    background: var(--surface);
+    background: transparent;  /* body 의 cross pattern 이 그대로 보이도록 */
   }
 
   /* ── 헤더 ── 로고 좌측 정렬, 다른 버튼 없음 */
@@ -55,6 +69,7 @@
     align-items: center;
     justify-content: flex-start;
     flex-shrink: 0;
+    background: #fff;          /* 로고 영역은 흰 단색 — 패턴 안 비침 */
   }
   header img { height: 22px; opacity: 0.9; }
 
@@ -233,8 +248,8 @@
   }
   .char-bubble-msg-text { display: block; min-height: 1.5em; }   /* 빈 텍스트일 때도 줄 공간 유지 */
   .char-bubble-msg.has-text { display: block; }
-  /* 답변 재생 중에는 상태 박스 자체 숨김 — 덮개 reply 박스만 보이게 */
-  body.voice-speaking .char-bubble-msg { display: none !important; }
+  /* 답변 재생 중에는 상태 박스 (id=charBubbleMsg) 만 숨김 — reply 덮개 박스는 영향 X */
+  body.voice-speaking #charBubbleMsg { display: none !important; }
   .orb {
     position: relative;
     width: 100%;
@@ -663,10 +678,14 @@
     const step = () => {
       if (i >= chunks.length) return;
       replyStack.classList.add("show");
-      // 한 글자씩 타이핑 애니메이션
+      // 한 글자씩 타이핑 애니메이션 (35ms × 길이 — 빨리 보임)
       _typeInto(replyText, chunks[i], "reply");
-      // chunk 표시 시간 = 타이핑 + 읽는 여유 (한 글자 = TYPE_SPEED_MS, 여유 1.4s)
-      const dur = chunks[i].length * TYPE_SPEED_MS + 1400;
+      // 다음 chunk 까지 대기 시간 = TTS 음성 길이 추정 (한 글자 ~130ms 한국어 평균)
+      // 타이핑은 빠르게 끝나고 그 후 음성 끝까지 머무르다 다음 chunk.
+      // 타이핑 시간보다 항상 김 → 타이핑 진행 중 다음 chunk 로 안 넘어감.
+      const TTS_PER_CHAR_MS = 130;
+      const TAIL_PAUSE_MS = 350;
+      const dur = chunks[i].length * TTS_PER_CHAR_MS + TAIL_PAUSE_MS;
       i++;
       if (i < chunks.length) _replyChunkTimer = setTimeout(step, dur);
     };
@@ -877,11 +896,10 @@
           }
           else if (msg && msg.type === "vad") {
             if (msg.text === "start") {
-              // 이미 thinking 이면 그대로 — 멀티턴 발화 중 짧은 멈춤마다 VAD
-              // start 가 다시 들어와 listening 으로 덮어 yin-yang 안 보이던 버그.
-              // 응답 생성 중 (thinking) 에는 vad start 무시. listening/idle/
-              // recording/speaking 상태일 때만 listening 으로 복귀.
-              if (mode !== "thinking" && typeof setMode === "function") {
+              // thinking / speaking 모드에선 vad start 무시. 답변 재생 중 vad start 가
+              // listening 으로 mode 바꾸면 voice-speaking class 제거 → 상태 박스가
+              // 잠깐 노출되는 깜빡임 발생. speaking 도 thinking 과 동등하게 처리.
+              if (mode !== "thinking" && mode !== "speaking" && typeof setMode === "function") {
                 setMode("listening", "", "");
               }
             } else if (msg.text === "stop") {
@@ -1005,6 +1023,8 @@
     document.body.classList.toggle("mode-text", uiMode === "text");
     if (uiMode === "voice") {
       clearVoiceCaption();
+      // 음성 모드 진입 때마다 안녕하세요 타이핑이 재생되도록 dedup state reset.
+      _lastSetStateText = "";
       if (typeof stopMicLoop === "function") stopMicLoop();
       startVoicePipecat();
       // 음성 모드 진입 시점에 캐릭터 모드면 vrm load 재트리거 — 텍스트 모드일 때
@@ -1134,7 +1154,7 @@
           // ?v=20260531 — 파일 교체 후 브라우저/CDN 캐시 강제 무효화. 캐릭터를
           // 새로 교체할 때 이 토큰만 올리면 클라이언트는 강제 재다운로드.
           loader.load(
-            "/static/character.vrm?v=20260601u",
+            "/static/character.vrm?v=20260601aa",
             (gltf) => {
               try {
                 vrm = gltf.userData.vrm;
@@ -1205,7 +1225,7 @@
                 const animLoader = new GLTFLoader();
                 animLoader.register((parser) => new VRMAnimLib.VRMAnimationLoaderPlugin(parser));
                 animLoader.load(
-                  "/static/idle_loop.vrma?v=20260601u",
+                  "/static/idle_loop.vrma?v=20260601aa",
                   (animGltf) => {
                     console.log("[VRM-IDLE] gltf loaded, userData keys=",
                                 Object.keys(animGltf.userData || {}),
@@ -1573,6 +1593,11 @@
       if (!window.vrmAdapter || typeof window.vrmAdapter.ensureLoaded !== "function") return;
       // 첫 진입 시 한 번만 — adapter 안에서 loaded/loading guard
       await window.vrmAdapter.ensureLoaded();
+      // 로드 완료 — 음성 모드 + listening 이면 "안녕하세요" 타이핑 시작
+      if (uiMode === "voice" && mode === "listening" && typeof setStateText === "function") {
+        _lastSetStateText = "";
+        setStateText("안녕하세요. 전북도청 챗봇입니다!");
+      }
     } catch (e) {
       console.warn("[VRM] vrmLoadIfNeeded failed (외부 CDN 차단 가능):", e);
       const ph = document.getElementById("vrmPlaceholder");
@@ -1590,12 +1615,20 @@
     // 답변 재생 중 상태 박스 자체 숨김 — 덮개 박스 (reply) 만 보이게.
     document.body.classList.toggle("voice-speaking", next === "speaking");
     // 명시적 label 있으면 갱신. 빈 label 이면:
-    //   - listening 모드 진입: "안녕하세요. 전북도청 챗봇입니다!" 표시 (답변 끝나면 대기 상태)
-    //   - 그 외 (speaking/thinking 등): 박스 유지 (phase_label 텍스트 보존)
+    //   - listening 모드 진입:
+    //       · 캐릭터 모드 + VRM 로드 미완료 → dots cycle 유지 (빈 텍스트)
+    //       · 그 외 → "안녕하세요. 전북도청 챗봇입니다!" 표시
+    //   - 다른 모드 (speaking/thinking 등): 박스 유지 (phase_label 텍스트 보존)
     if (label !== undefined && label !== "") {
       setStateText(label);
     } else if (next === "listening") {
-      setStateText("안녕하세요. 전북도청 챗봇입니다!");
+      const isCharacter = (typeof visualMode !== "undefined" && visualMode === "character");
+      const vrmReady = !isCharacter || (window.vrmAdapter && window.vrmAdapter.isLoaded && window.vrmAdapter.isLoaded());
+      if (vrmReady) {
+        setStateText("안녕하세요. 전북도청 챗봇입니다!");
+      } else {
+        setStateText("");   // dots cycle 유지 — 캐릭터 로드 완료 후 명시적 호출
+      }
     }
     if (hint  !== undefined) hintEl.textContent  = hint;
     // 비-speaking 모드 진입 시 reply 덮개 박스 숨김 + chunk timer 취소.
