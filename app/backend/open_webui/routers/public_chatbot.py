@@ -854,6 +854,10 @@ async def _stream_public_llm_reply(
         log.info(
             f"public_chatbot stream RAG sources from metadata: {len(rag_sources)} groups"
         )
+        # RAG retrieval 끝난 직후 — voice 자막에 실제 hit source 표시용. LLM stream 시작
+        # 전이라 사용자 화면에 "지금 [전북도청] XX 자료 보는 중" 같이 빠르게 표시 가능.
+        if rag_sources:
+            yield ("rag_ready", rag_sources)
         # 음성 모드 retrieval swap 복구 — RAG context 는 보존하면서 cleaned keyword 만
         # 원본 user_message 로 한 번 replace. LLM 이 사용자 원본 의도/맥락을 그대로 봄.
         if effective_retrieval_query != user_message:

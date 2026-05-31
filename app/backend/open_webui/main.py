@@ -2928,6 +2928,7 @@ try:
     if _PCB_DIR.is_dir():
         for _src_name, _link_name in [
             ("character.vrm", "character.vrm"),
+            ("idle_loop.vrma", "idle_loop.vrma"),
             ("index.html", "public-chatbot.html"),
         ]:
             _src = _PCB_DIR / _src_name

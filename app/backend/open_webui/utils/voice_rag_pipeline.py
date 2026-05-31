@@ -171,8 +171,10 @@ def build_rag_processor(request: Request, websocket=None):
                 and self._pending_reply
                 and isinstance(frame, _TTSAudioRawFrame)
             ):
-                # reply 자막 비표시 — phase_overlay (cleaning 결과) 만 화면에 표시.
-                # 캐릭터가 직접 말하는 형식이라 자막이 산만함.
+                # reply 메시지는 frontend 의 pcAcceptAudio 를 true 로 켜는 핵심 트리거.
+                # 이걸 안 보내면 모든 audio chunk 가 drop 되어 음성이 안 들린다.
+                # 자막은 frontend setVoiceCaption noop + char-bubble 박스에 표시.
+                await _send_caption("reply", self._pending_reply)
                 self._sent_for_current = True
                 self._pending_reply = None
 
@@ -655,31 +657,26 @@ def build_rag_processor(request: Request, websocket=None):
                     self._active_user_segments = []
                     return
 
-                # 1차: 룰 기반 cleaning — 항상 fallback 으로 빠르게 결과 확보
+                # 룰 기반 cleaning — keyword 만으로 자연 액션 메시지 표시 (mini-LLM polish 제거).
+                # 자막은 "질문은 …입니다" 가 아니라 "지금 'XXX' 에 대해 찾아보고 있어요" 같이
+                # 챗봇의 현재 행동을 보여주는 메시지로 대체. polish 호출 비용·지연 ↓.
                 from open_webui.utils.voice_cleaning_rules import clean_user_text
-                cleaned_keyword, cleaned_summary = clean_user_text(user_text, self._history)
-                log.info(f"[voice_ws] rule-cleaned keyword={cleaned_keyword!r} summary={cleaned_summary!r}")
-
-                # 2차: mini-LLM 으로 summary 매끄럽게 다듬기 (gpt-4o-mini, timeout 3s)
-                # 실패 시 룰 기반 결과 그대로 사용 — 안전 마진.
-                try:
-                    polished_summary = await self._polish_summary_with_llm(
-                        user_text, cleaned_summary, self._history
-                    )
-                    if polished_summary:
-                        cleaned_summary = polished_summary
-                        log.info(f"[voice_ws] mini-LLM polished: {cleaned_summary!r}")
-                except Exception as e:
-                    log.warning(f"[voice_ws] mini-LLM polish failed (룰 fallback): {e}")
-
-                await _send_caption("phase_overlay", cleaned_summary)
+                cleaned_keyword, _ = clean_user_text(user_text, self._history)
+                log.info(f"[voice_ws] rule-cleaned keyword={cleaned_keyword!r}")
 
                 if not cleaned_keyword:
                     # 단답·추임새 → cleaning + retrieval skip, history 만으로 LLM 답변
+                    await _send_caption("phase_overlay", "다시 말씀해 주시겠어요? 잘 못 알아들었어요.")
                     await _send_caption("phase_label", "응답 준비 중")
                     await self._generate_reply(generation_id, user_text, retrieval_query="")
                     return
 
+                # 행동 메시지 — keyword 가 짧으면 그대로, 길면 truncate
+                _kw_disp = cleaned_keyword if len(cleaned_keyword) <= 30 else cleaned_keyword[:30] + "…"
+                await _send_caption(
+                    "phase_overlay",
+                    f"지금 '{_kw_disp}'에 대해 자료를 찾아보고 있어요.",
+                )
                 await _send_caption("phase_label", "관련 자료 찾는 중")
                 await self._generate_reply(generation_id, user_text, retrieval_query=cleaned_keyword)
             except asyncio.CancelledError:
@@ -772,6 +769,49 @@ def build_rag_processor(request: Request, websocket=None):
                         log.info("[voice_ws] stale stream ignored id=%s", generation_id)
                         return
 
+                    if kind == "rag_ready":
+                        # RAG 검색 끝나고 hit source 도착. payload 는 OWI 의 그룹화된 sources —
+                        # 각 group dict 안 "source" key 가 다시 dict 거나 "metadata" 가 list[dict].
+                        # 안전하게 모든 str 후보만 추출해 phase_overlay 표시.
+                        def _safe_str(v):
+                            return v.strip() if isinstance(v, str) and v.strip() else ""
+                        try:
+                            picks = []
+                            for group in (payload or [])[:3]:
+                                if not isinstance(group, dict):
+                                    continue
+                                # 두 가지 모양 지원: group["source"] = dict 또는 group 자체가 source
+                                cand = group.get("source") if isinstance(group.get("source"), dict) else group
+                                if not isinstance(cand, dict):
+                                    continue
+                                title = _safe_str(cand.get("title")) or _safe_str(cand.get("name"))
+                                inst  = _safe_str(cand.get("institution"))
+                                # metadata 가 list[dict] 일 수 있음
+                                metas = group.get("metadata") if isinstance(group.get("metadata"), list) else []
+                                if not title and metas and isinstance(metas[0], dict):
+                                    title = _safe_str(metas[0].get("title")) or _safe_str(metas[0].get("name"))
+                                if not inst and metas and isinstance(metas[0], dict):
+                                    inst  = _safe_str(metas[0].get("institution"))
+                                if title and inst:
+                                    picks.append(f"[{inst}] {title}")
+                                elif title:
+                                    picks.append(title)
+                                elif inst:
+                                    picks.append(inst)
+                                if len(picks) >= 2:
+                                    break
+                            if picks:
+                                join_txt = " · ".join(picks)
+                                # 핵심 단어 + "검색중" — 동사 줄임 형태
+                                msg = f"{join_txt} 검색중"
+                                if len(msg) > 60:
+                                    msg = msg[:58] + "…"
+                                await _send_caption("phase_overlay", msg)
+                                log.info(f"[voice_ws] rag_ready overlay: {msg!r}")
+                        except Exception as _e:
+                            log.warning(f"[voice_ws] rag_ready overlay failed: {_e}")
+                        continue
+
                     if kind == "delta":
                         now = _time.time()
                         if _stream_t0 is None:
@@ -802,6 +842,10 @@ def build_rag_processor(request: Request, websocket=None):
                                 log.info(
                                     f"[voice_ws] stream sentence #{sentence_count}: {tts_sentence[:50]!r} id={generation_id}"
                                 )
+                                # caption_segment 송신 롤백 — TTS sentence push 직전 caption
+                                # 송신이 reply 메시지 이전에 frontend 도착 → pcAcceptAudio
+                                # 미설정 상태로 audio 가 drop 되는 race. 자막 동기화는
+                                # frontend 시간 추정 (showReplyChunks) fallback 으로.
                                 await self._push_tts_if_current(generation_id, tts_sentence)
                     elif kind == "done":
                         final_text = payload or _hum(full_reply)

@@ -59,14 +59,15 @@
   header img { height: 22px; opacity: 0.9; }
 
   /* ── 음성 orb 영역 — 흑백, 큰 검은 원 ── */
+  /* orb/캐릭터 모두 상단 정렬 — 로고 바로 아래에 위치해서 자막/input 이 캐릭터를 가리지 않게. */
   .voice-stage {
     flex: 1 1 auto;
-    padding: 24px 16px;
+    padding: 12px 16px 0 16px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 20px;
+    justify-content: flex-start;
+    gap: 14px;
   }
   .orb-wrap {
     position: relative;
@@ -142,6 +143,96 @@
   /* mode 토글 시 표시 분기 — 기본은 orb. body.visual-character 면 캐릭터 */
   body.visual-character .orb-wrap { display: none; }
   body:not(.visual-character) .vrm-wrap { display: none !important; }
+
+  /* 캐릭터 모드일 때도 위쪽 정렬 — 자막/input 이 캐릭터 아래에 자연스럽게 흐르도록. */
+  /* voice-stage 안 좌측 정렬 + visualToggle 만 가운데 강제. char-bubble (안내원 +
+     상태/질문정리) 가 캐릭터 위에 absolute 로 떠 텍스트가 캐릭터에 가려지지 않게 함. */
+  .voice-stage { position: relative !important; }
+  body.visual-character .voice-stage {
+    justify-content: flex-start !important;
+    align-items: flex-start !important;
+    gap: 10px !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    padding-top: 48px !important;   /* 토글 버튼 숨김 만큼 보전 — 캐릭터 위치 유지 */
+  }
+  body.visual-character .vrm-wrap {
+    width: 320px !important;
+    height: 480px !important;
+    margin-left: 0 !important;
+    margin-right: auto !important;
+    margin-top: auto !important;          /* column flex 에서 위 공간 채워 자식을 바닥으로 */
+    margin-bottom: 0 !important;
+    align-self: flex-start !important;
+    flex-shrink: 0 !important;
+    display: block !important;
+  }
+  /* visualToggle 숨김 — 캐릭터 모드 only */
+  .visual-toggle { display: none !important; }
+  /* 캐릭터 모드에선 기존 voice-state/voice-hint/voice-caption 모두 숨김 — 같은
+     텍스트가 char-bubble 말풍선에 표시됨 + 스크롤 늘어남 방지. */
+  body.visual-character .voice-state,
+  body.visual-character .voice-hint,
+  body.visual-character .voice-caption {
+    display: none !important;
+  }
+  /* char-bubble stack — vrm-wrap 안 absolute, 캐릭터 복부 (top 60%) 에 박힘.
+     vrm-wrap 이 position:relative 라 그 안 absolute 가 캐릭터 div 기준 상대 위치. */
+  .vrm-wrap { position: relative; }
+  .char-bubble-stack {
+    display: none;
+    position: absolute;
+    left: 12px;
+    top: 70%;                        /* 복부쯤 */
+    max-width: calc(100% - 24px);
+    z-index: 100;
+    pointer-events: none;
+    flex-direction: column;
+    gap: 0;
+    align-items: flex-start;
+  }
+  body.visual-character .char-bubble-stack { display: flex; }
+  /* reply 박스 — 상태 박스 위 덮어씌움. speaking 중에만 표시. */
+  .char-bubble-stack-reply { display: none !important; z-index: 110; }
+  body.visual-character .char-bubble-stack-reply.show { display: flex !important; }
+  /* 캐릭터 canvas — 윤곽 따라가는 부드러운 하늘색 글로우 (drop-shadow blur 작게) */
+  .vrm-wrap canvas {
+    filter: drop-shadow(0 0 6px rgba(135, 200, 240, 0.7))
+            drop-shadow(0 0 12px rgba(135, 200, 240, 0.4));
+  }
+  /* 말풍선 — 이미지 픽셀 컬러 매칭. 전체적으로 연한 톤 + 모서리 살짝 각짐 */
+  .char-bubble-msg {
+    display: none;
+    background: #c8e2e6;                       /* 페일 시안-민트 (이미지 박스 색) */
+    color: #6e4458;                            /* 옅은 자주 — 본문 텍스트 */
+    font-weight: 700;
+    padding: 12px 18px 14px;
+    font-size: 16px;
+    line-height: 1.5;
+    border-radius: 12px;                       /* 덜 둥근 모서리 */
+    border: 1.5px solid #93c0c8;               /* 페일 시안 테두리 */
+    /* 답변 길어도 스크롤 없이 잘라서 chunk 단위로 순차 표시 */
+    overflow: hidden;
+    pointer-events: none;
+    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.18),
+                0 1px 3px rgba(0, 0, 0, 0.10);
+  }
+  .char-bubble-msg.has-text { display: block; }
+  /* 박스 안 라벨 — vivid 마젠타-핑크 (이미지 AIRI 글자 색) */
+  .char-bubble-name {
+    display: block;
+    background: none;
+    color: #c0357f;                            /* vivid 마젠타 (이미지 매칭) */
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: 1.5px;
+    margin-bottom: 6px;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .char-bubble-msg-text { display: block; }
+  .char-bubble-msg.has-text { display: block; }
   .orb {
     position: relative;
     width: 100%;
@@ -459,7 +550,22 @@
         <div style="margin-top:12px;font-size:13px;opacity:.6">캐릭터 모델 로드 중…</div>
         <div style="margin-top:4px;font-size:11px;opacity:.4">/static/character.vrm</div>
       </div>
+      <!-- 안내원 + 상태/질문정리 텍스트 말풍선 — 한 박스 안 라벨 + 본문. -->
+      <div class="char-bubble-stack" id="charBubbleStack">
+        <div class="char-bubble-msg has-text" id="charBubbleMsg">
+          <span class="char-bubble-name">안내원</span>
+          <span class="char-bubble-msg-text" id="charBubbleMsgText">듣고 있어요</span>
+        </div>
+      </div>
+      <!-- 답변 재생 중에만 위 stack 을 덮어 씌우는 복제 박스. reply 메시지 도착 시 활성. -->
+      <div class="char-bubble-stack char-bubble-stack-reply" id="charBubbleStackReply">
+        <div class="char-bubble-msg has-text">
+          <span class="char-bubble-name">안내원</span>
+          <span class="char-bubble-msg-text" id="charBubbleReplyText"></span>
+        </div>
+      </div>
     </div>
+
 
     <div class="voice-state" id="voiceState"></div>
     <div class="voice-hint" id="voiceHint"></div>
@@ -502,6 +608,75 @@
   const orbEl = document.getElementById("orb");
   const stateEl = document.getElementById("voiceState");
   const hintEl = document.getElementById("voiceHint");
+  const charBubbleMsg = document.getElementById("charBubbleMsg");
+  const charBubbleMsgText = document.getElementById("charBubbleMsgText");
+
+  // reply 답변을 chunk (~60자 / 문장 단위) 로 잘라 TTS 재생 속도와 비슷하게 순차 표시.
+  let _replyChunkTimer = null;
+  function _splitReplyChunks(text, maxLen) {
+    // 문장 단위 분리. 한 문장이 maxLen 넘으면 공백 경계로만 자름 (단어 도중 자르지 않음).
+    // 쉼표/조사 시작 fragment 도 피함 — 이전 chunk 와 합침.
+    const sents = text.match(/[^.!?…\n]+[.!?…]+\s?|[^.!?…\n]+$/g) || [text];
+    const chunks = []; let buf = "";
+    const flushBuf = () => { if (buf.trim()) chunks.push(buf.trim()); buf = ""; };
+    for (const s of sents) {
+      if ((buf + s).length <= maxLen) { buf += s; continue; }
+      flushBuf();
+      if (s.length <= maxLen) { buf = s; continue; }
+      // 긴 문장 — 공백 경계로 잘라 단어 보존
+      const words = s.split(/(\s+)/);   // 공백 토큰 보존
+      let acc = "";
+      for (const w of words) {
+        if ((acc + w).length <= maxLen) acc += w;
+        else {
+          if (acc.trim()) chunks.push(acc.trim());
+          acc = w.trimStart();
+        }
+      }
+      if (acc.trim()) buf = acc;
+    }
+    flushBuf();
+    // ',' '。' 같이 부적절한 시작 문자 정리 — 이전 chunk 끝에 붙임
+    const cleaned = [];
+    for (const c of chunks) {
+      if (cleaned.length && /^[,，、)\]]/.test(c)) {
+        cleaned[cleaned.length - 1] += " " + c;
+      } else cleaned.push(c);
+    }
+    return cleaned.filter(Boolean);
+  }
+  function showReplyChunks(text) {
+    clearTimeout(_replyChunkTimer);
+    const replyText = document.getElementById("charBubbleReplyText");
+    const replyStack = document.getElementById("charBubbleStackReply");
+    if (!replyText || !replyStack) return;
+    if (!text || !text.trim()) {
+      replyText.textContent = "";
+      replyStack.classList.remove("show");
+      return;
+    }
+    const chunks = _splitReplyChunks(text, 60);
+    let i = 0;
+    const step = () => {
+      if (i >= chunks.length) return;
+      replyText.textContent = chunks[i];
+      replyStack.classList.add("show");
+      const dur = Math.max(1800, chunks[i].length * 130);   // 한글 1자당 ~130ms
+      i++;
+      if (i < chunks.length) _replyChunkTimer = setTimeout(step, dur);
+    };
+    step();
+  }
+
+  // stateEl + char-bubble (캐릭터 모드 말풍선) 동시 갱신.
+  // 박스 내부 라벨 ("안내원") 은 고정. 본문만 갱신.
+  // 빈 입력 → "듣고 있어요" 디폴트 (박스 사라지는 구간 없게).
+  function setStateText(text) {
+    const display = (text && text.trim()) ? text : "듣고 있어요";
+    if (stateEl) stateEl.textContent = display;
+    if (charBubbleMsgText) charBubbleMsgText.textContent = display;
+    if (charBubbleMsg) charBubbleMsg.classList.add("has-text");
+  }
   const emptyHint = document.getElementById("emptyHint");
   const voiceBtn = document.getElementById("voiceBtn");
   const voiceCloseBtn = document.getElementById("voiceCloseBtn");
@@ -657,22 +832,22 @@
             // overlay 잠금 중이면 마지막 phase 로만 기억, 잠금 끝나면 그게 적용
             if (Date.now() < phaseOverlayUntil) {
               phaseOverlayPending = text;
-            } else if (stateEl) {
-              stateEl.textContent = text;
+            } else {
+              setStateText(text);
             }
           }
           else if (msg && msg.type === "phase_overlay") {
             // 잠깐 끼어드는 라벨 (예: 발화 요약). 3.5s 동안 stateEl 점유 →
             // 그 후 마지막에 도착한 phase_label 로 자동 복귀.
             console.log("[voice] phase_overlay:", msg.text);
-            if (stateEl) stateEl.textContent = msg.text || "";
+            setStateText(msg.text || "");
             phaseOverlayUntil = Date.now() + 3500;
             phaseOverlayPending = null;
             clearTimeout(phaseOverlayTimer);
             phaseOverlayTimer = setTimeout(() => {
               phaseOverlayUntil = 0;
-              if (stateEl && phaseOverlayPending !== null) {
-                stateEl.textContent = phaseOverlayPending;
+              if (phaseOverlayPending !== null) {
+                setStateText(phaseOverlayPending);
               }
               phaseOverlayPending = null;
             }, 3500);
@@ -682,6 +857,9 @@
             pcReplyAudioChunks = 0;
             pcDroppedAudioChunks = 0;
             setVoiceCaption(null, msg.text || "");
+            // 첫 chunk fallback — backend 가 caption_segment 보내면 그게 덮어씀.
+            // (caption_segment 가 올 거라 showReplyChunks 의 시간 추정은 사실상 미사용)
+            showReplyChunks(msg.text || "");
             // 음성 대화 기록을 텍스트 모드 chat 영역 + localStorage 에 누적.
             // vcUserEl 의 텍스트는 마지막 transcription (멀티턴 합치기 마지막 chunk)
             // 으로 그 시점 사용자 발화 비슷 — 완전 정확은 아니지만 가독성 충분.
@@ -799,7 +977,7 @@
   // ─────────── Visual mode toggle (Orb ↔ Character) ───────────
   // localStorage 에 저장. 기본 = orb. 캐릭터 모드는 VRM scene 로딩 (Phase B+).
   const VISUAL_KEY = "jb_voice_visual";
-  let visualMode = localStorage.getItem(VISUAL_KEY) || "orb"; // "orb" | "character"
+  let visualMode = "character";   // 항상 캐릭터 모드 — 토글 버튼 숨김
   const vrmWrap = document.getElementById("vrmWrap");
 
   function applyVisualMode() {
@@ -836,6 +1014,7 @@
     let currentMode = "idle";
     let loaded = false, loading = false, loadAttempted = false;
     let measuredHeadY = 1.35;   // VRM 로드 시 측정 — eye/lookAt target 의 Y baseline
+    let mixer = null, idleAction = null;   // airi idle_loop.vrma 재생용
 
     async function ensureLoaded() {
       if (loaded || loading) return loaded;
@@ -847,19 +1026,32 @@
         console.log("[VRM] ✓ three.module.js 로드 완료");
         const { GLTFLoader } = await import("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/GLTFLoader.js");
         console.log("[VRM] ✓ GLTFLoader 로드 완료");
-        const VRMLib = await import("https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.0.7/lib/three-vrm.module.js");
-        console.log("[VRM] ✓ three-vrm 로드 완료");
+        // three-vrm 3.5.3 — three-vrm-animation 과 동일 메이저 버전. 2.0.7 은 -animation 부재.
+        const VRMLib = await import("https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.5.3/lib/three-vrm.module.js");
+        console.log("[VRM] ✓ three-vrm 3.5.3 로드 완료");
+        // three-vrm-animation — airi 의 idle_loop.vrma 재생용. .vrma 는 GLTF 안에 packed.
+        let VRMAnimLib = null;
+        try {
+          VRMAnimLib = await import("https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3.5.3/lib/three-vrm-animation.module.js");
+          console.log("[VRM] ✓ three-vrm-animation 3.5.3 로드 완료, exports:", Object.keys(VRMAnimLib).slice(0,10));
+        } catch (e) {
+          console.warn("[VRM] three-vrm-animation 로드 실패 (idle clip 비활성):", e);
+        }
 
         const canvas = document.getElementById("vrmCanvas");
         if (!canvas) { loading = false; return false; }
 
         renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
         renderer.setPixelRatio(window.devicePixelRatio || 1);
-        renderer.setSize(canvas.width, canvas.height, false);
+        // canvas attribute 디폴트는 300×150. CSS 로 잡힌 실제 size 로 박지 않으면 aspect 가
+        // 어긋나 캐릭터가 옆으로 넓적해진다. clientWidth/Height (CSS px) 기준으로 항상 갱신.
+        const _cw = canvas.clientWidth || 320;
+        const _ch = canvas.clientHeight || 480;
+        renderer.setSize(_cw, _ch, false);
 
         scene = new THREE.Scene();
         // speech-coach (eecczz/speech-coach) 의 stage.ts 와 동일한 카메라
-        camera = new THREE.PerspectiveCamera(30, canvas.width / canvas.height, 0.1, 20);
+        camera = new THREE.PerspectiveCamera(30, _cw / _ch, 0.1, 20);
         camera.position.set(0, 1.5, 2.4);
         camera.lookAt(0, 1.4, 0);
 
@@ -871,10 +1063,16 @@
         // 2) VRM 로드
         const loader = new GLTFLoader();
         loader.register((parser) => new VRMLib.VRMLoaderPlugin(parser));
+        // VRMA animation plugin — idle_loop.vrma 를 GLTF 안에서 VRMAnimation 으로 파싱
+        if (VRMAnimLib) {
+          loader.register((parser) => new VRMAnimLib.VRMAnimationLoaderPlugin(parser));
+        }
 
         await new Promise((resolve) => {
+          // ?v=20260531 — 파일 교체 후 브라우저/CDN 캐시 강제 무효화. 캐릭터를
+          // 새로 교체할 때 이 토큰만 올리면 클라이언트는 강제 재다운로드.
           loader.load(
-            "/static/character.vrm",
+            "/static/character.vrm?v=20260601m",
             (gltf) => {
               try {
                 vrm = gltf.userData.vrm;
@@ -885,25 +1083,11 @@
                 try { VRMLib.VRMUtils.rotateVRM0(vrm); } catch (e) { console.warn("[VRM] rotateVRM0 skip:", e.message); }
                 scene.add(vrm.scene);
                 console.log("[VRM] vrm.scene 추가 — child count:", vrm.scene.children.length);
-              // T-pose → 차렷 자세 (완전 수직). VRM normalized bone 의 local Z 축 90도.
-              // VRM 표준 T-pose: LeftUpperArm child 가 local +X 방향. Z축 -90도 회전 →
-              // +X → -Y 가 되어 팔이 정확히 -Y (아래) 향함. 사용자 요청: A-pose 보다
-              // 더 내려서 완전 수직.
-              try {
-                const VRMBone = VRMLib.VRMHumanBoneName;
-                const ANGLE = Math.PI / 2;   // 90도 완전 수직
-                const lU = vrm.humanoid?.getNormalizedBoneNode(VRMBone.LeftUpperArm);
-                const rU = vrm.humanoid?.getNormalizedBoneNode(VRMBone.RightUpperArm);
-                if (lU) lU.rotation.set(0, 0, -ANGLE);
-                if (rU) rU.rotation.set(0, 0, ANGLE);
-                for (const name of [VRMBone.LeftLowerArm, VRMBone.RightLowerArm, VRMBone.LeftHand, VRMBone.RightHand]) {
-                  const bone = vrm.humanoid?.getNormalizedBoneNode(name);
-                  if (bone) bone.rotation.set(0, 0, 0);
-                }
-                console.log("[VRM] 차렷 자세 적용 완료 (팔 완전 수직)");
-              } catch (e) {
-                console.warn("[VRM] 차렷 자세 적용 실패 (T-pose 그대로):", e);
-              }
+              // 차렷 자세 보정 — idle clip 이 LeftUpperArm 같은 bone 의 quaternion track
+              // 을 안 가지면 보정값이 그대로 유지되어 모션이 fix 된 것처럼 보인다. idle 시각
+              // 검증 위해 임시 비활성. (idle clip 의 첫 frame pose 가 자연스러운 자세라
+              // 가정 — airi 의 idle_loop 은 보통 자연 standing pose 로 시작)
+              // try { ...차렷 자세 코드... } catch ...
 
               // ── 카메라/위치 자동 보정 ──
               // 새 캐릭터로 교체 시 origin/scale/키가 달라도 화면 구도(머리 상단 ~ 가슴)가
@@ -925,15 +1109,18 @@
                   const headY = headWP.y;
                   const hipsY = hipsWP.y;
                   const torsoLen = Math.max(0.2, headY - hipsY);   // 상체 길이 (안전 하한)
-                  // target = 머리 약간 아래 (목~가슴), camera = 머리 높이, Z = 상체 길이 × 1.7
-                  const targetY = headY - torsoLen * 0.18;
-                  const camY = headY * 1.0;
-                  const camZ = Math.max(1.6, torsoLen * 5.8);    // 너무 가까우면 얼굴만 → 하한
-                  camera.position.set(0, camY, camZ);
-                  camera.lookAt(0, targetY, 0);
-                  // 캐릭터 XZ 위치도 화면 중심에 — 일부 모델은 origin 이 발이 아니라 hip 일 수 있음
-                  vrm.scene.position.x -= headWP.x;
-                  vrm.scene.position.z -= headWP.z;
+                  // 상반신 (머리 ~ 가슴) 만 viewport 에 꽉 차도록.
+                  // FOV 30°: 거리 Z 에서 vertical span = 2·Z·tan(15°) ≈ 0.536·Z.
+                  // 상반신 ≈ torsoLen × 1.3 viewport 채우려면 Z ≈ torsoLen × 2.4.
+                  // 머리 끄트머리가 짤리지 않도록 카메라/target 을 살짝 위로.
+                  const targetY = headY - torsoLen * 0.12;       // 목 근처
+                  const camY = headY + torsoLen * 0.05;          // headY 살짝 위
+                  const camZ = Math.max(0.85, torsoLen * 2.4);
+                  // 카메라 X 를 살짝 - 로 이동 → viewport 안에서 캐릭터가 오른쪽으로 보임
+                  // (사용자 요청: 중앙보다 약간 왼쪽 정도)
+                  const camOffsetX = headWP.x - 0.18;
+                  camera.position.set(camOffsetX, camY, camZ);
+                  camera.lookAt(camOffsetX, targetY, 0);
                   // animation loop 의 eye/lookAt target Y baseline 갱신
                   measuredHeadY = headY;
                   console.log("[VRM] auto-fit: headY=", headY.toFixed(3),
@@ -946,6 +1133,87 @@
                 }
               } catch (autoFitErr) {
                 console.warn("[VRM] auto-fit 실패 — 디폴트 카메라 유지:", autoFitErr);
+              }
+
+              // ── airi idle_loop.vrma 로드 + 재생 ──
+              // VRM 1.0 spec 의 VRMAnimation 컨테이너. AnimationClip 으로 변환 후 mixer 에서 loop.
+              console.log("[VRM-IDLE] start, VRMAnimLib=", !!VRMAnimLib,
+                          "exports=", VRMAnimLib ? Object.keys(VRMAnimLib).slice(0,15) : "N/A");
+              if (VRMAnimLib) {
+                const animLoader = new GLTFLoader();
+                animLoader.register((parser) => new VRMAnimLib.VRMAnimationLoaderPlugin(parser));
+                animLoader.load(
+                  "/static/idle_loop.vrma?v=20260601m",
+                  (animGltf) => {
+                    console.log("[VRM-IDLE] gltf loaded, userData keys=",
+                                Object.keys(animGltf.userData || {}),
+                                "vrmAnimations len=", animGltf.userData?.vrmAnimations?.length);
+                    try {
+                      const vrmAnim = animGltf.userData?.vrmAnimations?.[0];
+                      if (!vrmAnim) {
+                        console.warn("[VRM-IDLE] vrmAnimations[0] 없음. animations array?",
+                                     animGltf.animations?.length);
+                        return;
+                      }
+                      const clip = VRMAnimLib.createVRMAnimationClip(vrmAnim, vrm);
+                      // three-vrm-animation 표준 예제대로 vrm.scene 사용. mixer 가 그 안
+                      // descendant 에서 name 으로 binding 찾음.
+                      mixer = new THREE.AnimationMixer(vrm.scene);
+                      idleAction = mixer.clipAction(clip);
+                      idleAction.setLoop(THREE.LoopRepeat, Infinity);
+                      idleAction.weight = 1.0;
+                      idleAction.enabled = true;
+                      idleAction.play();
+                      idleAction.timeScale = 2.0;
+                      // 결정적 진단 — track name 첫개 와 vrm.scene tree 의 bone name 비교
+                      const sampleTrack = clip.tracks[0]?.name || "";
+                      const sampleBoneName = sampleTrack.split(".")[0];
+                      let found = null;
+                      vrm.scene.traverse(n => {
+                        if (!found && n.name === sampleBoneName) found = n;
+                      });
+                      console.log("[VRM-IDLE] sample track expects bone:", sampleBoneName,
+                                  "found in vrm.scene?", !!found);
+                      if (!found) {
+                        // 못 찾으면 normalizedHumanBonesRoot 안에서 검색
+                        const root = vrm.humanoid?.normalizedHumanBonesRoot;
+                        if (root) {
+                          root.traverse(n => {
+                            if (!found && n.name === sampleBoneName) found = n;
+                          });
+                          console.log("[VRM-IDLE] retry in normalizedHumanBonesRoot, found?", !!found);
+                          if (found) {
+                            // vrm.scene 으로는 bind 안 됨 — mixer 를 root 로 재생성
+                            mixer.stopAllAction();
+                            mixer = new THREE.AnimationMixer(root);
+                            idleAction = mixer.clipAction(clip);
+                            idleAction.setLoop(THREE.LoopRepeat, Infinity);
+                            idleAction.play();
+                            idleAction.timeScale = 2.0;
+                            console.log("[VRM-IDLE] mixer re-created on normalizedHumanBonesRoot");
+                            // vrm.scene 에 root 가 자식으로 안 붙어 있으면 추가
+                            if (root.parent !== vrm.scene) {
+                              vrm.scene.add(root);
+                              console.log("[VRM-IDLE] normalizedHumanBonesRoot vrm.scene 에 attach");
+                            }
+                          }
+                        }
+                      }
+                      console.log("[VRM-IDLE] ✓✓ 재생 시작 duration=", clip.duration.toFixed(2),
+                                  "s tracks=", clip.tracks?.length);
+                      // 차렷 자세 보정은 idle 모션과 충돌 — mixer 가 매 frame 팔 rotation
+                      // 을 덮어쓰지 못하면 차렷 자세가 살아남고 idle 변화가 안 보인다. 적용 후
+                      // 일정 시간 차렷 보정 release (단, animation 의 디폴트 pose 가 자연스러운
+                      // 자세일 거라 가정).
+                    } catch (clipErr) {
+                      console.error("[VRM-IDLE] clip 생성 실패:", clipErr, clipErr?.stack);
+                    }
+                  },
+                  undefined,
+                  (animErr) => {
+                    console.warn("[VRM] idle_loop.vrma 로드 실패 — manual sway 만 동작:", animErr);
+                  }
+                );
               }
 
               loaded = true;
@@ -1009,49 +1277,15 @@
           const t = performance.now();
 
           if (vrm) {
-            // Idle blink (2~5초 랜덤)
+            // Idle blink 만 유지 — manual head sway / eye lookAt / nodding 은 airi idle
+            // 모션과 중복되어 어색함. idle clip 이 Neck/Shoulder/UpperArm 흔들림을
+            // 책임지고, 우리는 표정 blink 만 추가.
             if (t - lastBlink > 2000 + Math.random() * 3000) {
               if (vrm.expressionManager?.setValue) {
                 vrm.expressionManager.setValue("blink", 1.0);
                 setTimeout(() => vrm.expressionManager?.setValue("blink", 0.0), 130);
               }
               lastBlink = t;
-            }
-            // Idle eye lookAt (5~10초 — 캐릭터가 살아있다 느낌)
-            if (t - lastEyeMove > 5000 + Math.random() * 5000) {
-              eyeTarget.x = (Math.random() - 0.5) * 0.35;
-              eyeTarget.y = (Math.random() - 0.5) * 0.18;
-              lastEyeMove = t;
-            }
-            // Idle head sway (10~20초)
-            if (t - lastHead > 10000 + Math.random() * 10000) {
-              headSway.x = (Math.random() - 0.5) * 0.08;
-              headSway.y = (Math.random() - 0.5) * 0.06;
-              lastHead = t;
-            }
-            // Speaking nodding — 말하는 동안 상하 끄덕 cycle (1.5Hz 사인)
-            // headSway.x 베이스에 더해서 자연스럽게 보간.
-            let nodAdd = 0;
-            if (isNodding) {
-              const phaseSec = t / 1000;
-              nodAdd = Math.sin(phaseSec * 2 * Math.PI * 0.6) * 0.05;   // ±0.05 rad
-            }
-            // head bone 살짝 적용 (humanoid bone 보간)
-            const head = vrm.humanoid?.getNormalizedBoneNode("head");
-            if (head) {
-              const targetX = headSway.x + nodAdd;
-              head.rotation.x += (targetX - head.rotation.x) * 0.08;
-              head.rotation.y += (headSway.y - head.rotation.y) * 0.03;
-            }
-            // lookAt 적용 — 측정된 head Y 기준 (모델 키 차이 흡수)
-            if (vrm.lookAt?.target) {
-              vrm.lookAt.target.position.set(eyeTarget.x, measuredHeadY + eyeTarget.y, 1);
-            } else if (vrm.humanoid?.getNormalizedBoneNode) {
-              // VRM 1.0 lookAt target 없으면 raw bone rotation
-              const lEye = vrm.humanoid.getNormalizedBoneNode("leftEye");
-              const rEye = vrm.humanoid.getNormalizedBoneNode("rightEye");
-              if (lEye) lEye.rotation.set(-eyeTarget.y * 0.3, eyeTarget.x * 0.5, 0);
-              if (rEye) rEye.rotation.set(-eyeTarget.y * 0.3, eyeTarget.x * 0.5, 0);
             }
             // Lip sync — TTS amplitude 기반
             if (lipSyncAnalyser && lipSyncData) {
@@ -1061,12 +1295,42 @@
               const amp = Math.min(1.0, (sum / 32 / 255) * 2.5);
               vrm.expressionManager?.setValue("aa", amp);
             }
+            // airi idle 모션 mixer step — vrm.update 이전에 호출해야 bone 변형이 spring 에 반영됨
+            if (mixer) mixer.update(dt);
             vrm.update(dt);
+
+            // 진단: 1초마다 hips bone 의 quaternion 값 dump — mixer 가 binding 잘 되면
+            // 값이 매 초 변함. 안 변하면 mixer 가 bone 못 찾음 = 충돌이 아닌 binding 실패.
+            if (!window._vrmDiagLast || (t - window._vrmDiagLast) > 1000) {
+              window._vrmDiagLast = t;
+              const hips = vrm.humanoid?.getNormalizedBoneNode("hips");
+              if (hips) {
+                const q = hips.quaternion;
+                console.log("[VRM-DIAG] hips q:",
+                            q.x.toFixed(3), q.y.toFixed(3), q.z.toFixed(3), q.w.toFixed(3),
+                            "mixer?", !!mixer, "action?", !!idleAction,
+                            "actionTime=", idleAction?.time?.toFixed(2));
+              }
+            }
           }
           renderer.render(scene, camera);
           requestAnimationFrame(animate);
         }
         animate();
+
+        // 컨테이너 size 변화 시 (윈도우 resize / 모드 토글) renderer + camera aspect 재조정.
+        try {
+          const ro = new ResizeObserver(() => {
+            const w = canvas.clientWidth, h = canvas.clientHeight;
+            if (w > 0 && h > 0) {
+              renderer.setSize(w, h, false);
+              camera.aspect = w / h;
+              camera.updateProjectionMatrix();
+            }
+          });
+          ro.observe(canvas);
+        } catch (e) { console.warn("[VRM] ResizeObserver skip:", e); }
+
         loading = false;
         return true;
       } catch (err) {
@@ -1256,12 +1520,26 @@
 
   let mode = "idle"; // idle | listening | thinking | speaking
   function setMode(next, label, hint) {
+    const prevMode = mode;
     mode = next;
     orbEl.classList.toggle("listening", next === "listening");
     orbEl.classList.toggle("thinking",  next === "thinking");
     orbEl.classList.toggle("speaking",  next === "speaking");
-    if (label !== undefined) stateEl.textContent = label;
+    // 명시적 label 있으면 갱신. 빈 label 이면:
+    //   - listening 모드 진입: "듣고 있어요" 로 박스 reset (다음 turn 깔끔하게)
+    //   - 그 외 (speaking/thinking 등): 박스 유지 (phase_label 텍스트 보존)
+    if (label !== undefined && label !== "") {
+      setStateText(label);
+    } else if (next === "listening") {
+      setStateText("듣고 있어요");
+    }
     if (hint  !== undefined) hintEl.textContent  = hint;
+    // 비-speaking 모드 진입 시 reply 덮개 박스 숨김 + chunk timer 취소.
+    if (next !== "speaking") {
+      clearTimeout(_replyChunkTimer);
+      const r = document.getElementById("charBubbleStackReply");
+      if (r) r.classList.remove("show");
+    }
     // 캐릭터 모드면 VRM adapter 에도 알림
     if (window.vrmAdapter) window.vrmAdapter.onMode(next);
   }
