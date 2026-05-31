@@ -776,3 +776,56 @@ def get_site(code: str) -> dict[str, Any] | None:
 
 def list_site_codes() -> list[str]:
     return [s["code"] for s in SITES]
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# 변경 빈도별 사이트 분류 — 차등 스케줄링 안전망.
+#
+# 본청·관광·일자리·경제처럼 변경 폭주 가능한 사이트만 daily 로 두고, 그 외
+# 중간 빈도 기관 사이트는 weekly, 정보성 위주는 monthly 로 분산한다. 일별
+# 크롤링이 24h 를 넘어 다음 일별과 겹쳐 dropped 되는 사고 방지.
+#
+# 분류는 운영자가 변경 가능. SITES 항목 안 "change_frequency" 키가 있으면
+# 그게 우선. 없으면 아래 DEFAULT_FREQUENCY_MAP, 매핑도 없으면 "daily".
+# ───────────────────────────────────────────────────────────────────────────
+
+DEFAULT_FREQUENCY_MAP: dict[str, str] = {
+    # daily — 핵심 변경 폭주 가능 (공지·보도·일자리·관광)
+    "jeonbuk_main": "daily",
+    "tour_jb": "daily",
+    "jb_jobcenter": "daily",
+    "jbba": "daily",
+    # weekly — 직속기관·중간 빈도
+    "jbares": "weekly",
+    "jihe_jeonbuk": "weekly",
+    "hrd_jeonbuk": "weekly",
+    "forest_jb": "weekly",
+    "kukakwon": "weekly",
+    "jma": "weekly",
+    "jbchild": "weekly",
+    "agriacademy": "weekly",
+    "jbct": "weekly",
+    "jbiles": "weekly",
+    "jbgoods": "weekly",
+    "jbwelfare": "weekly",
+    "jb2030": "weekly",
+    # monthly — 정보성·변경 드물
+    "kogl": "monthly",
+    "biennale": "monthly",
+    "jblc": "monthly",
+}
+
+_VALID_FREQUENCIES = ("daily", "weekly", "monthly")
+
+
+def site_frequency(site: dict[str, Any]) -> str:
+    """사이트의 차등 스케줄 frequency. SITES 안 명시 > 매핑 > daily."""
+    explicit = site.get("change_frequency")
+    if isinstance(explicit, str) and explicit in _VALID_FREQUENCIES:
+        return explicit
+    return DEFAULT_FREQUENCY_MAP.get(site["code"], "daily")
+
+
+def get_sites_by_frequency(frequency: str) -> list[dict[str, Any]]:
+    """frequency 에 매칭되는 사이트만 반환. weekly 호출 시 weekly 사이트만."""
+    return [s for s in SITES if site_frequency(s) == frequency]

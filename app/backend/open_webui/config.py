@@ -4432,6 +4432,39 @@ CRAWLER_WEEKLY_FULL_ENABLED = PersistentConfig(
     os.environ.get("CRAWLER_WEEKLY_FULL_ENABLED", "False").lower() == "true",
 )
 
+# 차등 incremental — 변경 빈도별 사이트 분류 (crawler_sites.DEFAULT_FREQUENCY_MAP).
+# daily 가 24h 넘어 다음 daily 와 겹쳐 dropped 되는 사고 방지 안전망.
+CRAWLER_WEEKLY_INCREMENTAL_ENABLED = PersistentConfig(
+    "CRAWLER_WEEKLY_INCREMENTAL_ENABLED",
+    "crawler.weekly_incremental_enabled",
+    os.environ.get("CRAWLER_WEEKLY_INCREMENTAL_ENABLED", "True").lower() == "true",
+)
+CRAWLER_WEEKLY_INCREMENTAL_DAY = PersistentConfig(
+    "CRAWLER_WEEKLY_INCREMENTAL_DAY",
+    "crawler.weekly_incremental_day",
+    os.environ.get("CRAWLER_WEEKLY_INCREMENTAL_DAY", "sun"),
+)
+CRAWLER_WEEKLY_INCREMENTAL_HOUR = PersistentConfig(
+    "CRAWLER_WEEKLY_INCREMENTAL_HOUR",
+    "crawler.weekly_incremental_hour",
+    int(os.environ.get("CRAWLER_WEEKLY_INCREMENTAL_HOUR", "3")),
+)
+CRAWLER_MONTHLY_INCREMENTAL_ENABLED = PersistentConfig(
+    "CRAWLER_MONTHLY_INCREMENTAL_ENABLED",
+    "crawler.monthly_incremental_enabled",
+    os.environ.get("CRAWLER_MONTHLY_INCREMENTAL_ENABLED", "True").lower() == "true",
+)
+CRAWLER_MONTHLY_INCREMENTAL_DAY = PersistentConfig(
+    "CRAWLER_MONTHLY_INCREMENTAL_DAY",
+    "crawler.monthly_incremental_day",
+    int(os.environ.get("CRAWLER_MONTHLY_INCREMENTAL_DAY", "1")),
+)
+CRAWLER_MONTHLY_INCREMENTAL_HOUR = PersistentConfig(
+    "CRAWLER_MONTHLY_INCREMENTAL_HOUR",
+    "crawler.monthly_incremental_hour",
+    int(os.environ.get("CRAWLER_MONTHLY_INCREMENTAL_HOUR", "4")),
+)
+
 # 페이지 처리 후 첨부파일 (PDF/HWP/HWPX/이미지 등) 다운로드 + RAG 인덱싱
 CRAWL_ATTACHMENTS_ENABLED = PersistentConfig(
     "CRAWL_ATTACHMENTS_ENABLED",

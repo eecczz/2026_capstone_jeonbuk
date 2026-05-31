@@ -663,11 +663,28 @@ async def run_full_crawl(request) -> list[dict[str, Any]]:
     return all_stats
 
 
-async def run_incremental_crawl(request) -> list[dict[str, Any]]:
-    """일별 배치: 변경분만 재수집."""
-    log.info("run_incremental_crawl START")
+async def run_incremental_crawl(
+    request,
+    frequency: str | None = None,
+) -> list[dict[str, Any]]:
+    """배치 incremental 크롤링.
+
+    frequency 가 주어지면 그 빈도 분류 ("daily"/"weekly"/"monthly") 사이트만 수집.
+    None 이면 SITES 전체 — 옛 호출자 호환.
+    """
+    from open_webui.tasks.crawler_sites import get_sites_by_frequency
+
+    if frequency:
+        sites = get_sites_by_frequency(frequency)
+        log.info(
+            f"run_incremental_crawl START frequency={frequency!r} sites={len(sites)}"
+        )
+    else:
+        sites = list(SITES)
+        log.info(f"run_incremental_crawl START all sites={len(sites)}")
+
     all_stats: list[dict[str, Any]] = []
-    for site in SITES:
+    for site in sites:
         try:
             stats = await crawl_site(request, site, mode="incremental")
             all_stats.append(stats)
@@ -676,7 +693,9 @@ async def run_incremental_crawl(request) -> list[dict[str, Any]]:
             all_stats.append(
                 {"site_code": site["code"], "error_message": str(e), "error": 1}
             )
-    log.info(f"run_incremental_crawl DONE: sites={len(all_stats)}")
+    log.info(
+        f"run_incremental_crawl DONE frequency={frequency!r} sites={len(all_stats)}"
+    )
     return all_stats
 
 

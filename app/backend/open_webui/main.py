@@ -796,11 +796,17 @@ async def lifespan(app: FastAPI):
                     }
                 )
 
-            async def _scheduled_incremental():
+            async def _scheduled_incremental(frequency: str | None = None):
+                # 차등 스케줄 — frequency 가 주어지면 해당 분류 사이트만 incremental.
+                # daily 가 24h 넘어 다음 daily 와 겹쳐 dropped 되는 사고 방지 안전망.
                 try:
-                    await run_incremental_crawl(_build_crawler_request())
+                    await run_incremental_crawl(
+                        _build_crawler_request(), frequency=frequency
+                    )
                 except Exception as e:
-                    log.exception(f"scheduled incremental crawl failed: {e}")
+                    log.exception(
+                        f"scheduled incremental crawl failed (frequency={frequency}): {e}"
+                    )
 
             async def _scheduled_full():
                 try:
@@ -811,9 +817,10 @@ async def lifespan(app: FastAPI):
             tz = getattr(app.state.config, "CRAWLER_TIMEZONE", "Asia/Seoul")
             scheduler = AsyncIOScheduler(timezone=tz)
 
+            # ── DAILY — 변경 폭주 가능 핵심 사이트 (jeonbuk_main, tour_jb 등) ──
             daily_hour = int(getattr(app.state.config, "CRAWLER_DAILY_HOUR", 2))
             scheduler.add_job(
-                _scheduled_incremental,
+                lambda: _scheduled_incremental(frequency="daily"),
                 trigger=CronTrigger(hour=daily_hour, minute=0),
                 id="daily_incremental_crawl",
                 replace_existing=True,
@@ -821,6 +828,49 @@ async def lifespan(app: FastAPI):
                 misfire_grace_time=3600,
             )
 
+            # ── WEEKLY — 중간 변경 빈도 직속기관 ──
+            weekly_inc_enabled = bool(
+                getattr(app.state.config, "CRAWLER_WEEKLY_INCREMENTAL_ENABLED", True)
+            )
+            if weekly_inc_enabled:
+                wk_day = getattr(
+                    app.state.config, "CRAWLER_WEEKLY_INCREMENTAL_DAY", "sun"
+                )
+                wk_hour = int(
+                    getattr(app.state.config, "CRAWLER_WEEKLY_INCREMENTAL_HOUR", 3)
+                )
+                scheduler.add_job(
+                    lambda: _scheduled_incremental(frequency="weekly"),
+                    trigger=CronTrigger(
+                        day_of_week=wk_day, hour=wk_hour, minute=0
+                    ),
+                    id="weekly_incremental_crawl",
+                    replace_existing=True,
+                    max_instances=1,
+                    misfire_grace_time=3600,
+                )
+
+            # ── MONTHLY — 정보성·변경 드문 사이트 ──
+            monthly_inc_enabled = bool(
+                getattr(app.state.config, "CRAWLER_MONTHLY_INCREMENTAL_ENABLED", True)
+            )
+            if monthly_inc_enabled:
+                mo_day = int(
+                    getattr(app.state.config, "CRAWLER_MONTHLY_INCREMENTAL_DAY", 1)
+                )
+                mo_hour = int(
+                    getattr(app.state.config, "CRAWLER_MONTHLY_INCREMENTAL_HOUR", 4)
+                )
+                scheduler.add_job(
+                    lambda: _scheduled_incremental(frequency="monthly"),
+                    trigger=CronTrigger(day=mo_day, hour=mo_hour, minute=0),
+                    id="monthly_incremental_crawl",
+                    replace_existing=True,
+                    max_instances=1,
+                    misfire_grace_time=3600,
+                )
+
+            # ── WEEKLY FULL (선택) — 전체 재크롤 ──
             if getattr(app.state.config, "CRAWLER_WEEKLY_FULL_ENABLED", False):
                 weekly_day = getattr(
                     app.state.config, "CRAWLER_WEEKLY_FULL_DAY", "sun"
@@ -842,8 +892,11 @@ async def lifespan(app: FastAPI):
             scheduler.start()
             app.state.crawler_scheduler = scheduler
             log.info(
-                f"Crawler scheduler started: daily@{daily_hour}:00 {tz}, "
-                f"weekly_full={getattr(app.state.config, 'CRAWLER_WEEKLY_FULL_ENABLED', False)}"
+                f"Crawler scheduler started: "
+                f"daily@{daily_hour}:00, "
+                f"weekly_inc={weekly_inc_enabled}, monthly_inc={monthly_inc_enabled}, "
+                f"weekly_full={getattr(app.state.config, 'CRAWLER_WEEKLY_FULL_ENABLED', False)} "
+                f"({tz})"
             )
         except Exception as e:
             log.exception(f"Failed to start crawler scheduler: {e}")
