@@ -1092,7 +1092,7 @@
           // ?v=20260531 — 파일 교체 후 브라우저/CDN 캐시 강제 무효화. 캐릭터를
           // 새로 교체할 때 이 토큰만 올리면 클라이언트는 강제 재다운로드.
           loader.load(
-            "/static/character.vrm?v=20260601r",
+            "/static/character.vrm?v=20260601s",
             (gltf) => {
               try {
                 vrm = gltf.userData.vrm;
@@ -1163,7 +1163,7 @@
                 const animLoader = new GLTFLoader();
                 animLoader.register((parser) => new VRMAnimLib.VRMAnimationLoaderPlugin(parser));
                 animLoader.load(
-                  "/static/idle_loop.vrma?v=20260601r",
+                  "/static/idle_loop.vrma?v=20260601s",
                   (animGltf) => {
                     console.log("[VRM-IDLE] gltf loaded, userData keys=",
                                 Object.keys(animGltf.userData || {}),
@@ -1993,37 +1993,27 @@
     }, COOLDOWN_AFTER_TTS_MS);
   }
 
-  // ─────────── Orb 탭: pause/resume + speaking 중지 ───────────
+  // ─────────── Orb 탭: 일시정지 비활성 — idle 에서 자동 시작/재개 만 ───────────
   async function onOrbTap() {
     // 텍스트 모드면 Orb 탭으로 음성 listening 시작 안 함.
     if (typeof uiMode !== "undefined" && uiMode !== "voice") {
       return;
     }
-    if (mode === "speaking") {
-      stopAllAudio();
-      enterCooldownThenListen();
+    // speaking / thinking / listening 중에 탭은 무시 — 일시정지 비활성.
+    if (mode === "speaking" || mode === "thinking" || mode === "listening") {
       return;
     }
-    if (mode === "thinking") return;
-
     if (mode === "recording") {
       // 사용자가 명시적으로 즉시 전송
       stopRecording();
       return;
     }
-
     if (pausedByUser || mode === "idle") {
       // 자동 모드 시작/재개
       if (!await ensureMic()) return;
       pausedByUser = false;
       setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "한국어로 자연스럽게 말씀해 주세요");
       startMicLoop();
-    } else {
-      // listening 중에 탭 = 일시정지
-      pausedByUser = true;
-      stopMicLoop();
-      stopMediaRecorderFully();
-      setMode("idle", "일시정지", "Orb 를 탭하여 다시 시작");
     }
   }
 
