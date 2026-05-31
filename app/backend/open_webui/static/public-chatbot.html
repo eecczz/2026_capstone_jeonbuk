@@ -233,6 +233,8 @@
   }
   .char-bubble-msg-text { display: block; min-height: 1.5em; }   /* 빈 텍스트일 때도 줄 공간 유지 */
   .char-bubble-msg.has-text { display: block; }
+  /* 답변 재생 중에는 상태 박스 자체 숨김 — 덮개 reply 박스만 보이게 */
+  body.voice-speaking .char-bubble-msg { display: none !important; }
   .orb {
     position: relative;
     width: 100%;
@@ -647,6 +649,7 @@
   }
   function showReplyChunks(text) {
     clearTimeout(_replyChunkTimer);
+    _stopTypeReply();
     const replyText = document.getElementById("charBubbleReplyText");
     const replyStack = document.getElementById("charBubbleStackReply");
     if (!replyText || !replyStack) return;
@@ -659,9 +662,11 @@
     let i = 0;
     const step = () => {
       if (i >= chunks.length) return;
-      replyText.textContent = chunks[i];
       replyStack.classList.add("show");
-      const dur = Math.max(1800, chunks[i].length * 130);   // 한글 1자당 ~130ms
+      // 한 글자씩 타이핑 애니메이션
+      _typeInto(replyText, chunks[i], "reply");
+      // chunk 표시 시간 = 타이핑 + 읽는 여유 (한 글자 = TYPE_SPEED_MS, 여유 1.4s)
+      const dur = chunks[i].length * TYPE_SPEED_MS + 1400;
       i++;
       if (i < chunks.length) _replyChunkTimer = setTimeout(step, dur);
     };
@@ -675,6 +680,7 @@
   }
   function _startDots() {
     _stopDots();
+    _stopTypeState();
     _dotsIdx = 0;
     if (charBubbleMsgText) charBubbleMsgText.textContent = ".";
     _dotsTimer = setInterval(() => {
@@ -682,14 +688,50 @@
       if (charBubbleMsgText) charBubbleMsgText.textContent = ".".repeat(_dotsIdx + 1);
     }, 500);
   }
+
+  // 한 글자씩 타이핑 애니메이션. 상태 박스 / 답변 박스 별도 timer.
+  const TYPE_SPEED_MS = 35;   // 한글 약 28자/초 — 자연 타자
+  let _typeTimerState = null;
+  let _typeTimerReply = null;
+  function _stopTypeState() {
+    if (_typeTimerState) { clearInterval(_typeTimerState); _typeTimerState = null; }
+  }
+  function _stopTypeReply() {
+    if (_typeTimerReply) { clearInterval(_typeTimerReply); _typeTimerReply = null; }
+  }
+  function _typeInto(el, text, slot, speed) {
+    if (!el) return;
+    if (slot === "state") _stopTypeState();
+    else _stopTypeReply();
+    el.textContent = "";
+    if (!text) return;
+    let i = 0;
+    const handle = setInterval(() => {
+      i++;
+      el.textContent = text.slice(0, i);
+      if (i >= text.length) {
+        clearInterval(handle);
+        if (slot === "state" && _typeTimerState === handle) _typeTimerState = null;
+        if (slot === "reply" && _typeTimerReply === handle) _typeTimerReply = null;
+      }
+    }, speed || TYPE_SPEED_MS);
+    if (slot === "state") _typeTimerState = handle;
+    else _typeTimerReply = handle;
+  }
+
   // stateEl + char-bubble (캐릭터 모드 말풍선) 동시 갱신.
-  // 박스는 항상 표시. 본문 텍스트 없을 때 . / .. / ... 사이클 표시.
+  // 본문 텍스트는 한 글자씩 타이핑. 빈 상태에선 . / .. / ... cycle.
+  // 동일 텍스트 재호출은 skip — setMode 가 음성 모드 진입 시 두 번 호출되어
+  // 타이핑이 두 바퀴 도는 문제 방지.
+  let _lastSetStateText = "";
   function setStateText(text) {
     const display = (text && text.trim()) ? text : "";
     if (stateEl) stateEl.textContent = display;
+    if (display === _lastSetStateText) return;
+    _lastSetStateText = display;
     if (display) {
       _stopDots();
-      if (charBubbleMsgText) charBubbleMsgText.textContent = display;
+      _typeInto(charBubbleMsgText, display, "state");
     } else {
       _startDots();
     }
@@ -1092,7 +1134,7 @@
           // ?v=20260531 — 파일 교체 후 브라우저/CDN 캐시 강제 무효화. 캐릭터를
           // 새로 교체할 때 이 토큰만 올리면 클라이언트는 강제 재다운로드.
           loader.load(
-            "/static/character.vrm?v=20260601s",
+            "/static/character.vrm?v=20260601u",
             (gltf) => {
               try {
                 vrm = gltf.userData.vrm;
@@ -1163,7 +1205,7 @@
                 const animLoader = new GLTFLoader();
                 animLoader.register((parser) => new VRMAnimLib.VRMAnimationLoaderPlugin(parser));
                 animLoader.load(
-                  "/static/idle_loop.vrma?v=20260601s",
+                  "/static/idle_loop.vrma?v=20260601u",
                   (animGltf) => {
                     console.log("[VRM-IDLE] gltf loaded, userData keys=",
                                 Object.keys(animGltf.userData || {}),
@@ -1545,6 +1587,8 @@
     orbEl.classList.toggle("listening", next === "listening");
     orbEl.classList.toggle("thinking",  next === "thinking");
     orbEl.classList.toggle("speaking",  next === "speaking");
+    // 답변 재생 중 상태 박스 자체 숨김 — 덮개 박스 (reply) 만 보이게.
+    document.body.classList.toggle("voice-speaking", next === "speaking");
     // 명시적 label 있으면 갱신. 빈 label 이면:
     //   - listening 모드 진입: "안녕하세요. 전북도청 챗봇입니다!" 표시 (답변 끝나면 대기 상태)
     //   - 그 외 (speaking/thinking 등): 박스 유지 (phase_label 텍스트 보존)
