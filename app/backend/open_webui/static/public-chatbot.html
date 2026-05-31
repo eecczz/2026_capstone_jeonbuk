@@ -231,7 +231,7 @@
     border-radius: 0;
     box-shadow: none;
   }
-  .char-bubble-msg-text { display: block; }
+  .char-bubble-msg-text { display: block; min-height: 1.5em; }   /* 빈 텍스트일 때도 줄 공간 유지 */
   .char-bubble-msg.has-text { display: block; }
   .orb {
     position: relative;
@@ -554,7 +554,7 @@
       <div class="char-bubble-stack" id="charBubbleStack">
         <div class="char-bubble-msg has-text" id="charBubbleMsg">
           <span class="char-bubble-name">안내원</span>
-          <span class="char-bubble-msg-text" id="charBubbleMsgText">듣고 있어요</span>
+          <span class="char-bubble-msg-text" id="charBubbleMsgText"></span>
         </div>
       </div>
       <!-- 답변 재생 중에만 위 stack 을 덮어 씌우는 복제 박스. reply 메시지 도착 시 활성. -->
@@ -668,15 +668,35 @@
     step();
   }
 
+  // 빈 본문 상태에서 . / .. / ... 사이클 반복 (대기 인디케이터).
+  let _dotsTimer = null, _dotsIdx = 0;
+  function _stopDots() {
+    if (_dotsTimer) { clearInterval(_dotsTimer); _dotsTimer = null; }
+  }
+  function _startDots() {
+    _stopDots();
+    _dotsIdx = 0;
+    if (charBubbleMsgText) charBubbleMsgText.textContent = ".";
+    _dotsTimer = setInterval(() => {
+      _dotsIdx = (_dotsIdx + 1) % 3;
+      if (charBubbleMsgText) charBubbleMsgText.textContent = ".".repeat(_dotsIdx + 1);
+    }, 500);
+  }
   // stateEl + char-bubble (캐릭터 모드 말풍선) 동시 갱신.
-  // 박스 내부 라벨 ("안내원") 은 고정. 본문만 갱신.
-  // 빈 입력 → "듣고 있어요" 디폴트 (박스 사라지는 구간 없게).
+  // 박스는 항상 표시. 본문 텍스트 없을 때 . / .. / ... 사이클 표시.
   function setStateText(text) {
-    const display = (text && text.trim()) ? text : "듣고 있어요";
+    const display = (text && text.trim()) ? text : "";
     if (stateEl) stateEl.textContent = display;
-    if (charBubbleMsgText) charBubbleMsgText.textContent = display;
+    if (display) {
+      _stopDots();
+      if (charBubbleMsgText) charBubbleMsgText.textContent = display;
+    } else {
+      _startDots();
+    }
     if (charBubbleMsg) charBubbleMsg.classList.add("has-text");
   }
+  // 페이지 로드 시 dots 시작
+  if (charBubbleMsgText) _startDots();
   const emptyHint = document.getElementById("emptyHint");
   const voiceBtn = document.getElementById("voiceBtn");
   const voiceCloseBtn = document.getElementById("voiceCloseBtn");
@@ -911,7 +931,7 @@
       };
       pcMicSource.connect(pcProcessor);
       pcProcessor.connect(pcAudioCtx.destination); // ScriptProcessor 동작 위해 destination 연결 필수
-      if (typeof setMode === "function") setMode("listening", "듣고 있어요", "한국어로 자연스럽게 말씀해 주세요");
+      if (typeof setMode === "function") setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "한국어로 자연스럽게 말씀해 주세요");
     } catch (e) {
       if (typeof setMode === "function") setMode("idle", "마이크 권한 거부", "브라우저 설정에서 마이크 권한 허용 후 다시 시도");
       stopVoicePipecat();
@@ -1072,7 +1092,7 @@
           // ?v=20260531 — 파일 교체 후 브라우저/CDN 캐시 강제 무효화. 캐릭터를
           // 새로 교체할 때 이 토큰만 올리면 클라이언트는 강제 재다운로드.
           loader.load(
-            "/static/character.vrm?v=20260601m",
+            "/static/character.vrm?v=20260601r",
             (gltf) => {
               try {
                 vrm = gltf.userData.vrm;
@@ -1143,7 +1163,7 @@
                 const animLoader = new GLTFLoader();
                 animLoader.register((parser) => new VRMAnimLib.VRMAnimationLoaderPlugin(parser));
                 animLoader.load(
-                  "/static/idle_loop.vrma?v=20260601m",
+                  "/static/idle_loop.vrma?v=20260601r",
                   (animGltf) => {
                     console.log("[VRM-IDLE] gltf loaded, userData keys=",
                                 Object.keys(animGltf.userData || {}),
@@ -1526,12 +1546,12 @@
     orbEl.classList.toggle("thinking",  next === "thinking");
     orbEl.classList.toggle("speaking",  next === "speaking");
     // 명시적 label 있으면 갱신. 빈 label 이면:
-    //   - listening 모드 진입: "듣고 있어요" 로 박스 reset (다음 turn 깔끔하게)
+    //   - listening 모드 진입: "안녕하세요. 전북도청 챗봇입니다!" 표시 (답변 끝나면 대기 상태)
     //   - 그 외 (speaking/thinking 등): 박스 유지 (phase_label 텍스트 보존)
     if (label !== undefined && label !== "") {
       setStateText(label);
     } else if (next === "listening") {
-      setStateText("듣고 있어요");
+      setStateText("안녕하세요. 전북도청 챗봇입니다!");
     }
     if (hint  !== undefined) hintEl.textContent  = hint;
     // 비-speaking 모드 진입 시 reply 덮개 박스 숨김 + chunk timer 취소.
@@ -1873,7 +1893,7 @@
     isCapturingSpeech = true;
     recStartedAt = Date.now();
     recLastSpeechAt = recStartedAt;
-    setMode("recording", "듣고 있어요", "잠시 멈추면 자동 전송돼요");
+    setMode("recording", "안녕하세요. 전북도청 챗봇입니다!", "잠시 멈추면 자동 전송돼요");
   }
   function stopRecording() {
     if (!isCapturingSpeech) return;
@@ -1885,7 +1905,7 @@
     if (totalSamples < minSamples) {
       pcmRingBuffer = [];
       pcmRingTotalSamples = 0;
-      setMode("listening", "듣고 있어요", "조금 더 길게 말씀해 주세요");
+      setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "조금 더 길게 말씀해 주세요");
       startMicLoop();
       return;
     }
@@ -1928,12 +1948,12 @@
       if (!resp.ok) throw new Error(await resp.text() || `HTTP ${resp.status}`);
       const data = await resp.json();
       if (data.ignored) {
-        setMode("listening", "듣고 있어요", "주변 소음으로 들렸어요. 다시 말씀해 주세요");
+        setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "주변 소음으로 들렸어요. 다시 말씀해 주세요");
         startMicLoop();
         return;
       }
       if (data.needs_retry) {
-        setMode("listening", "듣고 있어요", data.reply || "한국어로 다시 말씀해 주세요");
+        setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", data.reply || "한국어로 다시 말씀해 주세요");
         startMicLoop();
         return;
       }
@@ -1968,7 +1988,7 @@
         setMode("idle", "일시정지", "Orb 를 탭하여 다시 시작");
         return;
       }
-      setMode("listening", "듣고 있어요", "한국어로 자연스럽게 말씀해 주세요");
+      setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "한국어로 자연스럽게 말씀해 주세요");
       startMicLoop();
     }, COOLDOWN_AFTER_TTS_MS);
   }
@@ -1996,7 +2016,7 @@
       // 자동 모드 시작/재개
       if (!await ensureMic()) return;
       pausedByUser = false;
-      setMode("listening", "듣고 있어요", "한국어로 자연스럽게 말씀해 주세요");
+      setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "한국어로 자연스럽게 말씀해 주세요");
       startMicLoop();
     } else {
       // listening 중에 탭 = 일시정지
