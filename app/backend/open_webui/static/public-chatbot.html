@@ -35,14 +35,13 @@
     margin: 0;
     padding: 0;
     height: 100%;
-    font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
     background: var(--bg);
     color: var(--text);
   }
-  /* airi cross-pattern 배경 — pure CSS (이미지 자산 0). magicpattern 기반.
-     출처: moeru-ai/airi packages/stage-layouts/.../pattern-cross.vue */
+  /* AIRI 레퍼런스: 흰 바탕 위에 채도가 거의 없는 옅은 회색 십자 패턴. */
   body {
-    --cross-color: rgba(160, 160, 160, 0.35);
+    --cross-color: rgba(226, 229, 230, 0.52);
     background-color: #ffffff;
     background-image:
       radial-gradient(circle, transparent 20%, #ffffff 20%, #ffffff 80%, transparent 80%, transparent),
@@ -52,6 +51,9 @@
     background-position: 0 0, 25px 25px, 0 -1px, -1px 0;
     background-size: 50px 50px, 50px 50px, 25px 25px, 25px 25px;
     background-attachment: fixed;
+    border: 0;
+    outline: 0;
+    box-shadow: none;
   }
   .app {
     display: flex;
@@ -59,7 +61,10 @@
     height: 100vh;
     max-width: 720px;
     margin: 0 auto;
-    background: transparent;  /* body 의 cross pattern 이 그대로 보이도록 */
+    background: transparent;
+    border: 0;
+    outline: 0;
+    box-shadow: none;
   }
 
   /* ── 헤더 ── 로고 좌측 정렬, 다른 버튼 없음 */
@@ -210,22 +215,29 @@
   /* reply 박스 — 상태 박스 위 덮어씌움. speaking 중에만 표시. */
   .char-bubble-stack-reply { display: none !important; z-index: 110; }
   body.visual-character .char-bubble-stack-reply.show { display: flex !important; }
-  /* 캐릭터 canvas — 윤곽 따라가는 부드러운 하늘색 글로우 (drop-shadow blur 작게) */
+  /* AIRI 레퍼런스: blur 없이 단일 시안색으로 붙는 캐릭터 윤곽선. */
   .vrm-wrap canvas {
-    filter: drop-shadow(0 0 6px rgba(135, 200, 240, 0.7))
-            drop-shadow(0 0 12px rgba(135, 200, 240, 0.4));
+    filter: drop-shadow(2.5px 0 0 rgb(226, 229, 230))
+            drop-shadow(-2.5px 0 0 rgb(226, 229, 230))
+            drop-shadow(0 2.5px 0 rgb(226, 229, 230))
+            drop-shadow(0 -2.5px 0 rgb(226, 229, 230))
+            drop-shadow(2px 2px 0 rgb(226, 229, 230))
+            drop-shadow(-2px 2px 0 rgb(226, 229, 230))
+            drop-shadow(2px -2px 0 rgb(226, 229, 230))
+            drop-shadow(-2px -2px 0 rgb(226, 229, 230));
   }
-  /* 말풍선 — 이미지 픽셀 컬러 매칭. 전체적으로 연한 톤 + 모서리 살짝 각짐 */
+  /* 말풍선 — AIRI 레퍼런스의 청백색 면과 또렷한 시안 텍스트. */
   .char-bubble-msg {
     display: none;
-    background: #c8e2e6;                       /* 페일 시안-민트 (이미지 박스 색) */
-    color: #6e4458;                            /* 옅은 자주 — 본문 텍스트 */
-    font-weight: 700;
+    background: #f7fdff;
+    color: #72cbd1;
+    font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+    font-weight: 800;
     padding: 12px 18px 14px;
-    font-size: 16px;
-    line-height: 1.5;
+    font-size: 14px;
+    line-height: 1.45;
     border-radius: 12px;                       /* 덜 둥근 모서리 */
-    border: 1.5px solid #93c0c8;               /* 페일 시안 테두리 */
+    border: 1px solid #c8eff1;
     /* 답변 길어도 스크롤 없이 잘라서 chunk 단위로 순차 표시 */
     overflow: hidden;
     pointer-events: none;
@@ -233,15 +245,16 @@
                 0 1px 3px rgba(0, 0, 0, 0.10);
   }
   .char-bubble-msg.has-text { display: block; }
-  /* 박스 안 라벨 — vivid 마젠타-핑크 (이미지 AIRI 글자 색) */
+  /* 박스 안 라벨 — AIRI 레퍼런스의 이름 글씨와 동일한 선명한 시안 톤. */
   .char-bubble-name {
     display: block;
     background: none;
-    color: #c0357f;                            /* vivid 마젠타 (이미지 매칭) */
+    color: #72cbd1;
+    font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
     font-weight: 800;
-    font-size: 12px;
-    letter-spacing: 1.5px;
-    margin-bottom: 6px;
+    font-size: 17px;
+    letter-spacing: 0;
+    margin-bottom: 4px;
     padding: 0;
     border-radius: 0;
     box-shadow: none;
@@ -570,14 +583,14 @@
       <!-- 안내원 + 상태/질문정리 텍스트 말풍선 — 한 박스 안 라벨 + 본문. -->
       <div class="char-bubble-stack" id="charBubbleStack">
         <div class="char-bubble-msg has-text" id="charBubbleMsg">
-          <span class="char-bubble-name">안내원</span>
+          <span class="char-bubble-name">오티</span>
           <span class="char-bubble-msg-text" id="charBubbleMsgText"></span>
         </div>
       </div>
       <!-- 답변 재생 중에만 위 stack 을 덮어 씌우는 복제 박스. reply 메시지 도착 시 활성. -->
       <div class="char-bubble-stack char-bubble-stack-reply" id="charBubbleStackReply">
         <div class="char-bubble-msg has-text">
-          <span class="char-bubble-name">안내원</span>
+          <span class="char-bubble-name">오티</span>
           <span class="char-bubble-msg-text" id="charBubbleReplyText"></span>
         </div>
       </div>
@@ -819,6 +832,8 @@
 
   function _enqueuePlayback(arrayBuf) {
     if (!pcAudioCtx) return;
+    // 새 audio chunk 도착 → onended 의 listening 전환 grace 타이머 cancel.
+    clearTimeout(_endedDebounceTimer);
     // 텍스트 모드면 backend 가 보낸 audio frame 무시 (voice → text 토글 후 잔여
     // frame 들이 들어와 재생되는 케이스 차단).
     if (typeof uiMode !== "undefined" && uiMode !== "voice") return;
@@ -847,12 +862,21 @@
     pcPlaybackSources.push(src);
     src.onended = () => {
       pcPlaybackSources = pcPlaybackSources.filter(s => s !== src);
-      // 모든 audio source 재생 완료 시 listening 으로 복귀 (orb 디폴트 검은 원).
+      // sentence 사이 잠깐 비는 순간에 listening 으로 즉시 전환하지 않음.
+      // 600ms grace — 그 사이 새 audio 도착하면 _enqueuePlayback 이 cancel.
+      // 이걸 안 하면 chunk 사이 깜빡임으로 답변 박스 사라지고 상태 박스 노출.
       if (pcPlaybackSources.length === 0 && uiMode === "voice") {
-        if (typeof setMode === "function") setMode("listening", "", "");
+        clearTimeout(_endedDebounceTimer);
+        _endedDebounceTimer = setTimeout(() => {
+          if (pcPlaybackSources.length === 0 && uiMode === "voice"
+              && typeof setMode === "function") {
+            setMode("listening", "", "");
+          }
+        }, 600);
       }
     };
   }
+  let _endedDebounceTimer = null;
 
   function _clearPipecatPlayback() {
     for (const src of pcPlaybackSources) {
@@ -991,7 +1015,7 @@
       };
       pcMicSource.connect(pcProcessor);
       pcProcessor.connect(pcAudioCtx.destination); // ScriptProcessor 동작 위해 destination 연결 필수
-      if (typeof setMode === "function") setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "한국어로 자연스럽게 말씀해 주세요");
+      if (typeof setMode === "function") setMode("listening", "안녕하세요. 안내원 오티입니다!", "한국어로 자연스럽게 말씀해 주세요");
     } catch (e) {
       if (typeof setMode === "function") setMode("idle", "마이크 권한 거부", "브라우저 설정에서 마이크 권한 허용 후 다시 시도");
       stopVoicePipecat();
@@ -1154,7 +1178,7 @@
           // ?v=20260531 — 파일 교체 후 브라우저/CDN 캐시 강제 무효화. 캐릭터를
           // 새로 교체할 때 이 토큰만 올리면 클라이언트는 강제 재다운로드.
           loader.load(
-            "/static/character.vrm?v=20260601aa",
+            "/static/character.vrm?v=20260604_dog3",
             (gltf) => {
               try {
                 vrm = gltf.userData.vrm;
@@ -1171,45 +1195,61 @@
               // 가정 — airi 의 idle_loop 은 보통 자연 standing pose 로 시작)
               // try { ...차렷 자세 코드... } catch ...
 
-              // ── 카메라/위치 자동 보정 ──
-              // 새 캐릭터로 교체 시 origin/scale/키가 달라도 화면 구도(머리 상단 ~ 가슴)가
-              // 유지되도록 자동 보정. humanoid head/hips 의 worldPosition 을 측정한 뒤
-              // camera position·lookAt 을 헤드 기준으로 재설정.
-              //
-              // 기존 (히마와리 류 ~1.5m 모델): camera.position=(0, 1.5, 2.4), lookAt(0, 1.4, 0)
-              // 즉 카메라 Y ≈ headY × 1.0, target Y ≈ headY × 0.93, Z = headY × 1.6.
-              // 이 비율을 그대로 새 모델에 적용한다.
+              // ── Scale 정규화 + 카메라 자동 보정 ──
+              // UniVRM export 시 mesh scale 이 안 맞으면 torsoLen 이 19m 같이 거대해진다.
+              // 표준 humanoid (torsoLen ≈ 0.45m) 비율로 vrm.scene.scale 정규화 후 카메라 잡음.
               try {
                 vrm.scene.updateMatrixWorld(true);
                 const headNode = vrm.humanoid?.getNormalizedBoneNode(VRMLib.VRMHumanBoneName.Head);
                 const hipsNode = vrm.humanoid?.getNormalizedBoneNode(VRMLib.VRMHumanBoneName.Hips);
                 if (headNode && hipsNode) {
+                  const headWP0 = new THREE.Vector3();
+                  const hipsWP0 = new THREE.Vector3();
+                  headNode.getWorldPosition(headWP0);
+                  hipsNode.getWorldPosition(hipsWP0);
+                  const rawTorso = Math.max(0.001, headWP0.y - hipsWP0.y);
+
+                  // 표준 키 ≈ 1.6m, torsoLen ≈ 0.45m. rawTorso 가 이와 다르면 scale 보정.
+                  const TARGET_TORSO = 0.45;
+                  const scaleK = TARGET_TORSO / rawTorso;
+                  if (Math.abs(scaleK - 1) > 0.1) {
+                    vrm.scene.scale.setScalar(scaleK);
+                    vrm.scene.updateMatrixWorld(true);
+                    console.log("[VRM] scale 정규화: rawTorso=", rawTorso.toFixed(3),
+                                "→ scale ×", scaleK.toFixed(4));
+                  }
+
+                  // 정규화 후 다시 측정
                   const headWP = new THREE.Vector3();
                   const hipsWP = new THREE.Vector3();
                   headNode.getWorldPosition(headWP);
                   hipsNode.getWorldPosition(hipsWP);
                   const headY = headWP.y;
                   const hipsY = hipsWP.y;
-                  const torsoLen = Math.max(0.2, headY - hipsY);   // 상체 길이 (안전 하한)
-                  // 상반신 (머리 ~ 가슴) 만 viewport 에 꽉 차도록.
-                  // FOV 30°: 거리 Z 에서 vertical span = 2·Z·tan(15°) ≈ 0.536·Z.
-                  // 상반신 ≈ torsoLen × 1.3 viewport 채우려면 Z ≈ torsoLen × 2.4.
-                  // 머리 끄트머리가 짤리지 않도록 카메라/target 을 살짝 위로.
-                  const targetY = headY - torsoLen * 0.12;       // 목 근처
-                  const camY = headY + torsoLen * 0.05;          // headY 살짝 위
-                  const camZ = Math.max(0.85, torsoLen * 2.4);
-                  // 카메라 X 를 살짝 - 로 이동 → viewport 안에서 캐릭터가 오른쪽으로 보임
-                  // (사용자 요청: 중앙보다 약간 왼쪽 정도)
-                  const camOffsetX = headWP.x - 0.18;
-                  camera.position.set(camOffsetX, camY, camZ);
-                  camera.lookAt(camOffsetX, targetY, 0);
-                  // animation loop 의 eye/lookAt target Y baseline 갱신
-                  measuredHeadY = headY;
-                  console.log("[VRM] auto-fit: headY=", headY.toFixed(3),
-                              "hipsY=", hipsY.toFixed(3),
+                  const torsoLen = Math.max(0.2, headY - hipsY);
+
+                  // hipsY 가 음수 (origin 이 머리 위인 경우) → vrm.scene.position.y 보정해 hips 를 ~0.85m 로
+                  if (hipsY < 0.3) {
+                    vrm.scene.position.y += (0.85 - hipsY);
+                    vrm.scene.updateMatrixWorld(true);
+                    hipsNode.getWorldPosition(hipsWP);
+                    headNode.getWorldPosition(headWP);
+                    console.log("[VRM] origin 보정: hipsY → 0.85");
+                  }
+
+                  const newHeadY = headWP.y;
+                  const targetY = newHeadY - torsoLen * 0.12;
+                  const camY = newHeadY + torsoLen * 0.07;
+                  const camZ = Math.max(0.85, torsoLen * 2.4);    // Apollo 이전 안정값
+                  const camOffsetX = headWP.x - 0.05;             // 정면 살짝 좌측 (Apollo 이전 안정값)
+                  camera.up.set(0,1,0); camera.quaternion.identity(); camera.position.set(camOffsetX, camY, headWP.z + camZ);
+                  camera.lookAt(headWP.x, targetY, headWP.z); camera.updateMatrixWorld();
+                  measuredHeadY = newHeadY;
+                  console.log("[VRM] auto-fit: headY=", newHeadY.toFixed(3),
+                              "hipsY=", hipsWP.y.toFixed(3),
                               "torsoLen=", torsoLen.toFixed(3),
-                              "→ cam(0,", camY.toFixed(3), ",", camZ.toFixed(3), ")",
-                              "lookAt(0,", targetY.toFixed(3), ",0)");
+                              "→ cam(", camOffsetX.toFixed(3), ",", camY.toFixed(3), ",", camZ.toFixed(3), ")",
+                              "lookAt(", camOffsetX.toFixed(3), ",", targetY.toFixed(3), ", 0 )");
                 } else {
                   console.warn("[VRM] auto-fit skip: head/hips bone 없음 — 디폴트 카메라 유지");
                 }
@@ -1225,7 +1265,7 @@
                 const animLoader = new GLTFLoader();
                 animLoader.register((parser) => new VRMAnimLib.VRMAnimationLoaderPlugin(parser));
                 animLoader.load(
-                  "/static/idle_loop.vrma?v=20260601aa",
+                  "/static/idle_loop.vrma?v=20260601ao",
                   (animGltf) => {
                     console.log("[VRM-IDLE] gltf loaded, userData keys=",
                                 Object.keys(animGltf.userData || {}),
@@ -1370,30 +1410,20 @@
               lastBlink = t;
             }
             // Lip sync — TTS amplitude 기반
-            if (lipSyncAnalyser && lipSyncData) {
-              lipSyncAnalyser.getByteFrequencyData(lipSyncData);
-              let sum = 0;
-              for (let i = 0; i < 32; i++) sum += lipSyncData[i];
-              const amp = Math.min(1.0, (sum / 32 / 255) * 2.5);
-              vrm.expressionManager?.setValue("aa", amp);
-            }
+            // amp-lipsync 비활성 — fake vowel lipsync (startSpeakingLipSync) 가 처리
             // airi idle 모션 mixer step — vrm.update 이전에 호출해야 bone 변형이 spring 에 반영됨
             if (mixer) mixer.update(dt);
-            vrm.update(dt);
-
-            // 진단: 1초마다 hips bone 의 quaternion 값 dump — mixer 가 binding 잘 되면
-            // 값이 매 초 변함. 안 변하면 mixer 가 bone 못 찾음 = 충돌이 아닌 binding 실패.
-            if (!window._vrmDiagLast || (t - window._vrmDiagLast) > 1000) {
-              window._vrmDiagLast = t;
-              const hips = vrm.humanoid?.getNormalizedBoneNode("hips");
-              if (hips) {
-                const q = hips.quaternion;
-                console.log("[VRM-DIAG] hips q:",
-                            q.x.toFixed(3), q.y.toFixed(3), q.z.toFixed(3), q.w.toFixed(3),
-                            "mixer?", !!mixer, "action?", !!idleAction,
-                            "actionTime=", idleAction?.time?.toFixed(2));
+            // speaking 중 고개 상하 nodding (1.2Hz sine, ±0.10 rad) — idle clip 이 Head bone 안 다루므로 충돌 없음
+            if (isNodding && VRMLib && VRMLib.VRMHumanBoneName) {
+              const headBone = vrm.humanoid?.getNormalizedBoneNode(VRMLib.VRMHumanBoneName.Head);
+              if (headBone) {
+                const phaseSec = performance.now() / 1000;
+                headBone.rotation.x = Math.sin(phaseSec * 2 * Math.PI * 1.2) * 0.04;
               }
             }
+            vrm.update(dt);
+
+            // (VRM-DIAG hips quaternion 로그 비활성)
           }
           renderer.render(scene, camera);
           requestAnimationFrame(animate);
@@ -1496,27 +1526,52 @@
     // 단순 aa 사인파 보다 입 모양이 다양하게 변해서 "말하는 느낌" 살아남.
     function startSpeakingLipSync() {
       if (!vrm) return;
-      if (lipSyncFakeOn) return;   // 이미 진행 중
+      if (lipSyncFakeOn) return;
       const VOWELS = ["aa", "ih", "ou", "ee", "oh"];
-      let phase = 0;
       let curVowelIdx = 0;
+      let prevVowelIdx = 0;
+      let transitionStart = performance.now();
       let lastVowelSwitch = performance.now();
+      let lastPunctuationPause = 0;
       function tick() {
         if (!lipSyncFakeOn) return;
         const now = performance.now();
-        phase += 0.22;
-        // 입 벌림 양 = 사인파 (0~0.85 변동, 1.8Hz)
-        const open = 0.15 + 0.5 * (0.5 + 0.5 * Math.sin(phase * 1.5));
-        // 0.18~0.35초마다 다른 vowel 로 전환 (자연 말 리듬)
-        if (now - lastVowelSwitch > 180 + Math.random() * 170) {
+        const t = now / 1000;
+
+        // 입 벌림 — 3 sine 합성 (1.6Hz base + 3.3Hz wobble + 0.8Hz drift)
+        let open = 0.10
+                 + 0.32 * (0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 1.6))
+                 + 0.18 * (0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 3.3 + 1.2))
+                 + 0.10 * (0.5 + 0.5 * Math.sin(t * 2 * Math.PI * 0.8 + 0.4));
+        open = Math.min(0.95, open);
+
+        // 가끔 짧은 puncutation pause — 0.6초마다 약 15% 확률 으로 60~140ms 입 닫음
+        if (now - lastPunctuationPause > 600 && Math.random() < 0.04) {
+          lastPunctuationPause = now;
+        }
+        if (now - lastPunctuationPause < 100 + Math.random() * 40) {
+          open *= 0.15;   // 거의 닫힘
+        }
+
+        // vowel 전환 — 110~240ms 마다 (자연 한국어 음절 리듬)
+        if (now - lastVowelSwitch > 110 + Math.random() * 130) {
           let nextIdx;
           do { nextIdx = Math.floor(Math.random() * VOWELS.length); } while (nextIdx === curVowelIdx);
-          // 옛 vowel 0 으로 (suddent shift 방지)
-          if (vrm.expressionManager?.setValue) vrm.expressionManager.setValue(VOWELS[curVowelIdx], 0);
+          prevVowelIdx = curVowelIdx;
           curVowelIdx = nextIdx;
+          transitionStart = now;
           lastVowelSwitch = now;
         }
-        if (vrm.expressionManager?.setValue) vrm.expressionManager.setValue(VOWELS[curVowelIdx], open);
+
+        // 두 vowel cross-fade (75ms) — 형태 다이내믹 + 갑작스러운 전환 방지
+        const fade = Math.min(1, (now - transitionStart) / 75);
+        if (vrm.expressionManager?.setValue) {
+          for (const v of VOWELS) vrm.expressionManager.setValue(v, 0);
+          vrm.expressionManager.setValue(VOWELS[curVowelIdx], open * fade);
+          if (prevVowelIdx !== curVowelIdx) {
+            vrm.expressionManager.setValue(VOWELS[prevVowelIdx], open * (1 - fade) * 0.7);
+          }
+        }
         lipSyncRAF = requestAnimationFrame(tick);
       }
       lipSyncFakeOn = true;
@@ -1596,7 +1651,7 @@
       // 로드 완료 — 음성 모드 + listening 이면 "안녕하세요" 타이핑 시작
       if (uiMode === "voice" && mode === "listening" && typeof setStateText === "function") {
         _lastSetStateText = "";
-        setStateText("안녕하세요. 전북도청 챗봇입니다!");
+        setStateText("안녕하세요. 안내원 오티입니다!");
       }
     } catch (e) {
       console.warn("[VRM] vrmLoadIfNeeded failed (외부 CDN 차단 가능):", e);
@@ -1617,7 +1672,7 @@
     // 명시적 label 있으면 갱신. 빈 label 이면:
     //   - listening 모드 진입:
     //       · 캐릭터 모드 + VRM 로드 미완료 → dots cycle 유지 (빈 텍스트)
-    //       · 그 외 → "안녕하세요. 전북도청 챗봇입니다!" 표시
+    //       · 그 외 → "안녕하세요. 안내원 오티입니다!" 표시
     //   - 다른 모드 (speaking/thinking 등): 박스 유지 (phase_label 텍스트 보존)
     if (label !== undefined && label !== "") {
       setStateText(label);
@@ -1625,7 +1680,7 @@
       const isCharacter = (typeof visualMode !== "undefined" && visualMode === "character");
       const vrmReady = !isCharacter || (window.vrmAdapter && window.vrmAdapter.isLoaded && window.vrmAdapter.isLoaded());
       if (vrmReady) {
-        setStateText("안녕하세요. 전북도청 챗봇입니다!");
+        setStateText("안녕하세요. 안내원 오티입니다!");
       } else {
         setStateText("");   // dots cycle 유지 — 캐릭터 로드 완료 후 명시적 호출
       }
@@ -1970,7 +2025,7 @@
     isCapturingSpeech = true;
     recStartedAt = Date.now();
     recLastSpeechAt = recStartedAt;
-    setMode("recording", "안녕하세요. 전북도청 챗봇입니다!", "잠시 멈추면 자동 전송돼요");
+    setMode("recording", "안녕하세요. 안내원 오티입니다!", "잠시 멈추면 자동 전송돼요");
   }
   function stopRecording() {
     if (!isCapturingSpeech) return;
@@ -1982,7 +2037,7 @@
     if (totalSamples < minSamples) {
       pcmRingBuffer = [];
       pcmRingTotalSamples = 0;
-      setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "조금 더 길게 말씀해 주세요");
+      setMode("listening", "안녕하세요. 안내원 오티입니다!", "조금 더 길게 말씀해 주세요");
       startMicLoop();
       return;
     }
@@ -2025,12 +2080,12 @@
       if (!resp.ok) throw new Error(await resp.text() || `HTTP ${resp.status}`);
       const data = await resp.json();
       if (data.ignored) {
-        setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "주변 소음으로 들렸어요. 다시 말씀해 주세요");
+        setMode("listening", "안녕하세요. 안내원 오티입니다!", "주변 소음으로 들렸어요. 다시 말씀해 주세요");
         startMicLoop();
         return;
       }
       if (data.needs_retry) {
-        setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", data.reply || "한국어로 다시 말씀해 주세요");
+        setMode("listening", "안녕하세요. 안내원 오티입니다!", data.reply || "한국어로 다시 말씀해 주세요");
         startMicLoop();
         return;
       }
@@ -2065,7 +2120,7 @@
         setMode("idle", "일시정지", "Orb 를 탭하여 다시 시작");
         return;
       }
-      setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "한국어로 자연스럽게 말씀해 주세요");
+      setMode("listening", "안녕하세요. 안내원 오티입니다!", "한국어로 자연스럽게 말씀해 주세요");
       startMicLoop();
     }, COOLDOWN_AFTER_TTS_MS);
   }
@@ -2089,7 +2144,7 @@
       // 자동 모드 시작/재개
       if (!await ensureMic()) return;
       pausedByUser = false;
-      setMode("listening", "안녕하세요. 전북도청 챗봇입니다!", "한국어로 자연스럽게 말씀해 주세요");
+      setMode("listening", "안녕하세요. 안내원 오티입니다!", "한국어로 자연스럽게 말씀해 주세요");
       startMicLoop();
     }
   }

@@ -174,7 +174,7 @@ async def _prewarm_endpoints(app: Any) -> None:
         "PUBLIC_CHATBOT_MODEL_ID",
         "Qwen3.5-397B-A17B-FP8",
         "LLM",
-        12.0,
+        30.0,   # Qwen3.5-397B cold start 여유
         warm_prompt=WARM_PROMPT,
     )
     # TTS endpoint 도 warm (병렬 안 해도 짧음)
