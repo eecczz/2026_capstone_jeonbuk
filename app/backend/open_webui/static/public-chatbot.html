@@ -1121,7 +1121,7 @@
     let currentMode = "idle";
     let loaded = false, loading = false, loadAttempted = false;
     let measuredHeadY = 1.35;   // VRM 로드 시 측정 — eye/lookAt target 의 Y baseline
-    let mixer = null, idleAction = null;   // airi idle_loop.vrma 재생용
+    let mixer = null, idleAction = null, restlessIdleAction = null;   // idle_loop.vrma + restless idle clip 재생용
 
     async function ensureLoaded() {
       if (loaded || loading) return loaded;
@@ -1169,6 +1169,100 @@
         const fill = new THREE.DirectionalLight(0xffffff, 0.65);
         fill.position.set(-2.0, 1.4, 2.0);
         scene.add(fill);
+
+        function qValues(x, y, z) {
+          const q = new THREE.Quaternion();
+          q.setFromEuler(new THREE.Euler(x, y, z, "XYZ"));
+          return [q.x, q.y, q.z, q.w];
+        }
+
+        function makeQuaternionTrack(node, times, poses) {
+          if (!node?.name) return null;
+          return new THREE.QuaternionKeyframeTrack(
+            node.name + ".quaternion",
+            times,
+            poses.flatMap((pose) => qValues(pose[0], pose[1], pose[2]))
+          );
+        }
+
+        function playRestlessIdleClip(mixerRoot) {
+          if (!vrm?.humanoid || !VRMLib?.VRMHumanBoneName) return;
+          const H = VRMLib.VRMHumanBoneName;
+          const head = vrm.humanoid.getNormalizedBoneNode(H.Head);
+          const neck = vrm.humanoid.getNormalizedBoneNode(H.Neck);
+          const chest = vrm.humanoid.getNormalizedBoneNode(H.Chest);
+          const spine = vrm.humanoid.getNormalizedBoneNode(H.Spine);
+          const hips = vrm.humanoid.getNormalizedBoneNode(H.Hips);
+          const root = mixerRoot || vrm.scene;
+          const targetMixer = mixer || new THREE.AnimationMixer(root);
+          const times = [0.0, 0.9, 1.7, 2.5, 3.3, 4.4, 5.3, 6.2, 7.4, 8.8, 9.6];
+          const tracks = [
+            makeQuaternionTrack(head, times, [
+              [0.00, 0.00, 0.00],
+              [-0.08, 0.20, -0.035],
+              [-0.03, 0.36, -0.055],
+              [0.10, -0.16, 0.040],
+              [0.03, -0.32, 0.055],
+              [-0.15, 0.04, -0.015],
+              [0.12, 0.25, -0.045],
+              [0.02, -0.22, 0.030],
+              [-0.07, -0.05, 0.020],
+              [0.08, 0.10, -0.020],
+              [0.00, 0.00, 0.00],
+            ]),
+            makeQuaternionTrack(neck, times, [
+              [0.00, 0.00, 0.00],
+              [-0.025, 0.075, -0.010],
+              [-0.010, 0.130, -0.015],
+              [0.035, -0.060, 0.014],
+              [0.010, -0.110, 0.018],
+              [-0.055, 0.010, -0.004],
+              [0.040, 0.090, -0.014],
+              [0.005, -0.075, 0.010],
+              [-0.020, -0.015, 0.006],
+              [0.025, 0.035, -0.006],
+              [0.00, 0.00, 0.00],
+            ]),
+            makeQuaternionTrack(chest || spine, times, [
+              [0.00, 0.00, 0.00],
+              [0.010, -0.030, 0.010],
+              [0.005, -0.055, 0.018],
+              [-0.012, 0.025, -0.012],
+              [-0.005, 0.045, -0.015],
+              [0.015, -0.005, 0.004],
+              [-0.010, -0.035, 0.014],
+              [0.004, 0.030, -0.010],
+              [0.010, 0.010, -0.004],
+              [-0.006, -0.015, 0.006],
+              [0.00, 0.00, 0.00],
+            ]),
+            makeQuaternionTrack(hips, times, [
+              [0.00, 0.00, 0.00],
+              [0.004, 0.015, -0.006],
+              [0.000, 0.025, -0.010],
+              [-0.004, -0.012, 0.006],
+              [0.000, -0.020, 0.009],
+              [0.006, 0.004, -0.002],
+              [-0.004, 0.016, -0.006],
+              [0.002, -0.014, 0.005],
+              [0.004, -0.004, 0.002],
+              [-0.002, 0.008, -0.003],
+              [0.00, 0.00, 0.00],
+            ]),
+          ].filter(Boolean);
+          if (!tracks.length) return;
+          const clip = new THREE.AnimationClip("jeonbuk-restless-idle", times[times.length - 1], tracks);
+          mixer = targetMixer;
+          restlessIdleAction = mixer.clipAction(clip);
+          restlessIdleAction.setLoop(THREE.LoopRepeat, Infinity);
+          restlessIdleAction.clampWhenFinished = false;
+          restlessIdleAction.enabled = true;
+          restlessIdleAction.weight = 0.82;
+          restlessIdleAction.timeScale = 0.72;
+          restlessIdleAction.play();
+          console.log("[VRM-IDLE] restless idle clip 재생 시작 duration=", clip.duration.toFixed(2),
+                      "s tracks=", tracks.length);
+        }
 
         // 2) VRM 로드
         const loader = new GLTFLoader();
@@ -1323,9 +1417,11 @@
                               vrm.scene.add(root);
                               console.log("[VRM-IDLE] normalizedHumanBonesRoot vrm.scene 에 attach");
                             }
+                            playRestlessIdleClip(root);
                           }
                         }
                       }
+                      if (!restlessIdleAction) playRestlessIdleClip(vrm.scene);
                       console.log("[VRM-IDLE] ✓✓ 재생 시작 duration=", clip.duration.toFixed(2),
                                   "s tracks=", clip.tracks?.length);
                       // 차렷 자세 보정은 idle 모션과 충돌 — mixer 가 매 frame 팔 rotation
@@ -1338,9 +1434,12 @@
                   },
                   undefined,
                   (animErr) => {
-                    console.warn("[VRM] idle_loop.vrma 로드 실패 — manual sway 만 동작:", animErr);
+                    console.warn("[VRM] idle_loop.vrma 로드 실패 — restless idle clip 만 동작:", animErr);
+                    playRestlessIdleClip(vrm.scene);
                   }
                 );
+              } else {
+                playRestlessIdleClip(vrm.scene);
               }
 
               loaded = true;
@@ -1417,21 +1516,16 @@
             // amp-lipsync 비활성 — fake vowel lipsync (startSpeakingLipSync) 가 처리
             // airi idle 모션 mixer step — vrm.update 이전에 호출해야 bone 변형이 spring 에 반영됨
             if (mixer) mixer.update(dt);
-            // idle/listening/thinking 중: 천천히 좌우를 보고, 가끔 고개를 살짝 숙임.
-            // speaking 중: 기존 nodding 을 유지하되 yaw/tilt 을 작게 섞어 기계적인 반복을 줄임.
-            if (VRMLib && VRMLib.VRMHumanBoneName) {
+            // idle 은 AnimationMixer 의 idle clips 만 사용한다. 답변 중에만 nodding 을
+            // 수동으로 덧씌워 TTS 반응을 만든다.
+            if (isNodding && VRMLib && VRMLib.VRMHumanBoneName) {
               const headBone = vrm.humanoid?.getNormalizedBoneNode(VRMLib.VRMHumanBoneName.Head);
               const neckBone = vrm.humanoid?.getNormalizedBoneNode(VRMLib.VRMHumanBoneName.Neck);
               if (headBone) {
                 const phaseSec = t / 1000;
-                const yaw = Math.sin(phaseSec * 0.55) * 0.085
-                          + Math.sin(phaseSec * 0.19 + 1.7) * 0.035;
-                const tilt = Math.sin(phaseSec * 0.43 + 0.8) * 0.035;
-                const idlePitch = Math.sin(phaseSec * 0.37 + 2.1) * 0.035
-                                - Math.max(0, Math.sin(phaseSec * 0.16 - 0.4)) * 0.045;
-                const nodPitch = isNodding
-                  ? Math.sin(phaseSec * 2 * Math.PI * 1.2) * 0.045
-                  : idlePitch;
+                const yaw = Math.sin(phaseSec * 0.70) * 0.025;
+                const tilt = Math.sin(phaseSec * 0.53 + 0.8) * 0.015;
+                const nodPitch = Math.sin(phaseSec * 2 * Math.PI * 1.2) * 0.045;
                 headBone.rotation.x = nodPitch;
                 headBone.rotation.y = yaw;
                 headBone.rotation.z = tilt;
