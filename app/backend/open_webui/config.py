@@ -4355,7 +4355,7 @@ PUBLIC_CHATBOT_MODEL_ID = PersistentConfig(
 PUBLIC_CHATBOT_BASE_MODEL = PersistentConfig(
     "PUBLIC_CHATBOT_BASE_MODEL",
     "public_chatbot.base_model",
-    os.environ.get("PUBLIC_CHATBOT_BASE_MODEL", "Qwen3.5-4B"),
+    os.environ.get("PUBLIC_CHATBOT_BASE_MODEL", "ChatGPT-oss-120B"),
 )
 
 PUBLIC_CHATBOT_KNOWLEDGE_ID = PersistentConfig(
